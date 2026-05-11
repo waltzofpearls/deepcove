@@ -1,0 +1,22 @@
+# Keep the build context small — Docker copies the whole context into
+# the daemon before building. Excluding heavy dev artifacts keeps that
+# step fast.
+
+# Host build artifacts (not relevant inside the container build).
+/deepcove
+/deepcove-linux-*
+/dist/
+/build-errors.log
+/tmp/
+
+# Dev dependencies — not consumed by build/linux.Dockerfile.
+/ui/node_modules/
+/ui/.svelte-kit/
+
+# Local data / secrets.
+.env
+.git/
+
+# Editor noise.
+.vscode/
+.idea/
