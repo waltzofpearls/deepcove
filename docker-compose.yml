@@ -1,0 +1,35 @@
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: ui.Dockerfile
+    environment:
+      - PORT=5173
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./ui:/app
+      - /app/node_modules
+    networks:
+      - deepcove
+
+  server:
+    build:
+      context: .
+      dockerfile: server.Dockerfile
+    environment:
+      - IS_DEV=true
+      - ADDR=0.0.0.0:8080
+      - VITE_URL=http://ui:5173
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+    depends_on:
+      - ui
+    networks:
+      - deepcove
+
+networks:
+  deepcove:
+    driver: bridge
