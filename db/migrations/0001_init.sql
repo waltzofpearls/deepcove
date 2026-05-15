@@ -24,8 +24,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     image        TEXT NOT NULL,
     owner_email  TEXT NOT NULL,
     status       TEXT NOT NULL DEFAULT 'created',
-    mounts       JSON NOT NULL DEFAULT '[]',
-    env          JSON NOT NULL DEFAULT '{}',
+    -- mounts and env are JSON-shaped blobs, but stored as TEXT.
+    -- We never query into them at the DB level — they're produced
+    -- and consumed in Go. DuckDB's JSON type auto-decodes to a Go
+    -- map on Scan, which doesn't round-trip cleanly back to bytes;
+    -- TEXT gives us byte-exact storage with no scanner surprises.
+    mounts       TEXT NOT NULL DEFAULT '[]',
+    env          TEXT NOT NULL DEFAULT '{}',
     container_id TEXT,
     created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

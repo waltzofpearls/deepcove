@@ -1,17 +1,19 @@
 package repository
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 	"testing/fstest"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
-// fakeMigrations is a small helper to build an in-memory migration
-// filesystem rooted at "db/migrations/" so the tests look like the
-// real embed layout.
+// fakeMigrations builds an in-memory migration filesystem rooted at
+// "db/migrations/" so the tests look like the real embed layout.
 func fakeMigrations(files map[string]string) fstest.MapFS {
 	out := fstest.MapFS{}
 	for name, body := range files {
@@ -20,105 +22,114 @@ func fakeMigrations(files map[string]string) fstest.MapFS {
 	return out
 }
 
-func TestMigrate_FreshDB_AppliesAllInOrder(t *testing.T) {
-	db := openMemDB(t)
-	defer db.Close()
-
-	fs := fakeMigrations(map[string]string{
-		"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
-		"0002_b.sql": `CREATE TABLE b (id INTEGER);`,
-	})
-
-	if err := migrate(db, fs, "db/migrations"); err != nil {
-		t.Fatalf("Migrate: %v", err)
+// TestMigrate exercises every path through the migrator: fresh
+// install, idempotent re-runs, the load-bearing out-of-order
+// detection (the bug we caught in review), and rollback when one
+// file's SQL fails. priorFiles seeds the DB with an earlier
+// migration run before the call under test, mimicking a returning
+// operator who picked up new files.
+func TestMigrate(t *testing.T) {
+	tests := []struct {
+		name        string
+		priorFiles  map[string]string // applied first to set up initial state; nil = skip
+		files       map[string]string // applied in the call under test
+		wantErrIs   error             // if non-nil, errors.Is(err, wantErrIs) must hold
+		wantAnyErr  bool              // if true, expect a non-nil error of any shape
+		wantApplied []string          // expected versions in schema_migrations after all runs
+	}{
+		{
+			name: "fresh DB applies all in order",
+			files: map[string]string{
+				"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
+				"0002_b.sql": `CREATE TABLE b (id INTEGER);`,
+			},
+			wantApplied: []string{"0001_a.sql", "0002_b.sql"},
+		},
+		{
+			name: "idempotent re-run is a no-op",
+			priorFiles: map[string]string{
+				"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
+			},
+			files: map[string]string{
+				"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
+			},
+			wantApplied: []string{"0001_a.sql"},
+		},
+		{
+			name: "refuses out-of-order migration with newer file behind already-applied",
+			priorFiles: map[string]string{
+				"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
+				"0003_c.sql": `CREATE TABLE c (id INTEGER);`,
+			},
+			files: map[string]string{
+				"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
+				"0002_b.sql": `CREATE TABLE b (id INTEGER);`,
+				"0003_c.sql": `CREATE TABLE c (id INTEGER);`,
+			},
+			wantErrIs:   ErrOutOfOrderMigration,
+			wantApplied: []string{"0001_a.sql", "0003_c.sql"},
+		},
+		{
+			name: "failed migration rolls back; earlier migrations stay applied",
+			files: map[string]string{
+				"0001_a.sql":   `CREATE TABLE a (id INTEGER);`,
+				"0002_bad.sql": `THIS IS NOT VALID SQL;`,
+			},
+			wantAnyErr:  true,
+			wantApplied: []string{"0001_a.sql"},
+		},
 	}
 
-	applied := mustLoadApplied(t, db)
-	if !applied["0001_a.sql"] || !applied["0002_b.sql"] {
-		t.Errorf("expected both migrations applied, got %v", applied)
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openMemDB(t)
+			defer db.Close()
 
-func TestMigrate_Idempotent(t *testing.T) {
-	db := openMemDB(t)
-	defer db.Close()
+			if tc.priorFiles != nil {
+				if err := migrate(db, fakeMigrations(tc.priorFiles), "db/migrations"); err != nil {
+					t.Fatalf("priorFiles migrate failed: %v", err)
+				}
+			}
 
-	fs := fakeMigrations(map[string]string{
-		"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
-	})
+			gotErr := migrate(db, fakeMigrations(tc.files), "db/migrations")
+			assertErr(t, gotErr, tc.wantErrIs, tc.wantAnyErr)
 
-	if err := migrate(db, fs, "db/migrations"); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-	if err := migrate(db, fs, "db/migrations"); err != nil {
-		t.Fatalf("second run (should be no-op): %v", err)
-	}
-
-	// Exactly one row in schema_migrations.
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("schema_migrations row count: want 1, got %d", count)
-	}
-}
-
-// TestMigrate_RefusesOutOfOrder is the regression test for the bug
-// caught in review: if a new migration is added with a name that
-// sorts before an already-applied one, refuse rather than silently
-// produce a state no fresh deploy could reach.
-func TestMigrate_RefusesOutOfOrder(t *testing.T) {
-	db := openMemDB(t)
-	defer db.Close()
-
-	// First run: apply 0001 and 0003 (simulating a branch that
-	// jumped a version number).
-	first := fakeMigrations(map[string]string{
-		"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
-		"0003_c.sql": `CREATE TABLE c (id INTEGER);`,
-	})
-	if err := migrate(db, first, "db/migrations"); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-
-	// Second run: someone merged a branch that adds 0002 (which
-	// numerically belongs between 0001 and 0003). This must error.
-	second := fakeMigrations(map[string]string{
-		"0001_a.sql": `CREATE TABLE a (id INTEGER);`,
-		"0002_b.sql": `CREATE TABLE b (id INTEGER);`,
-		"0003_c.sql": `CREATE TABLE c (id INTEGER);`,
-	})
-	err := migrate(db, second, "db/migrations")
-	if !errors.Is(err, ErrOutOfOrderMigration) {
-		t.Fatalf("want ErrOutOfOrderMigration, got %v", err)
-	}
-
-	// And we must NOT have applied 0002 — that would be the bug.
-	applied := mustLoadApplied(t, db)
-	if applied["0002_b.sql"] {
-		t.Errorf("0002 was applied despite gap error — bug")
+			if !slices.Equal(sortedAppliedVersions(t, db), tc.wantApplied) {
+				t.Errorf("applied versions: want %v, got %v", tc.wantApplied, sortedAppliedVersions(t, db))
+			}
+		})
 	}
 }
 
-func TestMigrate_FailedMigrationRollsBack(t *testing.T) {
-	db := openMemDB(t)
-	defer db.Close()
-
-	fs := fakeMigrations(map[string]string{
-		"0001_a.sql":   `CREATE TABLE a (id INTEGER);`,
-		"0002_bad.sql": `THIS IS NOT VALID SQL;`,
-	})
-
-	if err := migrate(db, fs, "db/migrations"); err == nil {
-		t.Fatal("expected error from bad migration, got nil")
+// assertErr is the table-test verdict for the (wantErrIs, wantAnyErr,
+// got) tuple.
+func assertErr(t *testing.T, got, wantIs error, wantAny bool) {
+	t.Helper()
+	switch {
+	case wantIs != nil:
+		if !errors.Is(got, wantIs) {
+			t.Errorf("want errors.Is(err, %v), got %v", wantIs, got)
+		}
+	case wantAny:
+		if got == nil {
+			t.Errorf("want any error, got nil")
+		}
+	default:
+		if got != nil {
+			t.Errorf("want nil error, got %v", got)
+		}
 	}
+}
 
+// sortedAppliedVersions returns the schema_migrations contents as a
+// sorted slice, suitable for slices.Equal comparison in tests.
+func sortedAppliedVersions(t *testing.T, db *sql.DB) []string {
+	t.Helper()
 	applied := mustLoadApplied(t, db)
-	if !applied["0001_a.sql"] {
-		t.Errorf("0001 should have been applied before the failure")
+	out := make([]string, 0, len(applied))
+	for v := range applied {
+		out = append(out, v)
 	}
-	if applied["0002_bad.sql"] {
-		t.Errorf("0002 should NOT be marked applied (transaction rolled back)")
-	}
+	sort.Strings(out)
+	return out
 }

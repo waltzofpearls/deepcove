@@ -15,28 +15,28 @@ import (
 )
 
 // process is the Docker implementation of sandbox.Process. The
-// hijacked connection from ExecAttach delivers a multiplexed stream;
-// stdcopy demuxes it into stdout and stderr, which we pipe to
-// caller-readable io.ReadClosers.
+// hijacked connection from ExecAttach delivers either a multiplexed
+// stream (no TTY) demuxed by stdcopy, or a raw stream (TTY) we copy
+// straight into stdout. The pump goroutine handles whichever shape
+// matches the exec's TTY flag.
 //
 // Lifecycle:
-//   - newProcess starts the pump goroutine (and a stdin-copy goroutine
-//     if Stdin was provided).
-//   - Calling Close, or Wait reaching natural exit, tears down the
-//     attach connection — which unblocks the pump's stdcopy read —
-//     closes the pipe writers, and waits for goroutines to drain.
-//   - Calling neither leaks the connection and at least one goroutine.
-//     The interface contract makes Close mandatory.
+//   - newProcess starts the pump goroutine (and, if ExecSpec.Stdin
+//     was non-nil, a stdin-copy goroutine).
+//   - Close (or successful Wait, which Closes internally) tears down
+//     the attach connection — which unblocks the pump's read — and
+//     waits for goroutines to drain.
+//   - Calling neither leaks the connection. The interface contract
+//     makes Close mandatory.
 type process struct {
 	cli    *client.Client
 	execID string
 	attach client.HijackedResponse
+	tty    bool
 
 	stdoutR *io.PipeReader
 	stderrR *io.PipeReader
 
-	// goroutines tracks the pump and (optional) stdin copier so
-	// Close can wait for them after tearing down the connection.
 	goroutines sync.WaitGroup
 
 	closeOnce sync.Once
@@ -45,7 +45,7 @@ type process struct {
 	doneCh chan struct{} // closed when the pump goroutine has exited
 }
 
-func newProcess(cli *client.Client, execID string, attach client.HijackedResponse, stdin io.Reader) *process {
+func newProcess(cli *client.Client, execID string, attach client.HijackedResponse, stdin io.Reader, tty bool) *process {
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
 
@@ -53,13 +53,15 @@ func newProcess(cli *client.Client, execID string, attach client.HijackedRespons
 		cli:     cli,
 		execID:  execID,
 		attach:  attach,
+		tty:     tty,
 		stdoutR: stdoutR,
 		stderrR: stderrR,
 		doneCh:  make(chan struct{}),
 	}
 
-	// Forward caller stdin into the attach connection. We half-close
-	// on EOF so the inside-the-container process sees stdin EOF.
+	// Forward a caller-provided stdin into the attach connection.
+	// Interactive callers can leave ExecSpec.Stdin nil and write via
+	// Process.Stdin() instead.
 	if stdin != nil {
 		p.goroutines.Add(1)
 		go func() {
@@ -74,21 +76,28 @@ func newProcess(cli *client.Client, execID string, attach client.HijackedRespons
 		defer p.goroutines.Done()
 		defer close(p.doneCh)
 
-		// stdcopy returns when the attach connection closes (process
-		// exit, or our Close call) or on a stream error. Whichever
-		// path we take, propagate to the pipe readers so callers
-		// reading Stdout/Stderr see a consistent EOF or error.
-		_, err := stdcopy.StdCopy(stdoutW, stderrW, attach.Reader)
-		// CloseWithError(nil) is equivalent to Close — both unblock
-		// readers with io.EOF; passing a non-nil err surfaces it to
-		// the reader without an in-band write that could deadlock
-		// if no one is reading.
+		var err error
+		if tty {
+			// TTY exec: the stream is raw terminal output; stdcopy
+			// would misinterpret the bytes. We don't have a way to
+			// distinguish stdout from stderr in this mode (Docker
+			// merges them), so everything lands on stdout and stderr
+			// closes immediately so callers don't block.
+			_ = stderrW.Close()
+			_, err = io.Copy(stdoutW, attach.Reader)
+		} else {
+			_, err = stdcopy.StdCopy(stdoutW, stderrW, attach.Reader)
+		}
 		if err != nil && !errors.Is(err, io.EOF) {
 			_ = stdoutW.CloseWithError(err)
-			_ = stderrW.CloseWithError(err)
+			if !tty {
+				_ = stderrW.CloseWithError(err)
+			}
 		} else {
 			_ = stdoutW.Close()
-			_ = stderrW.Close()
+			if !tty {
+				_ = stderrW.Close()
+			}
 		}
 	}()
 
@@ -98,20 +107,49 @@ func newProcess(cli *client.Client, execID string, attach client.HijackedRespons
 func (p *process) Stdout() io.ReadCloser { return p.stdoutR }
 func (p *process) Stderr() io.ReadCloser { return p.stderrR }
 
+// Stdin returns a writer that forwards into the running exec's
+// stdin. Writes after Close return io.ErrClosedPipe. Calling
+// Stdin().Close() half-closes the input stream (the inside-container
+// process sees EOF on its stdin) without affecting Stdout/Stderr.
+//
+// If the caller already provided ExecSpec.Stdin at create time, the
+// returned writer races with the spawned copier — don't use both.
+func (p *process) Stdin() io.WriteCloser {
+	return &stdinWriter{p: p}
+}
+
+type stdinWriter struct {
+	p *process
+}
+
+func (w *stdinWriter) Write(b []byte) (int, error) {
+	return w.p.attach.Conn.Write(b)
+}
+
+func (w *stdinWriter) Close() error {
+	// Half-close: tell the daemon we're done writing while keeping
+	// the read side open for stdout/stderr drain.
+	return w.p.attach.CloseWrite()
+}
+
+// Resize forwards new TTY dimensions to the running exec. Only
+// meaningful when the exec was created with Tty=true; non-TTY execs
+// silently no-op (Docker doesn't error in that case either).
+func (p *process) Resize(cols, rows uint16) error {
+	_, err := p.cli.ExecResize(context.Background(), p.execID, client.ExecResizeOptions{
+		Height: uint(rows),
+		Width:  uint(cols),
+	})
+	return err
+}
+
 // Close tears down the attach connection (unblocking any pump
 // goroutine stuck on a stream read) and waits for all worker
 // goroutines to exit. Safe to call multiple times.
 func (p *process) Close() error {
 	p.closeOnce.Do(func() {
-		// Closing the hijacked connection unblocks both stdcopy
-		// (reading from attach.Reader) and any pending io.Copy of
-		// stdin (writing to attach.Conn). Pipe readers will see EOF
-		// after the pump exits and closes the writers.
 		p.attach.Close()
 		p.goroutines.Wait()
-		// Also close the reader sides so callers blocked on a slow
-		// stdout/stderr read get an immediate EOF rather than
-		// waiting for a pipe writer that's already done its work.
 		_ = p.stdoutR.Close()
 		_ = p.stderrR.Close()
 	})
@@ -123,26 +161,17 @@ func (p *process) Close() error {
 func (p *process) Wait(ctx context.Context) (int, error) {
 	select {
 	case <-p.doneCh:
-		// Natural exit — pump drained the stream. Fall through to
-		// the inspect+close path.
 	case <-ctx.Done():
-		// Caller gave up. Close tears down the connection (which
-		// also unblocks the pump goroutine still reading from it).
 		_ = p.Close()
 		return 0, ctx.Err()
 	}
 
-	// Query the daemon for the exit code BEFORE we Close — Close
-	// will free the exec handle (Docker keeps it around for inspect
-	// while the connection is open).
 	inspect, inspectErr := p.cli.ExecInspect(ctx, p.execID, client.ExecInspectOptions{})
 	_ = p.Close()
 	if inspectErr != nil {
 		return 0, fmt.Errorf("docker: exec inspect %s: %w", p.execID, inspectErr)
 	}
 	if inspect.Running {
-		// Shouldn't happen: doneCh closed implies the attach stream
-		// ended, which Docker considers the exec done. Guard anyway.
 		return 0, errors.New("docker: attach closed but exec still running")
 	}
 	return inspect.ExitCode, nil
