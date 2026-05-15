@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/api"
 	"github.com/waltzofpearls/deepcove/internal/config"
 	"github.com/waltzofpearls/deepcove/internal/repository"
+	dockerdrv "github.com/waltzofpearls/deepcove/internal/sandbox/docker"
+	"github.com/waltzofpearls/deepcove/internal/session"
 	"github.com/waltzofpearls/deepcove/internal/ui"
 )
 
@@ -19,15 +22,17 @@ import (
 // most users. See SPEC.md §4.1.1.
 //
 // Currently mounts:
-//   - local TCP listener on cfg.Addr serving both API (via internal/api)
-//     and the SPA (via internal/ui)
+//   - DuckDB store + migrations
+//   - Docker sandbox driver
+//   - Session lifecycle service on /api/sessions
+//   - local TCP listener on cfg.Addr serving both API and the SPA
 //
 // Still TODO:
-//   - Open DuckDB (internal/repository) at first run, persist owner identity
-//   - Start Docker sandbox driver (internal/sandbox)
-//   - Bring up Unix socket listener for CLI
-//   - Bring up tsnet TLS listener with WhoIs identity middleware
-//   - Peer discovery, fan-out, etc.
+//   - First-run owner identity persistence
+//   - Unix socket listener (so CLI doesn't need to dial TCP)
+//   - tsnet TLS listener with WhoIs identity middleware
+//   - Peer discovery, cross-node fan-out
+//   - Session attach (PTY WebSocket)
 func cmdStart(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -51,6 +56,20 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	logger.Info("database ready", "data_dir", cfg.DataDir)
 
+	// Sandbox driver: Docker is the v1 backend (SPEC §7.2). The
+	// session service bind-mounts $DataDir/sessions/<id>/ into
+	// each sandbox; that root is the only host path it's allowed
+	// to share, enforced by the sandbox layer's mount-source
+	// validator.
+	workspaceRoot := filepath.Join(cfg.DataDir, "sessions")
+	sandbox, err := dockerdrv.New(dockerdrv.WithAllowedMountRoots(workspaceRoot))
+	if err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+	defer sandbox.Close()
+
+	sessionSvc := session.NewService(db, sandbox, cfg.DataDir, logger)
+
 	mux := http.NewServeMux()
 	if err := api.New(
 		api.WithConfig(cfg),
@@ -59,6 +78,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	).AttachRoutes(); err != nil {
 		return fmt.Errorf("api: %w", err)
 	}
+	sessionSvc.AttachRoutes(mux)
 	if err := ui.New(ui.WithConfig(cfg), ui.WithMux(mux)).AttachRoutes(); err != nil {
 		return fmt.Errorf("ui: %w", err)
 	}

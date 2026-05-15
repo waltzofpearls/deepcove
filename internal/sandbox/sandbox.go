@@ -221,6 +221,13 @@ type Process interface {
 	Stdout() io.ReadCloser
 	Stderr() io.ReadCloser
 
+	// Stdin returns a writer that forwards into the process's
+	// stdin. Only meaningful if ExecSpec.Stdin was nil at create
+	// time AND ExecSpec.Tty was true — interactive callers need to
+	// keep writing input after the exec started. Drivers that can't
+	// expose a writer return ErrNotSupported.
+	Stdin() io.WriteCloser
+
 	// Wait blocks until the process exits, ctx is cancelled, or
 	// Close is called. exitCode is the OS exit status; err is
 	// non-nil only when the outcome couldn't be determined.
@@ -230,6 +237,12 @@ type Process interface {
 	// Signal forwards a Unix signal into the sandbox. Drivers that
 	// can't deliver per-exec signals return ErrNotSupported.
 	Signal(s os.Signal) error
+
+	// Resize tells a TTY-allocated exec that the controlling
+	// terminal has new dimensions. Only meaningful when
+	// ExecSpec.Tty was true. Drivers that don't support resize
+	// return ErrNotSupported.
+	Resize(cols, rows uint16) error
 }
 
 // LogOpts controls Sandbox.Logs.

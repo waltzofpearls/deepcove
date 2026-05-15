@@ -133,12 +133,18 @@ func (d *Driver) Destroy(ctx context.Context, h sandbox.Handle) error {
 // The returned Process owns the hijacked connection; callers must
 // Wait or Close it (forgetting both leaks the connection).
 func (d *Driver) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpec) (sandbox.Process, error) {
+	// AttachStdin is true whenever the caller might want to write
+	// input: explicitly via ExecSpec.Stdin (one-shot input ready at
+	// create time) OR interactively when a TTY is requested
+	// (caller writes via Process.Stdin() after exec starts). Without
+	// AttachStdin true, the daemon doesn't connect the exec's stdin
+	// to our hijacked stream — writes go to /dev/null.
 	createResp, err := d.cli.ExecCreate(ctx, string(h), client.ExecCreateOptions{
 		Cmd:          cmd.Cmd,
 		Env:          envList(cmd.Env),
 		WorkingDir:   cmd.WorkingDir,
 		TTY:          cmd.Tty,
-		AttachStdin:  cmd.Stdin != nil,
+		AttachStdin:  cmd.Stdin != nil || cmd.Tty,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -153,7 +159,7 @@ func (d *Driver) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpe
 		return nil, normalizeErr(err)
 	}
 
-	return newProcess(d.cli, createResp.ID, attachResp.HijackedResponse, cmd.Stdin), nil
+	return newProcess(d.cli, createResp.ID, attachResp.HijackedResponse, cmd.Stdin, cmd.Tty), nil
 }
 
 // Logs, CopyIn, CopyOut — stubs for the next pass. Return

@@ -4,11 +4,17 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"text/tabwriter"
+	"time"
+
+	"os"
+
+	"github.com/waltzofpearls/deepcove/internal/config"
 )
 
-// cmdSessionPs handles `deepcove session ps`. Lists sessions on the local
-// background service, Docker-style. Output columns: ID, NAME, AGENT,
-// STATUS, AGE.
+// cmdSessionPs handles `deepcove session ps`. Lists sessions on the
+// local background service, Docker-style. Output columns: ID, NAME,
+// AGENT, STATUS, AGE.
 func cmdSessionPs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("session ps", flag.ContinueOnError)
 	all := fs.Bool("a", false, "show all sessions (default: only running)")
@@ -16,10 +22,41 @@ func cmdSessionPs(ctx context.Context, args []string) error {
 		return err
 	}
 
-	// TODO: dial local Unix socket, GET /api/sessions, render as a table.
+	cfg, err := config.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 
-	_ = ctx
-	_ = all
+	client := newSessionClient(cfg)
+	sessions, err := client.List(ctx, *all)
+	if err != nil {
+		return err
+	}
 
-	return fmt.Errorf("deepcove session ps: not implemented yet")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	defer w.Flush()
+	fmt.Fprintln(w, "ID\tNAME\tAGENT\tSTATUS\tAGE")
+	for _, s := range sessions {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			short(s.ID), s.Name, s.Agent, s.Status, ageOf(s.CreatedAt),
+		)
+	}
+	return nil
+}
+
+// ageOf formats a timestamp as a coarse "5m" / "2h" / "3d" string
+// suitable for table output. Doesn't try to be precise; the unit
+// reflects the largest non-zero bucket.
+func ageOf(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
