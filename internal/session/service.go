@@ -36,6 +36,15 @@ type Service struct {
 	dataDir  string
 	sessions string // $dataDir/sessions
 	logger   *slog.Logger
+
+	// previewCache holds the most recent successful capture-pane
+	// snapshot per session id. We serve it back when:
+	//   - the session is stopped (so the UI can show a dimmed
+	//     last-seen view + status overlay instead of a black void),
+	//   - a live capture transiently fails (tmux not yet ready
+	//     after a stop/start cycle).
+	// In-memory only; rebuilt on service restart.
+	previewCache *previewCache
 }
 
 // NewService constructs a Service. dataDir is the node's data
@@ -46,11 +55,12 @@ func NewService(db *sql.DB, sb sandbox.Sandbox, dataDir string, logger *slog.Log
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
 	return &Service{
-		db:       db,
-		sandbox:  sb,
-		dataDir:  dataDir,
-		sessions: filepath.Join(dataDir, "sessions"),
-		logger:   logger,
+		db:           db,
+		sandbox:      sb,
+		dataDir:      dataDir,
+		sessions:     filepath.Join(dataDir, "sessions"),
+		logger:       logger,
+		previewCache: newPreviewCache(previewCacheMaxEntries),
 	}
 }
 
@@ -71,16 +81,18 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	if err != nil {
 		return nil, fmt.Errorf("session: generate id: %w", err)
 	}
+	now := time.Now().UTC()
 	sess := &Session{
-		ID:         id.String(),
-		Name:       req.Name,
-		Agent:      req.Agent,
-		Image:      image,
-		OwnerEmail: placeholderOwner,
-		Status:     StatusCreated,
-		Env:        req.Env,
-		CreatedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
+		ID:             id.String(),
+		Name:           req.Name,
+		Agent:          req.Agent,
+		Image:          image,
+		OwnerEmail:     placeholderOwner,
+		Status:         StatusCreated,
+		Env:            req.Env,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LastActivityAt: now,
 	}
 	if sess.Name == "" {
 		sess.Name = generateName(req.Agent)
@@ -95,16 +107,25 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 
 	spec := sandbox.SandboxSpec{
 		Image: image,
-		// Placeholder Cmd: install tmux at runtime and start a
-		// detached tmux session named "main" — `deepcove session
-		// attach` exec's `tmux attach -t main` against it. The
-		// outer `sleep infinity` keeps PID 1 alive so the container
-		// itself doesn't exit when tmux detaches. Real agent images
-		// will bake tmux + the agent CLI in and replace this Cmd.
+		// Placeholder Cmd: install tmux at runtime (first boot
+		// only; subsequent restarts find it already installed)
+		// and start a detached tmux session named "main" — the
+		// attach handler exec's `tmux attach -t main` against it.
+		// `exec sleep infinity` keeps PID 1 alive.
+		//
+		// Restart safety: when a container is stopped + started,
+		// the filesystem persists (so tmux stays installed) but
+		// the previous tmux server's socket at /tmp/tmux-* is
+		// left behind as a stale file. A fresh tmux refuses to
+		// reuse it and fails silently from the user's POV. The
+		// `rm -rf /tmp/tmux-*` clears any leftover before we
+		// recreate the session. Real agent images will bake tmux
+		// in and replace this Cmd entirely.
 		Cmd: []string{"sh", "-c",
-			"apk add --no-cache tmux >/dev/null 2>&1 && " +
-				"tmux new-session -d -s main 'sh' && " +
-				"sleep infinity",
+			"command -v tmux >/dev/null 2>&1 || apk add --no-cache tmux >/dev/null 2>&1; " +
+				"rm -rf /tmp/tmux-* 2>/dev/null; " +
+				"tmux new-session -d -s main sh; " +
+				"exec sleep infinity",
 		},
 		Env: req.Env,
 		Mounts: []sandbox.Mount{{
@@ -147,10 +168,15 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 // List returns sessions owned by the current owner (today, the
 // placeholder owner). filter.IncludeAll=true returns stopped/errored
 // sessions too; default is running only.
+//
+// Ordering is by last_activity_at DESC — the canvas needs "what was I
+// just doing?" as the top card, not "what did I most recently spawn?"
+// The activity column is bumped on every attach connect / 30s tick /
+// disconnect, so it tracks user engagement, not creation order.
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Session, error) {
 	query := `
 		SELECT id, name, agent, image, owner_email, status, env,
-		       container_id, created_at, updated_at
+		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
 	`
@@ -159,7 +185,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Session, erro
 		query += ` AND status = ?`
 		args = append(args, string(StatusRunning))
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY last_activity_at DESC`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -182,7 +208,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Session, erro
 func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, agent, image, owner_email, status, env,
-		       container_id, created_at, updated_at
+		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, placeholderOwner)
 	sess, err := scanRow(row)
@@ -190,6 +216,59 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 		return nil, ErrNotFound
 	}
 	return sess, err
+}
+
+// RecordActivity bumps last_activity_at to NOW for a session. Called
+// by the attach handler on connect, periodic 30s ticker while
+// attached, and on disconnect. Cheap (single indexed UPDATE) and
+// safe to call frequently. Errors are returned but never fatal —
+// callers may log-and-ignore.
+//
+// The owner_email scope is defensive: today every mutation is gated
+// by a prior Get() that already filters by owner, but baking the
+// scope into the SQL itself makes each query correct in isolation.
+func (s *Service) RecordActivity(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET last_activity_at = ? WHERE id = ? AND owner_email = ?`,
+		time.Now().UTC(), id, placeholderOwner)
+	if err != nil {
+		return fmt.Errorf("session: record activity: %w", err)
+	}
+	return nil
+}
+
+// Start brings a stopped session back to running. The underlying
+// container is reused (Docker preserves its filesystem on stop),
+// so the agent's workspace and any in-container state survive — but
+// the original entrypoint Cmd runs again, which means tmux gets a
+// fresh session named "main". In-container ephemeral state (running
+// processes, scrollback) does NOT survive a stop/start cycle.
+//
+// Idempotent on already-running sessions (no-op).
+func (s *Service) Start(ctx context.Context, id string) error {
+	sess, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if sess.Status == StatusRunning {
+		return nil
+	}
+	if err := s.sandbox.Start(ctx, sandbox.Handle(sess.ContainerID)); err != nil {
+		// If the Docker container has been removed out of band
+		// (e.g. `docker rm` on the host), the session row is now
+		// orphaned. Surface as ErrNotFound so the UI can offer a
+		// recreate path. Today we just propagate.
+		return fmt.Errorf("session: sandbox start: %w", err)
+	}
+	now := time.Now().UTC()
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE sessions SET status = ?, updated_at = ?, last_activity_at = ? WHERE id = ? AND owner_email = ?`,
+		string(StatusRunning), now, now, id, placeholderOwner)
+	if err != nil {
+		return fmt.Errorf("session: update row: %w", err)
+	}
+	s.logger.Info("session started", "id", id, "name", sess.Name)
+	return nil
 }
 
 // Stop transitions a running session to stopped: tells the sandbox
@@ -210,8 +289,8 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 		}
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`,
-		string(StatusStopped), time.Now().UTC(), id)
+		`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? AND owner_email = ?`,
+		string(StatusStopped), time.Now().UTC(), id, placeholderOwner)
 	if err != nil {
 		return fmt.Errorf("session: update row: %w", err)
 	}
@@ -235,9 +314,12 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if err := os.RemoveAll(workspace); err != nil {
 		return fmt.Errorf("session: remove workspace: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id); err != nil {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE id = ? AND owner_email = ?`,
+		id, placeholderOwner); err != nil {
 		return fmt.Errorf("session: delete row: %w", err)
 	}
+	s.previewCache.Delete(id)
 	return nil
 }
 
@@ -264,12 +346,12 @@ func (s *Service) insert(ctx context.Context, sess *Session) error {
 		return fmt.Errorf("session: marshal env: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, env, container_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent, image, owner_email, status, env, container_id, created_at, updated_at, last_activity_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
 		string(sess.Status), string(envJSON), sess.ContainerID,
-		sess.CreatedAt, sess.UpdatedAt,
+		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
 	)
 	return err
 }
@@ -282,16 +364,25 @@ type rowScanner interface {
 
 func scanRow(r rowScanner) (*Session, error) {
 	var (
-		sess        Session
-		envJSON     sql.NullString
-		containerID sql.NullString
-		status      string
+		sess           Session
+		envJSON        sql.NullString
+		containerID    sql.NullString
+		status         string
+		lastActivityAt sql.NullTime
 	)
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &envJSON, &containerID, &sess.CreatedAt, &sess.UpdatedAt,
+		&status, &envJSON, &containerID, &sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
 		return nil, err
+	}
+	// last_activity_at is nullable on disk (DuckDB ALTER limitation
+	// means we can't enforce NOT NULL); fall back to created_at when
+	// the column is empty for legacy rows.
+	if lastActivityAt.Valid {
+		sess.LastActivityAt = lastActivityAt.Time
+	} else {
+		sess.LastActivityAt = sess.CreatedAt
 	}
 	sess.Status = Status(status)
 	if containerID.Valid {

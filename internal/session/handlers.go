@@ -13,9 +13,24 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions", s.handleCreate)
 	mux.HandleFunc("GET /api/sessions", s.handleList)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
+	mux.HandleFunc("POST /api/sessions/{id}/start", s.handleStart)
 	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
 	mux.HandleFunc("GET /api/sessions/{id}/attach", s.handleAttach)
+	mux.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreview)
+}
+
+func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.Start(r.Context(), id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Service) handleAgents(w http.ResponseWriter, r *http.Request) {
