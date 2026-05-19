@@ -2,14 +2,11 @@ package session
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,14 +21,23 @@ import (
 const placeholderOwner = "local"
 
 // ErrNotFound is returned when a session id doesn't exist. HTTP
-// handlers map this to a 404.
+// handlers map this to a 404. Surfaced by both the Service (which
+// re-returns repo errors) and SessionRepository implementations
+// (returned from Get / Mark* / UpdateActivity / Delete when zero
+// rows match).
 var ErrNotFound = errors.New("session: not found")
 
-// Service is the session lifecycle layer. It composes a *sql.DB, a
-// sandbox.Sandbox driver, and the host data directory so each session
+// Service is the session lifecycle layer. It composes a
+// SessionRepository (for persistence), a sandbox.Sandbox driver (for
+// container runtime), and the host data directory so each session
 // can have its own workspace under $DataDir/sessions/<id>/.
+//
+// All SQL lives in SessionRepository implementations — Service
+// methods are pure orchestration. Owner_email is threaded through
+// to the repo on every call; today every caller passes the
+// placeholder owner, but the shape is ready for identity wiring.
 type Service struct {
-	db       *sql.DB
+	repo     SessionRepository
 	sandbox  sandbox.Sandbox
 	dataDir  string
 	sessions string // $dataDir/sessions
@@ -50,12 +56,12 @@ type Service struct {
 // NewService constructs a Service. dataDir is the node's data
 // directory (e.g. ~/Library/Application Support/deepcove); sessions
 // live under $dataDir/sessions/<id>/.
-func NewService(db *sql.DB, sb sandbox.Sandbox, dataDir string, logger *slog.Logger) *Service {
+func NewService(repo SessionRepository, sb sandbox.Sandbox, dataDir string, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
 	return &Service{
-		db:           db,
+		repo:         repo,
 		sandbox:      sb,
 		dataDir:      dataDir,
 		sessions:     filepath.Join(dataDir, "sessions"),
@@ -154,7 +160,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	}
 	sess.Status = StatusRunning
 
-	if err := s.insert(ctx, sess); err != nil {
+	if err := s.repo.Insert(ctx, sess); err != nil {
 		_ = s.sandbox.Stop(context.Background(), handle)
 		_ = s.sandbox.Destroy(context.Background(), handle)
 		_ = os.RemoveAll(workspace)
@@ -169,53 +175,18 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 // placeholder owner). filter.IncludeAll=true returns stopped/errored
 // sessions too; default is running only.
 //
-// Ordering is by last_activity_at DESC — the canvas needs "what was I
-// just doing?" as the top card, not "what did I most recently spawn?"
-// The activity column is bumped on every attach connect / 30s tick /
-// disconnect, so it tracks user engagement, not creation order.
+// Ordering is by last_activity_at DESC (defined by the repo) — the
+// canvas needs "what was I just doing?" as the top card, not "what
+// did I most recently spawn?" The activity column is bumped on every
+// attach connect / 30s tick / disconnect, so it tracks user
+// engagement, not creation order.
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Session, error) {
-	query := `
-		SELECT id, name, agent, image, owner_email, status, env,
-		       container_id, created_at, updated_at, last_activity_at
-		FROM sessions
-		WHERE owner_email = ?
-	`
-	args := []any{placeholderOwner}
-	if !filter.IncludeAll {
-		query += ` AND status = ?`
-		args = append(args, string(StatusRunning))
-	}
-	query += ` ORDER BY last_activity_at DESC`
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("session: list query: %w", err)
-	}
-	defer rows.Close()
-
-	var out []*Session
-	for rows.Next() {
-		sess, err := scanRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, sess)
-	}
-	return out, rows.Err()
+	return s.repo.List(ctx, placeholderOwner, filter.IncludeAll)
 }
 
 // Get returns the session with the given id, or ErrNotFound.
 func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, agent, image, owner_email, status, env,
-		       container_id, created_at, updated_at, last_activity_at
-		FROM sessions WHERE id = ? AND owner_email = ?
-	`, id, placeholderOwner)
-	sess, err := scanRow(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return sess, err
+	return s.repo.Get(ctx, placeholderOwner, id)
 }
 
 // RecordActivity bumps last_activity_at to NOW for a session. Called
@@ -223,18 +194,8 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 // attached, and on disconnect. Cheap (single indexed UPDATE) and
 // safe to call frequently. Errors are returned but never fatal —
 // callers may log-and-ignore.
-//
-// The owner_email scope is defensive: today every mutation is gated
-// by a prior Get() that already filters by owner, but baking the
-// scope into the SQL itself makes each query correct in isolation.
 func (s *Service) RecordActivity(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET last_activity_at = ? WHERE id = ? AND owner_email = ?`,
-		time.Now().UTC(), id, placeholderOwner)
-	if err != nil {
-		return fmt.Errorf("session: record activity: %w", err)
-	}
-	return nil
+	return s.repo.UpdateActivity(ctx, placeholderOwner, id, time.Now().UTC())
 }
 
 // Start brings a stopped session back to running. The underlying
@@ -260,12 +221,8 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		// recreate path. Today we just propagate.
 		return fmt.Errorf("session: sandbox start: %w", err)
 	}
-	now := time.Now().UTC()
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE sessions SET status = ?, updated_at = ?, last_activity_at = ? WHERE id = ? AND owner_email = ?`,
-		string(StatusRunning), now, now, id, placeholderOwner)
-	if err != nil {
-		return fmt.Errorf("session: update row: %w", err)
+	if err := s.repo.MarkRunning(ctx, placeholderOwner, id, time.Now().UTC()); err != nil {
+		return fmt.Errorf("session: mark running: %w", err)
 	}
 	s.logger.Info("session started", "id", id, "name", sess.Name)
 	return nil
@@ -288,11 +245,8 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 			return fmt.Errorf("session: sandbox stop: %w", err)
 		}
 	}
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? AND owner_email = ?`,
-		string(StatusStopped), time.Now().UTC(), id, placeholderOwner)
-	if err != nil {
-		return fmt.Errorf("session: update row: %w", err)
+	if err := s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC()); err != nil {
+		return fmt.Errorf("session: mark stopped: %w", err)
 	}
 	return nil
 }
@@ -314,9 +268,7 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if err := os.RemoveAll(workspace); err != nil {
 		return fmt.Errorf("session: remove workspace: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM sessions WHERE id = ? AND owner_email = ?`,
-		id, placeholderOwner); err != nil {
+	if err := s.repo.Delete(ctx, placeholderOwner, id); err != nil {
 		return fmt.Errorf("session: delete row: %w", err)
 	}
 	s.previewCache.Delete(id)
@@ -329,69 +281,4 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 // enforced by the mount-source validator.
 func (s *Service) WorkspaceRoot() string {
 	return s.sessions
-}
-
-// ---- helpers ------------------------------------------------------------
-
-func (s *Service) insert(ctx context.Context, sess *Session) error {
-	// Marshal nil maps as "{}" not "null" — the env column is JSON
-	// NOT NULL, and DuckDB's JSON type round-trips the bare token
-	// "null" as SQL NULL on read, which crashes Scan into a string.
-	env := sess.Env
-	if env == nil {
-		env = map[string]string{}
-	}
-	envJSON, err := json.Marshal(env)
-	if err != nil {
-		return fmt.Errorf("session: marshal env: %w", err)
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, env, container_id, created_at, updated_at, last_activity_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
-		string(sess.Status), string(envJSON), sess.ContainerID,
-		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
-	)
-	return err
-}
-
-// rowScanner is the subset of *sql.Row / *sql.Rows we need so a
-// single scanRow function works for both Get and List.
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanRow(r rowScanner) (*Session, error) {
-	var (
-		sess           Session
-		envJSON        sql.NullString
-		containerID    sql.NullString
-		status         string
-		lastActivityAt sql.NullTime
-	)
-	if err := r.Scan(
-		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &envJSON, &containerID, &sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
-	); err != nil {
-		return nil, err
-	}
-	// last_activity_at is nullable on disk (DuckDB ALTER limitation
-	// means we can't enforce NOT NULL); fall back to created_at when
-	// the column is empty for legacy rows.
-	if lastActivityAt.Valid {
-		sess.LastActivityAt = lastActivityAt.Time
-	} else {
-		sess.LastActivityAt = sess.CreatedAt
-	}
-	sess.Status = Status(status)
-	if containerID.Valid {
-		sess.ContainerID = containerID.String
-	}
-	if envJSON.Valid && strings.TrimSpace(envJSON.String) != "" && envJSON.String != "null" {
-		if err := json.Unmarshal([]byte(envJSON.String), &sess.Env); err != nil {
-			return nil, fmt.Errorf("session: unmarshal env: %w", err)
-		}
-	}
-	return &sess, nil
 }
