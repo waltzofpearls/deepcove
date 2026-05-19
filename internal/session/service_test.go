@@ -43,13 +43,17 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func newTestService(t *testing.T) (*Service, *fakeSandbox, string) {
+// newTestService spins up a Service backed by an in-memory DuckDB
+// session repo and a fake sandbox. Returns the *sql.DB too so tests
+// that need to inspect the underlying table (e.g. rowCount) can do
+// so directly — that's a test-only escape hatch, not a public API.
+func newTestService(t *testing.T) (*Service, *fakeSandbox, string, *sql.DB) {
 	t.Helper()
 	db := openTestDB(t)
 	fake := newFakeSandbox()
 	dataDir := t.TempDir()
-	svc := NewService(db, fake, dataDir, nil)
-	return svc, fake, dataDir
+	svc := NewService(NewDuckDBSessionRepository(db), fake, dataDir, nil)
+	return svc, fake, dataDir, db
 }
 
 // mustCreate is a setup helper for tests that need a pre-existing
@@ -160,7 +164,7 @@ func TestService_Create(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, fake, dataDir := newTestService(t)
+			svc, fake, dataDir, db := newTestService(t)
 			fake.startErr = tc.startErr
 			fake.createErr = tc.createErr
 
@@ -175,7 +179,7 @@ func TestService_Create(t *testing.T) {
 			if fake.liveCount() != tc.wantLive {
 				t.Errorf("live sandboxes: want %d, got %d", tc.wantLive, fake.liveCount())
 			}
-			if got := rowCount(t, svc.db); got != tc.wantRows {
+			if got := rowCount(t, db); got != tc.wantRows {
 				t.Errorf("sessions rows: want %d, got %d", tc.wantRows, got)
 			}
 
@@ -252,7 +256,7 @@ func TestService_List(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, _, _ := newTestService(t)
+			svc, _, _, _ := newTestService(t)
 			tc.setup(t, svc)
 
 			got, err := svc.List(context.Background(), tc.filter)
@@ -294,7 +298,7 @@ func TestService_Get(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, _, _ := newTestService(t)
+			svc, _, _, _ := newTestService(t)
 			id := tc.setupID(t, svc)
 
 			sess, err := svc.Get(context.Background(), id)
@@ -348,7 +352,7 @@ func TestService_Stop(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, _, _ := newTestService(t)
+			svc, _, _, _ := newTestService(t)
 			id := tc.setupID(t, svc)
 
 			gotErr := svc.Stop(context.Background(), id)
@@ -398,13 +402,13 @@ func TestService_Destroy(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, fake, dataDir := newTestService(t)
+			svc, fake, dataDir, db := newTestService(t)
 			id := tc.setupID(t, svc)
 
 			gotErr := svc.Destroy(context.Background(), id)
 			assertSessionErr(t, gotErr, tc.wantErrIs, "")
 
-			if got := rowCount(t, svc.db); got != tc.wantRowsAfter {
+			if got := rowCount(t, db); got != tc.wantRowsAfter {
 				t.Errorf("row count after Destroy: want %d, got %d", tc.wantRowsAfter, got)
 			}
 			if fake.liveCount() != tc.wantLiveAfter {

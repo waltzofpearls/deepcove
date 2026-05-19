@@ -1,11 +1,12 @@
-// Package repository owns deepcove's local DuckDB store. Every node keeps
+// Package db owns deepcove's local DuckDB store. Every node keeps
 // its own database under cfg.DataDir/deepcove.duckdb — there is no
 // cross-node replication (SPEC.md §5: per-session sharing only).
 //
-// Higher-level packages (session, auth, etc.) take a *sql.DB from here
-// and run their own queries; this package deliberately does not wrap
-// CRUD operations.
-package repository
+// Scope is intentionally narrow: connection lifecycle + migrations.
+// Domain CRUD lives in a `repository.go` inside each owning package
+// (e.g. internal/session/repository.go) — Go-idiomatic cohesion by
+// bounded context, no separate "data access layer" package.
+package db
 
 import (
 	"database/sql"

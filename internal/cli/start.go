@@ -12,7 +12,7 @@ import (
 
 	"github.com/waltzofpearls/deepcove/internal/api"
 	"github.com/waltzofpearls/deepcove/internal/config"
-	"github.com/waltzofpearls/deepcove/internal/repository"
+	"github.com/waltzofpearls/deepcove/internal/db"
 	dockerdrv "github.com/waltzofpearls/deepcove/internal/sandbox/docker"
 	"github.com/waltzofpearls/deepcove/internal/session"
 	"github.com/waltzofpearls/deepcove/internal/ui"
@@ -46,12 +46,12 @@ func cmdStart(ctx context.Context, args []string) error {
 
 	logger := newLogger(cfg)
 
-	db, err := repository.Open(cfg.DataDir)
+	sqlDB, err := db.Open(cfg.DataDir)
 	if err != nil {
-		return fmt.Errorf("repository: %w", err)
+		return fmt.Errorf("db: %w", err)
 	}
-	defer db.Close()
-	if err := repository.Migrate(db); err != nil {
+	defer sqlDB.Close()
+	if err := db.Migrate(sqlDB); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	logger.Info("database ready", "data_dir", cfg.DataDir)
@@ -68,7 +68,12 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	defer sandbox.Close()
 
-	sessionSvc := session.NewService(db, sandbox, cfg.DataDir, logger)
+	// Persistence: domain-owned SessionRepository over the shared
+	// DuckDB handle. Each domain package owns its own CRUD wrapper
+	// (cohesion by bounded context) — `internal/db` is just the
+	// connection lifecycle.
+	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
+	sessionSvc := session.NewService(sessionRepo, sandbox, cfg.DataDir, logger)
 
 	mux := http.NewServeMux()
 	if err := api.New(
