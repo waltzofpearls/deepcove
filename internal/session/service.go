@@ -130,7 +130,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		Cmd: []string{"sh", "-c",
 			"command -v tmux >/dev/null 2>&1 || apk add --no-cache tmux >/dev/null 2>&1; " +
 				"rm -rf /tmp/tmux-* 2>/dev/null; " +
-				"tmux new-session -d -s main sh; " +
+				// -n main names the first window "main" explicitly
+				// so the windows API has a stable, well-known name
+				// to target. Without -n, tmux derives the window
+				// name from the running command ("sh"), which is
+				// neither meaningful nor stable across agents.
+				"tmux new-session -d -s main -n main sh; " +
 				"exec sleep infinity",
 		},
 		Env: req.Env,

@@ -18,6 +18,10 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
 	mux.HandleFunc("GET /api/sessions/{id}/attach", s.handleAttach)
 	mux.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreview)
+	mux.HandleFunc("GET /api/sessions/{id}/tmux-windows", s.handleListTmuxWindows)
+	mux.HandleFunc("POST /api/sessions/{id}/tmux-windows", s.handleCreateTmuxWindow)
+	mux.HandleFunc("POST /api/sessions/{id}/tmux-windows/{name}/select", s.handleSelectTmuxWindow)
+	mux.HandleFunc("DELETE /api/sessions/{id}/tmux-windows/{name}", s.handleDeleteTmuxWindow)
 }
 
 func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +106,75 @@ func (s *Service) handleDestroy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- tmux window handlers -----------------------------------------------
+
+func (s *Service) handleListTmuxWindows(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	resp, err := s.ListTmuxWindows(r.Context(), id)
+	if err != nil {
+		writeTmuxWindowError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Service) handleCreateTmuxWindow(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req CreateTmuxWindowRequest
+	// Empty body is valid (server auto-names). Don't error on EOF.
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return
+		}
+	}
+	win, err := s.CreateTmuxWindow(r.Context(), id, req)
+	if err != nil {
+		writeTmuxWindowError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, win)
+}
+
+func (s *Service) handleSelectTmuxWindow(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	name := r.PathValue("name")
+	if err := s.SelectTmuxWindow(r.Context(), id, name); err != nil {
+		writeTmuxWindowError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleDeleteTmuxWindow(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	name := r.PathValue("name")
+	if err := s.DeleteTmuxWindow(r.Context(), id, name); err != nil {
+		writeTmuxWindowError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeTmuxWindowError maps the tmux-window / session sentinels to
+// HTTP status codes. Anything unrecognised falls through to a 500.
+func writeTmuxWindowError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "session not found")
+	case errors.Is(err, ErrTmuxWindowNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrTmuxWindowExists):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrSessionNotRunning):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrTmuxWindowNameInvalid), errors.Is(err, ErrTmuxWindowNameReserved):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 // ---- response helpers ---------------------------------------------------

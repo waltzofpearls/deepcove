@@ -34,6 +34,22 @@ type fakeSandbox struct {
 	startErr   error
 	stopErr    error
 	destroyErr error
+
+	// execResponses is a FIFO queue of canned Exec results consumed
+	// in order. Test setup pushes one entry per expected Exec call;
+	// asserting on execCalls verifies the cmds the service issued.
+	execResponses []execResponse
+	execCalls     [][]string
+}
+
+// execResponse scripts a single Exec invocation. Set err to make
+// Exec itself fail (driver-level error, no process). Otherwise the
+// returned process serves stdout/stderr and exits with `exit`.
+type execResponse struct {
+	stdout string
+	stderr string
+	exit   int
+	err    error
 }
 
 func newFakeSandbox() *fakeSandbox {
@@ -106,24 +122,46 @@ func (f *fakeSandbox) Destroy(ctx context.Context, h sandbox.Handle) error {
 }
 
 func (f *fakeSandbox) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpec) (sandbox.Process, error) {
-	return nil, errors.New("fakeSandbox: Exec not implemented for unit tests")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execCalls = append(f.execCalls, append([]string(nil), cmd.Cmd...))
+	if len(f.execResponses) == 0 {
+		return nil, errors.New("fakeSandbox: Exec called with no scripted response left (cmd=" + strings.Join(cmd.Cmd, " ") + ")")
+	}
+	resp := f.execResponses[0]
+	f.execResponses = f.execResponses[1:]
+	if resp.err != nil {
+		return nil, resp.err
+	}
+	return newScriptedProcess(resp.stdout, resp.stderr, resp.exit), nil
 }
 
-// fakeProcess is a no-op sandbox.Process. None of the current unit
-// tests exercise Exec, but the interface needs satisfying. If a future
-// test does want to drive Exec, give this struct call recording the
-// same shape as fakeSandbox.
-type fakeProcess struct{}
+// scriptedProcess is a sandbox.Process driven by canned stdout /
+// stderr / exit code — used by windows_test.go to drive the tmux
+// exec helpers without a real container.
+type scriptedProcess struct {
+	stdout *strings.Reader
+	stderr *strings.Reader
+	exit   int
+}
 
-var _ sandbox.Process = (*fakeProcess)(nil)
+func newScriptedProcess(stdout, stderr string, exit int) *scriptedProcess {
+	return &scriptedProcess{
+		stdout: strings.NewReader(stdout),
+		stderr: strings.NewReader(stderr),
+		exit:   exit,
+	}
+}
 
-func (fakeProcess) Stdout() io.ReadCloser           { return io.NopCloser(strings.NewReader("")) }
-func (fakeProcess) Stderr() io.ReadCloser           { return io.NopCloser(strings.NewReader("")) }
-func (fakeProcess) Stdin() io.WriteCloser           { return nopWriteCloser{} }
-func (fakeProcess) Wait(ctx context.Context) (int, error) { return 0, nil }
-func (fakeProcess) Signal(s os.Signal) error        { return sandbox.ErrNotSupported }
-func (fakeProcess) Resize(cols, rows uint16) error  { return nil }
-func (fakeProcess) Close() error                    { return nil }
+var _ sandbox.Process = (*scriptedProcess)(nil)
+
+func (p *scriptedProcess) Stdout() io.ReadCloser           { return io.NopCloser(p.stdout) }
+func (p *scriptedProcess) Stderr() io.ReadCloser           { return io.NopCloser(p.stderr) }
+func (p *scriptedProcess) Stdin() io.WriteCloser           { return nopWriteCloser{} }
+func (p *scriptedProcess) Wait(ctx context.Context) (int, error) { return p.exit, nil }
+func (p *scriptedProcess) Signal(s os.Signal) error        { return sandbox.ErrNotSupported }
+func (p *scriptedProcess) Resize(cols, rows uint16) error  { return nil }
+func (p *scriptedProcess) Close() error                    { return nil }
 
 type nopWriteCloser struct{}
 
