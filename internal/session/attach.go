@@ -6,11 +6,18 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
+
+// activityTickInterval is how often we bump last_activity_at while a
+// session is attached. Cheap UPDATE; chosen as a balance between
+// "fresh enough that the canvas reorder feels right" and "not a
+// write per keystroke."
+const activityTickInterval = 30 * time.Second
 
 // AttachSubprotocol is the WebSocket subprotocol the server speaks.
 // Both ends declare it on the handshake so the wire contract is
@@ -77,7 +84,42 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	defer proc.Close()
 
-	bridge(ctx, ws, proc, s.logger.With("session_id", id))
+	// Record activity on attach. Idle ticker keeps last_activity_at
+	// fresh for the canvas sort; one final write on disconnect
+	// captures the exact moment the user walked away. All three
+	// writes are best-effort — a DB hiccup shouldn't kill the
+	// terminal session.
+	logger := s.logger.With("session_id", id)
+	if rerr := s.RecordActivity(ctx, id); rerr != nil {
+		logger.Warn("attach: record activity on open", "err", rerr)
+	}
+	tickerCtx, cancelTicker := context.WithCancel(ctx)
+	defer cancelTicker()
+	go func() {
+		t := time.NewTicker(activityTickInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-tickerCtx.Done():
+				return
+			case <-t.C:
+				if rerr := s.RecordActivity(tickerCtx, id); rerr != nil {
+					logger.Warn("attach: record activity tick", "err", rerr)
+				}
+			}
+		}
+	}()
+
+	bridge(ctx, ws, proc, logger)
+
+	// Final write on disconnect. Use a fresh, non-cancelled context
+	// so the row update lands even when the request context has
+	// already been cancelled by the client closing the WS.
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelClose()
+	if rerr := s.RecordActivity(closeCtx, id); rerr != nil {
+		logger.Warn("attach: record activity on close", "err", rerr)
+	}
 }
 
 // bridge connects a WebSocket to a sandbox.Process. Three concerns
@@ -99,6 +141,15 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 	defer stdin.Close()
 
 	// proc.Stdout → ws.binary
+	//
+	// Backpressure: ws.Write blocks until the WS socket accepts the
+	// frame. A slow / paused client lets the OS socket buffer fill,
+	// which then back-pressures into the PTY read (the next Read
+	// blocks because the kernel-side pipe is full). That's the
+	// behavior we want — the PTY pauses output rather than us
+	// buffering unbounded in user space. If we ever want to drop
+	// frames instead of pausing the PTY, this is the spot to add a
+	// SetWriteDeadline equivalent.
 	go func() {
 		defer cancel()
 		buf := make([]byte, 8192)

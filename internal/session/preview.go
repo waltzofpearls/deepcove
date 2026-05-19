@@ -1,0 +1,180 @@
+package session
+
+import (
+	"container/list"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
+)
+
+// previewCacheMaxEntries bounds the in-memory preview cache. A
+// reasonable single-node deepcove has tens of sessions at most; 256
+// is generous headroom. Beyond this, the least-recently-used entry
+// is evicted on Set — preventing unbounded growth if session rows
+// are removed out of band (manual SQL, future migrations) without
+// going through Destroy.
+const previewCacheMaxEntries = 256
+
+// PreviewResponse is the JSON shape returned by GET /api/sessions/{id}/preview.
+//
+// We return the raw `tmux capture-pane -e` byte stream and let the
+// client decide how to render it. Today the client feeds it into an
+// unmounted xterm.js Terminal + SerializeAddon, which derives its
+// own dimensions from the bytes — so we don't need to send cols/rows
+// over the wire (saves a tmux exec per poll, simplifies the schema).
+type PreviewResponse struct {
+	Ansi string `json:"ansi"`
+}
+
+// previewCache holds the most recent successful capture per session.
+// Used when the session is stopped (no live capture possible) and as
+// a fallback when a live capture transiently fails (typically during
+// a stop/start cycle while the container's tmux is still booting).
+// Memory-only; rebuilt as live captures succeed after a service
+// restart.
+//
+// LRU bounded to previewCacheMaxEntries — recently-accessed entries
+// (Get OR Set) move to the front; cache overflow evicts the oldest.
+// Active sessions stay warm; orphans from out-of-band row removal
+// age out.
+type previewCache struct {
+	mu    sync.Mutex
+	max   int
+	items map[string]*list.Element // id → list element
+	order *list.List               // most-recent at front
+}
+
+type previewEntry struct {
+	id      string
+	preview *PreviewResponse
+}
+
+func newPreviewCache(max int) *previewCache {
+	return &previewCache{
+		max:   max,
+		items: make(map[string]*list.Element),
+		order: list.New(),
+	}
+}
+
+func (c *previewCache) Get(id string) *PreviewResponse {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.items[id]
+	if !ok {
+		return nil
+	}
+	c.order.MoveToFront(e)
+	return e.Value.(*previewEntry).preview
+}
+
+func (c *previewCache) Set(id string, p *PreviewResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.items[id]; ok {
+		e.Value.(*previewEntry).preview = p
+		c.order.MoveToFront(e)
+		return
+	}
+	e := c.order.PushFront(&previewEntry{id: id, preview: p})
+	c.items[id] = e
+	if c.order.Len() > c.max {
+		oldest := c.order.Back()
+		if oldest != nil {
+			c.order.Remove(oldest)
+			delete(c.items, oldest.Value.(*previewEntry).id)
+		}
+	}
+}
+
+func (c *previewCache) Delete(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.items[id]; ok {
+		c.order.Remove(e)
+		delete(c.items, id)
+	}
+}
+
+func (s *Service) Preview(ctx context.Context, id string) (*PreviewResponse, error) {
+	sess, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if sess.Status != StatusRunning {
+		if cached := s.previewCache.Get(id); cached != nil {
+			return cached, nil
+		}
+		return &PreviewResponse{}, nil
+	}
+
+	resp := s.fetchLivePreview(ctx, sess.ContainerID)
+	if resp != nil {
+		s.previewCache.Set(id, resp)
+		return resp, nil
+	}
+
+	if cached := s.previewCache.Get(id); cached != nil {
+		return cached, nil
+	}
+	return &PreviewResponse{}, nil
+}
+
+// fetchLivePreview execs `tmux capture-pane -p -e -t main` and returns
+// the captured bytes. Returns nil on any failure so the caller can
+// fall back to cache.
+func (s *Service) fetchLivePreview(ctx context.Context, containerID string) *PreviewResponse {
+	execCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	ansi, ok := s.execCapture(execCtx, containerID,
+		[]string{"tmux", "capture-pane", "-p", "-e", "-t", "main"})
+	if !ok || len(ansi) == 0 {
+		return nil
+	}
+	return &PreviewResponse{Ansi: string(ansi)}
+}
+
+func (s *Service) execCapture(ctx context.Context, containerID string, cmd []string) ([]byte, bool) {
+	proc, err := s.sandbox.Exec(ctx, sandbox.Handle(containerID), sandbox.ExecSpec{
+		Cmd: cmd,
+		Tty: false,
+	})
+	if err != nil {
+		s.logger.Debug("preview: exec failed", "container", containerID, "cmd", cmd[0], "err", err)
+		return nil, false
+	}
+	defer proc.Close()
+
+	out, err := io.ReadAll(proc.Stdout())
+	if err != nil {
+		s.logger.Debug("preview: stdout read failed", "container", containerID, "err", err)
+		return nil, false
+	}
+	if exit, werr := proc.Wait(ctx); werr != nil || exit != 0 {
+		s.logger.Debug("preview: non-zero exit",
+			"container", containerID, "cmd", cmd[0], "exit", exit, "err", werr)
+		return nil, false
+	}
+	return out, true
+}
+
+func (s *Service) handlePreview(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	resp, err := s.Preview(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}

@@ -24,17 +24,18 @@ func openTestDB(t *testing.T) *sql.DB {
 
 	if _, err := db.Exec(`
 		CREATE TABLE sessions (
-			id           TEXT PRIMARY KEY,
-			name         TEXT NOT NULL UNIQUE,
-			agent        TEXT NOT NULL,
-			image        TEXT NOT NULL,
-			owner_email  TEXT NOT NULL,
-			status       TEXT NOT NULL DEFAULT 'created',
-			mounts       TEXT NOT NULL DEFAULT '[]',
-			env          TEXT NOT NULL DEFAULT '{}',
-			container_id TEXT,
-			created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			id               TEXT PRIMARY KEY,
+			name             TEXT NOT NULL UNIQUE,
+			agent            TEXT NOT NULL,
+			image            TEXT NOT NULL,
+			owner_email      TEXT NOT NULL,
+			status           TEXT NOT NULL DEFAULT 'created',
+			mounts           TEXT NOT NULL DEFAULT '[]',
+			env              TEXT NOT NULL DEFAULT '{}',
+			container_id     TEXT,
+			created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			last_activity_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)
 	`); err != nil {
 		t.Fatalf("create sessions: %v", err)

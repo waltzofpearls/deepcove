@@ -30,16 +30,17 @@ const (
 // Session is the API + DB shape of a coding-agent session. JSON tags
 // are the HTTP API contract — keep stable as the SPA grows against it.
 type Session struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Agent       string            `json:"agent"`
-	Image       string            `json:"image"`
-	OwnerEmail  string            `json:"owner_email"`
-	Status      Status            `json:"status"`
-	Env         map[string]string `json:"env"`
-	ContainerID string            `json:"container_id,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Agent          string            `json:"agent"`
+	Image          string            `json:"image"`
+	OwnerEmail     string            `json:"owner_email"`
+	Status         Status            `json:"status"`
+	Env            map[string]string `json:"env"`
+	ContainerID    string            `json:"container_id,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	LastActivityAt time.Time         `json:"last_activity_at"`
 }
 
 // CreateRequest is the body of POST /api/sessions. The session

@@ -9,12 +9,18 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo v
 # DWARF + symbol table to shrink the binary; injects VERSION.
 LDFLAGS_NATIVE := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 
+.PHONY: ui-build
+ui-build: ## Build the SvelteKit UI into ui/build/
+	cd ui && npm run build
+
+# Fallback stub when the real UI hasn't been built (e.g. cross-compile
+# in CI without Node). Only fires if ui/build/index.html doesn't exist.
 ui/build/index.html:
 	@mkdir -p ui/build
-	@echo '<h1>deepcove is running</h1><p>SvelteKit not yet built.</p>' > ui/build/index.html
+	@echo '<h1>deepcove is running</h1><p>SvelteKit not yet built. Run: make ui-build</p>' > ui/build/index.html
 
 .PHONY: build
-build: ui/build/index.html ## Build the deepcove binary for the host
+build: ui-build ## Build the deepcove binary for the host (builds UI first)
 	CGO_ENABLED=1 go build -ldflags '$(LDFLAGS_NATIVE)' -o deepcove ./cmd/deepcove
 
 # Darwin builds use the host toolchain — macOS does not support fully
