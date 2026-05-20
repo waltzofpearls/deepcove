@@ -17,7 +17,12 @@
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { api } from '$lib/api/client';
 
-  let { sessionId }: { sessionId: string } = $props();
+  // tmuxWindow optionally targets a specific tmux window in the
+  // session. Omit/undefined → follow the session's current window
+  // (legacy behavior). Used by the upcoming Agent/SSH mode toggle
+  // and Split mode to pin each attached terminal to its own
+  // window without affecting other clients.
+  let { sessionId, tmuxWindow }: { sessionId: string; tmuxWindow?: string } = $props();
 
   let container: HTMLDivElement;
   let status = $state<'connecting' | 'open' | 'closed' | 'error'>('connecting');
@@ -26,17 +31,17 @@
   const EARLY_CLOSE_THRESHOLD_MS = 3000;
 
   $effect(() => {
-    // Synchronous read of the sessionId prop so Svelte tracks it as
-    // a dependency of this effect. The actual WS URL is built from
-    // it inside connect(), which runs async after the xterm dynamic
-    // import — async reads aren't tracked, so without this line the
-    // effect would never re-run on session switch and the terminal
-    // would keep streaming the previous session's PTY while the
-    // toolbar (which uses its own reactive state) showed the new
-    // session. Capturing into `id` makes the dependency explicit
-    // and gives the closure a stable value for the lifetime of this
-    // effect run.
+    // Synchronous reads of reactive props so Svelte tracks them as
+    // dependencies of this effect. The actual WS URL is built from
+    // them inside connect(), which runs async after the xterm
+    // dynamic import — async reads aren't tracked, so without these
+    // lines the effect would never re-run on session/window switch
+    // and the terminal would keep streaming the previous attach
+    // while the toolbar (which uses its own reactive state) showed
+    // the new target. Capturing into locals gives the closure
+    // stable values for the lifetime of this effect run.
     const id = sessionId;
+    const win = tmuxWindow;
 
     let term: XTerm | undefined;
     let fit: any;
@@ -61,7 +66,7 @@
     function connect() {
       if (disposed) return;
       status = 'connecting';
-      ws = new WebSocket(api.attachWebSocketURL(id), 'deepcove.pty.v1');
+      ws = new WebSocket(api.attachWebSocketURL(id, win), 'deepcove.pty.v1');
       ws.binaryType = 'arraybuffer';
 
       const openedAt = Date.now();

@@ -291,12 +291,27 @@ func parseTmuxWindowsList(out string) *TmuxWindowsResponse {
 	return resp
 }
 
-func validateTmuxWindowName(name string) error {
+// validateTmuxWindowNameSyntax checks only character class + length
+// constraints. Used by *attach*, where "main" (the agent window) is
+// a perfectly valid target — we just don't want to spawn a shell IN
+// it (that's what the create-flow guard is for).
+func validateTmuxWindowNameSyntax(name string) error {
 	if name == "" || len(name) > maxTmuxWindowNameLength {
 		return ErrTmuxWindowNameInvalid
 	}
 	if !tmuxWindowNamePattern.MatchString(name) {
 		return ErrTmuxWindowNameInvalid
+	}
+	return nil
+}
+
+// validateTmuxWindowName is the stricter form used by create/select/
+// delete — adds the reserved-name check on top of the syntax check.
+// Refusing "main" here keeps the agent's window safe from accidental
+// recreation or deletion via the API.
+func validateTmuxWindowName(name string) error {
+	if err := validateTmuxWindowNameSyntax(name); err != nil {
+		return err
 	}
 	if name == AgentTmuxWindowName {
 		return ErrTmuxWindowNameReserved
