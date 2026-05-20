@@ -11,7 +11,7 @@
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
   import Terminal from '$lib/components/session/Terminal.svelte';
-  import StatusDot from '$lib/components/session/StatusDot.svelte';
+  import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Maximize from '@lucide/svelte/icons/maximize';
@@ -182,7 +182,7 @@
         </Tooltip>
       </TooltipProvider>
       {#if session}
-        <StatusDot status={session.status} />
+        <StatusIndicator status={session.status} />
         <div class="min-w-0">
           <div class="truncate font-mono text-sm font-medium">{session.name}</div>
           <div class="truncate text-xs text-muted-foreground">

@@ -26,6 +26,18 @@
   const EARLY_CLOSE_THRESHOLD_MS = 3000;
 
   $effect(() => {
+    // Synchronous read of the sessionId prop so Svelte tracks it as
+    // a dependency of this effect. The actual WS URL is built from
+    // it inside connect(), which runs async after the xterm dynamic
+    // import — async reads aren't tracked, so without this line the
+    // effect would never re-run on session switch and the terminal
+    // would keep streaming the previous session's PTY while the
+    // toolbar (which uses its own reactive state) showed the new
+    // session. Capturing into `id` makes the dependency explicit
+    // and gives the closure a stable value for the lifetime of this
+    // effect run.
+    const id = sessionId;
+
     let term: XTerm | undefined;
     let fit: any;
     let ws: WebSocket | undefined;
@@ -49,13 +61,19 @@
     function connect() {
       if (disposed) return;
       status = 'connecting';
-      ws = new WebSocket(api.attachWebSocketURL(sessionId), 'deepcove.pty.v1');
+      ws = new WebSocket(api.attachWebSocketURL(id), 'deepcove.pty.v1');
       ws.binaryType = 'arraybuffer';
 
       const openedAt = Date.now();
       let everOpened = false;
 
       ws.onopen = () => {
+        // If this effect run was already cleaned up (e.g. user
+        // switched to another session before the WS finished its
+        // handshake), don't touch the shared status — the new run
+        // owns it now. Without this guard, an in-flight old WS
+        // settling AFTER the new one opens can clobber status.
+        if (disposed) return;
         everOpened = true;
         attempts = 0;
         status = 'open';
@@ -67,12 +85,18 @@
         // decide whether to retry.
       };
       ws.onclose = () => {
+        // Same disposed-guard as onopen: if a new effect run has
+        // already taken over (session switch), the old WS closing
+        // must NOT write to the shared status. Previously this fell
+        // through to `status = 'closed'`, which intermittently
+        // clobbered the new run's `'open'` and showed a spurious
+        // "disconnected" overlay over a working terminal.
+        if (disposed) return;
         const lifetime = Date.now() - openedAt;
         // Retry if the connection died young — usually the server
         // failed to exec `tmux attach` because the container is
         // mid-startup.
         if (
-          !disposed &&
           attempts < MAX_RECONNECT_ATTEMPTS &&
           (!everOpened || lifetime < EARLY_CLOSE_THRESHOLD_MS)
         ) {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Session } from '$lib/api/types';
   import { ageOf, shortId } from '$lib/format';
-  import StatusDot from './StatusDot.svelte';
+  import StatusIndicator from './StatusIndicator.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   let { sessions }: { sessions: Session[] } = $props();
@@ -23,7 +23,7 @@
       {#each sessions as session (session.id)}
         <tr class="border-t border-border hover:bg-secondary">
           <td class="px-4 py-3">
-            <StatusDot status={session.status} />
+            <StatusIndicator status={session.status} />
           </td>
           <td class="px-4 py-3 font-mono">{session.name}</td>
           <td class="px-4 py-3">

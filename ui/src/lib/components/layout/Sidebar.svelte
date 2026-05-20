@@ -1,6 +1,8 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { cn } from '$lib/utils';
+  import { sessions } from '$lib/stores/sessions.svelte';
+  import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import LayoutGrid from '@lucide/svelte/icons/layout-grid';
 
   // The sidebar is rendered as a passthrough container — the layout
@@ -19,6 +21,20 @@
   function isActive(href: string): boolean {
     if (href === '/') return page.url.pathname === '/';
     return page.url.pathname.startsWith(href);
+  }
+
+  // Sessions submenu: only renders when the user is inside a
+  // session detail route. The data comes from the shared sessions
+  // store (extracted in slice-1 step 1 for exactly this consumer);
+  // subscribing here keeps the poll alive while in a session — when
+  // the dashboard isn't mounted but the sidebar is the only viewer.
+  const inSession = $derived(page.url.pathname.startsWith('/sessions/'));
+  $effect(() => {
+    if (inSession) return sessions.subscribe();
+  });
+
+  function isCurrentSession(id: string): boolean {
+    return page.url.pathname === `/sessions/${id}`;
   }
 </script>
 
@@ -40,6 +56,31 @@
             <Icon class="size-4" />
             {item.label}
           </a>
+
+          {#if inSession && item.href === '/'}
+            <!-- Sessions submenu: only shows under Dashboard when
+                 the user is in a session detail route. Hidden on the
+                 dashboard itself (the cards / list view already
+                 surfaces every session). -->
+            <ul class="ml-2 mt-1 space-y-0.5 border-l border-border pl-2">
+              {#each sessions.list as s (s.id)}
+                <li>
+                  <a
+                    href="/sessions/{s.id}"
+                    class="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors"
+                    class:bg-secondary={isCurrentSession(s.id)}
+                    class:text-foreground={isCurrentSession(s.id)}
+                    class:text-muted-foreground={!isCurrentSession(s.id)}
+                    class:hover:bg-secondary={!isCurrentSession(s.id)}
+                    class:hover:text-foreground={!isCurrentSession(s.id)}
+                  >
+                    <StatusIndicator status={s.status} />
+                    <span class="truncate font-mono">{s.name}</span>
+                  </a>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </li>
       {/each}
     </ul>
