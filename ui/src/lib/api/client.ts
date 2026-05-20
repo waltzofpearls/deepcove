@@ -76,8 +76,15 @@ export const api = {
 		return request(`/sessions/${encodeURIComponent(id)}/preview`);
 	},
 
-	attachWebSocketURL(id: string): string {
+	// attachWebSocketURL returns the WS URL for live-attaching to a
+	// session's tmux. The optional `tmuxWindow` argument targets a
+	// specific window so two simultaneous attaches with different
+	// values can each pin to their own window (per-client window
+	// focus is a tmux native feature). Omit for legacy follow-the-
+	// session's-current-window behavior.
+	attachWebSocketURL(id: string, tmuxWindow?: string): string {
 		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		return `${proto}//${location.host}${BASE}/sessions/${encodeURIComponent(id)}/attach`;
+		const q = tmuxWindow ? `?tmux_window=${encodeURIComponent(tmuxWindow)}` : '';
+		return `${proto}//${location.host}${BASE}/sessions/${encodeURIComponent(id)}/attach${q}`;
 	},
 };

@@ -37,6 +37,14 @@ type AttachControlMessage struct {
 // `tmux attach -t main` exec inside the session's sandbox. Binary
 // frames are bytes flowing both ways (terminal I/O); text frames
 // are JSON control messages (resize today).
+//
+// Optional ?tmux_window= query param attaches the client to a
+// specific tmux window. tmux tracks "current window" per-client,
+// so two simultaneous attaches with different ?tmux_window= values
+// each see their own window — the substrate the upcoming Split
+// mode (one session, two side-by-side terminals on different
+// windows) is built on. Absent or empty → legacy behavior (follow
+// the session's globally-current window).
 func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, err := s.Get(r.Context(), id)
@@ -51,6 +59,21 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	if sess.Status != StatusRunning {
 		writeError(w, http.StatusConflict, "session is not running")
 		return
+	}
+
+	// Parse + validate optional window targeting BEFORE upgrading
+	// the WS so an invalid name fails as a clean 400 instead of an
+	// awkward post-upgrade close. Uses the SYNTAX-only validator —
+	// the stricter validateTmuxWindowName forbids "main" because no
+	// caller should *create* a window with that name (it'd collide
+	// with the agent's window), but here we WANT to allow attaching
+	// to "main" since that's the agent's window itself.
+	tmuxWindow := r.URL.Query().Get("tmux_window")
+	if tmuxWindow != "" {
+		if err := validateTmuxWindowNameSyntax(tmuxWindow); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -70,8 +93,17 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	defer ws.CloseNow()
 
+	// Build the tmux attach argv. When a target window is supplied,
+	// append `; select-window -t main:<name>` — tmux parses `;` as
+	// a command separator (when passed as its own argv element, no
+	// shell involved), so the freshly-attached client lands focused
+	// on the requested window without changing other clients' focus.
+	cmd := []string{"tmux", "attach", "-t", AgentTmuxWindowName}
+	if tmuxWindow != "" {
+		cmd = append(cmd, ";", "select-window", "-t", AgentTmuxWindowName+":"+tmuxWindow)
+	}
 	proc, err := s.sandbox.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
-		Cmd: []string{"tmux", "attach", "-t", "main"},
+		Cmd: cmd,
 		Tty: true,
 		// TERM is required for tmux to function — without it tmux
 		// can run but doesn't recognise the terminal type and
