@@ -38,6 +38,19 @@ export interface SessionPreview {
 	ansi: string;
 }
 
+// TmuxWindow mirrors internal/session.TmuxWindow.
+export interface TmuxWindow {
+	name: string;
+	index: number;
+}
+
+// CreateTmuxWindowRequest mirrors internal/session.CreateTmuxWindowRequest.
+// Name is optional — server auto-generates ("shell", "shell-2", ...)
+// when blank.
+export interface CreateTmuxWindowRequest {
+	name?: string;
+}
+
 export interface ApiError {
 	error: string;
 }

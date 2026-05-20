@@ -5,8 +5,10 @@
 import type {
 	Agent,
 	CreateSessionRequest,
+	CreateTmuxWindowRequest,
 	Session,
 	SessionPreview,
+	TmuxWindow,
 } from './types';
 
 const BASE = '/api';
@@ -74,6 +76,22 @@ export const api = {
 
 	sessionPreview(id: string): Promise<SessionPreview> {
 		return request(`/sessions/${encodeURIComponent(id)}/preview`);
+	},
+
+	// createTmuxWindow creates a new tmux window in the session.
+	// Empty body → server auto-picks a name (shell / shell-2 / ...).
+	// 409 means a window with that name already exists — callers that
+	// need idempotent "ensure exists" semantics should treat 409 as
+	// success.
+	createTmuxWindow(
+		sessionId: string,
+		req: CreateTmuxWindowRequest = {},
+	): Promise<TmuxWindow> {
+		return request(`/sessions/${encodeURIComponent(sessionId)}/tmux-windows`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(req),
+		});
 	},
 
 	// attachWebSocketURL returns the WS URL for live-attaching to a

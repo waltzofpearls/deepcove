@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
@@ -76,6 +77,45 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Each attach runs in its own per-connection tmux session,
+	// created as a member of the "main" session group. Why: tmux's
+	// `select-window` operates on the SESSION's active-window
+	// state, not per-client — so two simultaneous attaches with
+	// different ?tmux_window= values would clobber each other,
+	// and Split mode (two attaches in parallel) would show the
+	// same window on both sides.
+	//
+	// Session-group members share the linked window list (so the
+	// windows API still operates on "main" canonically), but each
+	// member has its own current-window — true per-client window
+	// views. Killing the view session on disconnect (deferred
+	// below) also tears down the attached tmux client process,
+	// fixing the separate bug where Docker exec doesn't reliably
+	// SIGHUP the child on connection close (left tmux client
+	// processes piling up inside the container after each toggle).
+	viewSession := "view-" + uuid.NewString()[:8]
+	setupCtx, cancelSetup := context.WithTimeout(r.Context(), 3*time.Second)
+	if _, err := s.execTmux(setupCtx, sess.ContainerID,
+		"new-session", "-d", "-s", viewSession, "-t", AgentTmuxWindowName,
+	); err != nil {
+		cancelSetup()
+		s.logger.Warn("attach: view session setup failed", "id", id, "err", err)
+		writeError(w, http.StatusInternalServerError, "view session setup: "+err.Error())
+		return
+	}
+	cancelSetup()
+	defer func() {
+		// Cleanup on every return path. Killing the view session
+		// detaches the inside-container tmux client and the exec
+		// process exits, preventing the accumulation.
+		killCtx, cancelKill := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelKill()
+		if _, err := s.execTmux(killCtx, sess.ContainerID, "kill-session", "-t", viewSession); err != nil {
+			s.logger.Warn("attach: view session cleanup failed",
+				"id", id, "view", viewSession, "err", err)
+		}
+	}()
+
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{AttachSubprotocol},
 		// We deliberately do not check Origin here — this listener
@@ -93,14 +133,14 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	defer ws.CloseNow()
 
-	// Build the tmux attach argv. When a target window is supplied,
-	// append `; select-window -t main:<name>` — tmux parses `;` as
-	// a command separator (when passed as its own argv element, no
-	// shell involved), so the freshly-attached client lands focused
-	// on the requested window without changing other clients' focus.
-	cmd := []string{"tmux", "attach", "-t", AgentTmuxWindowName}
+	// Attach this client to the per-connection view session. The
+	// chained `; select-window -t <view>:<name>` runs against the
+	// new client only, focusing it on the requested window without
+	// disturbing main's current-window or any other attached
+	// client's view.
+	cmd := []string{"tmux", "attach", "-t", viewSession}
 	if tmuxWindow != "" {
-		cmd = append(cmd, ";", "select-window", "-t", AgentTmuxWindowName+":"+tmuxWindow)
+		cmd = append(cmd, ";", "select-window", "-t", viewSession+":"+tmuxWindow)
 	}
 	proc, err := s.sandbox.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
 		Cmd: cmd,
