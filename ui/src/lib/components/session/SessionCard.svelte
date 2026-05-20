@@ -5,7 +5,7 @@
   import { usePolling } from '$lib/polling';
   import { ageOf, shortId } from '$lib/format';
   import { createConverter, CARD_FONT_SIZE } from './ansiToHtml';
-  import StatusDot from './StatusDot.svelte';
+  import StatusIndicator from './StatusIndicator.svelte';
   import Pause from '@lucide/svelte/icons/pause';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
 
@@ -125,7 +125,7 @@
 
   <div class="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
     <div class="flex min-w-0 items-center gap-2">
-      <StatusDot status={session.status} />
+      <StatusIndicator status={session.status} />
       <div class="min-w-0">
         <div class="truncate font-mono text-sm font-medium">{session.name}</div>
         <div class="truncate text-xs text-muted-foreground">
