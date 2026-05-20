@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api/client';
+  import { api, ApiError } from '$lib/api/client';
   import type { Session, SessionPreview } from '$lib/api/types';
   import { Button } from '$lib/components/ui/button';
   import {
@@ -12,6 +12,7 @@
   } from '$lib/components/ui/tooltip';
   import Terminal from '$lib/components/session/Terminal.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
+  import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Maximize from '@lucide/svelte/icons/maximize';
@@ -36,6 +37,58 @@
   // banner so the user knows the action didn't take effect.
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
+
+  // Mode lives in the URL (?mode=agent|ssh|split) so it's
+  // shareable / refreshable. Default agent (omitted from URL).
+  // effectiveMode falls back to 'agent' when the URL says 'split'
+  // but the viewport is too narrow — keeps the URL honest while
+  // refusing to render a useless side-by-side on phones. Widening
+  // the window snaps back to split automatically.
+  const mode = $derived<SessionMode>(
+    (page.url.searchParams.get('mode') as SessionMode) || 'agent'
+  );
+  let isWide = $state(true);
+  $effect(() => {
+    const mq = matchMedia('(min-width: 768px)');
+    isWide = mq.matches;
+    const onChange = (e: MediaQueryListEvent) => (isWide = e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  });
+  const effectiveMode = $derived<SessionMode>(
+    mode === 'split' && !isWide ? 'agent' : mode
+  );
+
+  async function switchMode(next: SessionMode): Promise<void> {
+    if (!session) return;
+    actionError = null;
+
+    // Lazy-create the "shell" window the first time the user picks
+    // a mode that needs it. Idempotent on the server side via the
+    // 409 ("already exists") response, which we treat as success.
+    if (next === 'ssh' || next === 'split') {
+      try {
+        await api.createTmuxWindow(session.id, { name: 'shell' });
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) {
+          actionError = `Failed to ensure shell window: ${e instanceof Error ? e.message : String(e)}`;
+          return;
+        }
+      }
+    }
+
+    const url = new URL(page.url);
+    if (next === 'agent') {
+      url.searchParams.delete('mode');
+    } else {
+      url.searchParams.set('mode', next);
+    }
+    goto(url.pathname + url.search, {
+      replaceState: true,
+      keepFocus: true,
+      noScroll: true,
+    });
+  }
   // Cached last preview — used to show a dimmed snapshot + Stopped
   // overlay when the session isn't running, instead of a bare
   // "attach is unavailable" message.
@@ -160,9 +213,11 @@
 </script>
 
 <div class="flex h-full flex-col">
-  <!-- Toolbar above the terminal: identity, status, actions. -->
-  <div class="flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-2">
-    <div class="flex min-w-0 items-center gap-3">
+  <!-- Toolbar above the terminal: identity, status, mode toggle,
+       actions. Three flex zones with shrink-0 outer groups and a
+       centered ModeToggle between two flex-1 spacers. -->
+  <div class="flex items-center gap-3 border-b border-border bg-card px-4 py-2">
+    <div class="flex min-w-0 shrink items-center gap-3">
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger>
@@ -195,7 +250,17 @@
         <span class="text-sm text-muted-foreground">loading…</span>
       {/if}
     </div>
-    <div class="flex items-center gap-1">
+
+    <!-- Middle: mode toggle, centered between flex-1 spacers. Only
+         visible when the session is actually attachable; on a
+         stopped session the toggle has nothing to act on. -->
+    <div class="flex-1"></div>
+    {#if session?.status === 'running'}
+      <ModeToggle mode={effectiveMode} onChange={switchMode} />
+    {/if}
+    <div class="flex-1"></div>
+
+    <div class="flex shrink-0 items-center gap-1">
       <TooltipProvider>
         {#if session?.status === 'running'}
           <Tooltip>
@@ -297,7 +362,23 @@
        intent (the terminal alone, edge-to-edge). -->
   <div bind:this={containerEl} class="relative flex-1 overflow-hidden bg-[var(--term-bg)]">
     {#if session?.status === 'running'}
-      <Terminal sessionId={session.id} />
+      {#if effectiveMode === 'split'}
+        <!-- Split mode: two side-by-side terminals, each pinned to
+             its own tmux window via the ?tmux_window= query param
+             (per-client window state is a tmux native). Desktop
+             only — effectiveMode handles the mobile fallback. -->
+        <div class="grid h-full grid-cols-2 divide-x divide-border">
+          <Terminal sessionId={session.id} tmuxWindow="main" />
+          <Terminal sessionId={session.id} tmuxWindow="shell" />
+        </div>
+      {:else}
+        <!-- Single-pane: Agent or SSH. Terminal re-attaches
+             reactively when tmuxWindow changes (see step 6). -->
+        <Terminal
+          sessionId={session.id}
+          tmuxWindow={effectiveMode === 'ssh' ? 'shell' : 'main'}
+        />
+      {/if}
     {:else if session}
       <!-- Not running: render the last cached preview dimmed, with
            a centered status icon. Same UX as the card. -->
