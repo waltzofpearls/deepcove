@@ -2,8 +2,19 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api/client';
+  import { sessions } from '$lib/stores/sessions.svelte';
   import type { Session, SessionPreview } from '$lib/api/types';
   import { Button } from '$lib/components/ui/button';
+  import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+  } from '$lib/components/ui/alert-dialog';
   import {
     Tooltip,
     TooltipContent,
@@ -37,6 +48,11 @@
   // banner so the user knows the action didn't take effect.
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
+  // Bound to the destroy AlertDialog. Lifting it to script-state
+  // keeps the Trash button decoupled from the AlertDialogTrigger
+  // (it stays inside a TooltipTrigger like its siblings) — opening
+  // the dialog is a plain onclick.
+  let destroyOpen = $state(false);
 
   // Mode lives in the URL (?mode=agent|ssh|split) so it's
   // shareable / refreshable. Default agent (omitted from URL).
@@ -58,6 +74,24 @@
   const effectiveMode = $derived<SessionMode>(
     mode === 'split' && !isWide ? 'agent' : mode
   );
+
+  // Keep the URL honest: if `?mode=split` is opened on a narrow
+  // viewport (refresh, deep link, shared URL), rewrite to drop the
+  // mode param so the URL matches what's actually rendered. The
+  // effectiveMode fallback above handles the in-render transition;
+  // this $effect closes the loop on URL state. No loop risk because
+  // the goto drops the param and the guard then short-circuits.
+  $effect(() => {
+    if (!isWide && page.url.searchParams.get('mode') === 'split') {
+      const url = new URL(page.url);
+      url.searchParams.delete('mode');
+      goto(url.pathname + url.search, {
+        replaceState: true,
+        keepFocus: true,
+        noScroll: true,
+      });
+    }
+  });
 
   async function switchMode(next: SessionMode): Promise<void> {
     if (!session) return;
@@ -199,12 +233,21 @@
     }
   }
 
-  async function destroy() {
+  // destroyConfirmed runs after the AlertDialog's Destroy action.
+  // bits-ui closes the dialog before the click bubbles, so no manual
+  // close — we just clear the actionError and fire the API call.
+  //
+  // Optimistically remove the session from the shared store before
+  // navigating to '/'. Without this, the dashboard mounts with the
+  // stale list, the doomed card's preview fetch 404s, and it flashes
+  // "waiting for first snapshot…" until the next poll tick prunes
+  // it. Next poll still reconciles canonically.
+  async function destroyConfirmed() {
     if (!session) return;
-    if (!confirm(`Destroy session "${session.name}"? This is irreversible.`)) return;
     actionError = null;
     try {
       await api.destroySession(session.id);
+      sessions.remove(session.id);
       goto('/');
     } catch (e) {
       actionError = `Destroy failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -215,9 +258,11 @@
 <div class="flex h-full flex-col">
   <!-- Toolbar above the terminal: identity, status, mode toggle,
        actions. Three flex zones with shrink-0 outer groups and a
-       centered ModeToggle between two flex-1 spacers. -->
-  <div class="flex items-center gap-3 border-b border-border bg-card px-4 py-2">
-    <div class="flex min-w-0 shrink items-center gap-3">
+       centered ModeToggle between two flex-1 spacers. Below md the
+       spacers collapse and the gap tightens so a phone-width row
+       fits without aggressive truncation of the session name. -->
+  <div class="flex items-center gap-2 border-b border-border bg-card px-2 py-2 md:gap-3 md:px-4">
+    <div class="flex min-w-0 shrink items-center gap-2 md:gap-3">
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger>
@@ -240,7 +285,9 @@
         <StatusIndicator status={session.status} />
         <div class="min-w-0">
           <div class="truncate font-mono text-sm font-medium">{session.name}</div>
-          <div class="truncate text-xs text-muted-foreground">
+          <!-- Subtitle is cosmetic (agent kind + short id). Hidden
+               below md so the name has room to breathe on phones. -->
+          <div class="hidden truncate text-xs text-muted-foreground md:block">
             {session.agent} · {session.id.slice(0, 12)}
           </div>
         </div>
@@ -251,14 +298,15 @@
       {/if}
     </div>
 
-    <!-- Middle: mode toggle, centered between flex-1 spacers. Only
-         visible when the session is actually attachable; on a
-         stopped session the toggle has nothing to act on. -->
-    <div class="flex-1"></div>
+    <!-- Middle: mode toggle, centered between flex-1 spacers on
+         desktop. Spacers collapse below md so the toggle floats
+         inline with the name and actions (no wasted whitespace on
+         phone). Only visible while the session is attachable. -->
+    <div class="hidden flex-1 md:block"></div>
     {#if session?.status === 'running'}
       <ModeToggle mode={effectiveMode} onChange={switchMode} />
     {/if}
-    <div class="flex-1"></div>
+    <div class="hidden flex-1 md:block"></div>
 
     <div class="flex shrink-0 items-center gap-1">
       <TooltipProvider>
@@ -304,7 +352,7 @@
                 {...props}
                 variant="ghost"
                 size="icon"
-                onclick={destroy}
+                onclick={() => (destroyOpen = true)}
                 aria-label="Destroy session"
               >
                 <Trash class="size-4" />
@@ -336,6 +384,32 @@
       </TooltipProvider>
     </div>
   </div>
+
+  <!-- Destroy confirmation. State-driven open via `destroyOpen` so
+       the Trash button can keep its Tooltip wrapper instead of
+       nesting two triggers. AlertDialog's primitive blocks any
+       interaction outside the dialog while open — a real safety net
+       compared to the bare browser confirm() it replaced. -->
+  <AlertDialog bind:open={destroyOpen}>
+    <AlertDialogContent>
+      <AlertDialogHeader>
+        <AlertDialogTitle>Destroy session?</AlertDialogTitle>
+        <AlertDialogDescription>
+          {#if session}
+            This permanently destroys <span class="font-mono">{session.name}</span> and its workspace. This action cannot be undone.
+          {:else}
+            This permanently destroys the session and its workspace. This action cannot be undone.
+          {/if}
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogCancel>Cancel</AlertDialogCancel>
+        <AlertDialogAction variant="destructive" onclick={destroyConfirmed}>
+          Destroy
+        </AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
 
   <!-- Transient action-error banner. Action failures (start/stop/
        destroy) used to be swallowed because the only error region

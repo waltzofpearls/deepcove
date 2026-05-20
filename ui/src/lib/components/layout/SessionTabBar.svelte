@@ -60,7 +60,7 @@
                   )}
                 >
                   <StatusIndicator status={s.status} />
-                  <span class="max-w-[14ch] truncate">{s.name}</span>
+                  <span class="max-w-[10ch] truncate">{s.name}</span>
                 </a>
               {/snippet}
             </TooltipTrigger>
