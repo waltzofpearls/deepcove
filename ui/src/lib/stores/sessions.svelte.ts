@@ -83,4 +83,14 @@ export const sessions = {
 			stopIfDone();
 		};
 	},
+
+	// remove drops a session from the list synchronously — used as an
+	// optimistic update after DELETE /api/sessions/{id} succeeds, so
+	// the dashboard doesn't briefly render a card for a session that
+	// no longer exists (its preview fetch would 404 and the card
+	// would flash "waiting for first snapshot…" until the next
+	// poll tick reconciled). Next poll is the source of truth.
+	remove(id: string): void {
+		list = list.filter((s) => s.id !== id);
+	},
 };
