@@ -23,6 +23,17 @@ export interface CreateSessionRequest {
 	agent: string;
 	name?: string;
 	env?: Record<string, string>;
+	mounts?: MountRequest[];
+}
+
+// MountRequest mirrors internal/session.MountRequest. host_path must
+// be absolute on the deepcove host; container_path must be absolute
+// inside the sandbox and can't collide with /workspace (the reserved
+// scratch dir). Mode defaults to "rw" if omitted.
+export interface MountRequest {
+	host_path: string;
+	container_path: string;
+	mode?: 'rw' | 'ro';
 }
 
 export interface Agent {

@@ -160,6 +160,23 @@ func TestService_Create(t *testing.T) {
 			wantLive:         0,
 			wantRows:         0,
 		},
+		{
+			// Mount validation rejects before any sandbox call — the
+			// empty callSequence assertion below confirms we don't
+			// spin up the workspace dir for a request we already
+			// know is bad.
+			name: "invalid mount rejects before sandbox + persist",
+			req: CreateRequest{
+				Agent: "claude",
+				Mounts: []MountRequest{
+					{HostPath: "/tmp/x", ContainerPath: "/workspace"},
+				},
+			},
+			wantErrContains:  "scratch workspace",
+			wantCallSequence: "",
+			wantLive:         0,
+			wantRows:         0,
+		},
 	}
 
 	for _, tc := range tests {
@@ -417,6 +434,144 @@ func TestService_Destroy(t *testing.T) {
 			workspace := filepath.Join(dataDir, "sessions", id)
 			if pathExists(workspace) != tc.wantWorkspace {
 				t.Errorf("workspace existence: want %v, got %v", tc.wantWorkspace, pathExists(workspace))
+			}
+		})
+	}
+}
+
+func TestValidateMountRequests(t *testing.T) {
+	tests := []struct {
+		name             string
+		reqs             []MountRequest
+		wantErrIs        error    // matched via errors.Is when non-nil
+		wantErrContains  string   // substring match; empty = no substring requirement
+		wantLen          int      // expected len of returned []sandbox.Mount
+		wantReadOnlyMask []bool   // per-index ReadOnly assertion; nil = skip
+		wantTargets      []string // per-index Target assertion (cleaned); nil = skip
+	}{
+		{
+			name:    "nil input is fine — sessions without user mounts",
+			reqs:    nil,
+			wantLen: 0,
+		},
+		{
+			name: "happy path: single RW mount",
+			reqs: []MountRequest{
+				{HostPath: "/Users/foo/proj", ContainerPath: "/deepcove"},
+			},
+			wantLen:          1,
+			wantReadOnlyMask: []bool{false},
+			wantTargets:      []string{"/deepcove"},
+		},
+		{
+			name: "mode rw and ro both accepted; default empty = rw",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/x", Mode: "rw"},
+				{HostPath: "/b", ContainerPath: "/y", Mode: "ro"},
+				{HostPath: "/c", ContainerPath: "/z", Mode: ""},
+				{HostPath: "/d", ContainerPath: "/q", Mode: "RO"}, // case-insensitive
+			},
+			wantLen:          4,
+			wantReadOnlyMask: []bool{false, true, false, true},
+		},
+		{
+			name: "container_path cleaned to canonical form on output",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/foo/bar/../bar"},
+			},
+			wantLen:     1,
+			wantTargets: []string{"/foo/bar"},
+		},
+		{
+			name:            "empty host_path rejects",
+			reqs:            []MountRequest{{HostPath: "", ContainerPath: "/x"}},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "host_path is required",
+		},
+		{
+			name:            "empty container_path rejects",
+			reqs:            []MountRequest{{HostPath: "/a", ContainerPath: ""}},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "container_path is required",
+		},
+		{
+			name: "container_path = /workspace collides with scratch",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/workspace"},
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "scratch workspace",
+		},
+		{
+			name: "container_path that cleans to /workspace also rejected",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/workspace/"},
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "scratch workspace",
+		},
+		{
+			name: "container_path = / rejected",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/"},
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "container root",
+		},
+		{
+			name: "duplicate container_path rejected",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/deepcove"},
+				{HostPath: "/b", ContainerPath: "/deepcove"},
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "also used by mounts[0]",
+		},
+		{
+			name: "invalid mode rejected",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/x", Mode: "readonly"},
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: `must be "rw" or "ro"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateMountRequests(tc.reqs)
+			if tc.wantErrIs != nil {
+				if !errors.Is(err, tc.wantErrIs) {
+					t.Fatalf("err: want errors.Is(_, %v), got %v", tc.wantErrIs, err)
+				}
+				if tc.wantErrContains != "" && !strings.Contains(err.Error(), tc.wantErrContains) {
+					t.Errorf("err message: want substring %q, got %q", tc.wantErrContains, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want nil err, got %v", err)
+			}
+			if len(got) != tc.wantLen {
+				t.Errorf("len: want %d, got %d (%+v)", tc.wantLen, len(got), got)
+			}
+			for i, want := range tc.wantReadOnlyMask {
+				if i >= len(got) {
+					t.Errorf("ReadOnly[%d]: out of range (only %d entries)", i, len(got))
+					continue
+				}
+				if got[i].ReadOnly != want {
+					t.Errorf("ReadOnly[%d]: want %v, got %v", i, want, got[i].ReadOnly)
+				}
+			}
+			for i, want := range tc.wantTargets {
+				if i >= len(got) {
+					t.Errorf("Target[%d]: out of range", i)
+					continue
+				}
+				if got[i].Target != want {
+					t.Errorf("Target[%d]: want %q, got %q", i, want, got[i].Target)
+				}
 			}
 		})
 	}

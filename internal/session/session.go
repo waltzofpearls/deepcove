@@ -46,9 +46,26 @@ type Session struct {
 // CreateRequest is the body of POST /api/sessions. The session
 // Service auto-generates Name if empty.
 type CreateRequest struct {
-	Agent string            `json:"agent"`
-	Name  string            `json:"name,omitempty"`
-	Env   map[string]string `json:"env,omitempty"`
+	Agent  string            `json:"agent"`
+	Name   string            `json:"name,omitempty"`
+	Env    map[string]string `json:"env,omitempty"`
+	Mounts []MountRequest    `json:"mounts,omitempty"`
+}
+
+// MountRequest is one entry in CreateRequest.Mounts — a host path
+// mapped into the sandbox at a container path. SPEC §5.7. Wire
+// format keeps snake_case field names for JSON-by-convention.
+//
+// The deepcove-managed scratch workspace ($DataDir/sessions/<id>)
+// is mounted automatically at /workspace; user mounts here are
+// stacked on top. ContainerPath collisions with /workspace and
+// duplicate container paths across the user's mounts are rejected.
+type MountRequest struct {
+	HostPath      string `json:"host_path"`
+	ContainerPath string `json:"container_path"`
+	// Mode is "rw" (default) or "ro". Empty == "rw". Anything
+	// else fails validation.
+	Mode string `json:"mode,omitempty"`
 }
 
 // ListFilter narrows GET /api/sessions. Today only the "all" toggle

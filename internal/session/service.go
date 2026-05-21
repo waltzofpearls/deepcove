@@ -7,12 +7,23 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
+
+// scratchMountTarget is the container path of the deepcove-managed
+// scratch workspace mount. User-supplied mounts can't collide with
+// this — see validateMountRequests.
+const scratchMountTarget = "/workspace"
+
+// ErrMountInvalid is the sentinel for user mount validation failures.
+// HTTP handlers map this to 400. The wrapped error message tells the
+// caller which mount and why.
+var ErrMountInvalid = errors.New("session: mount invalid")
 
 // placeholderOwner is the owner_email recorded for new sessions until
 // the identity layer (tsnet WhoIs middleware, first-run owner
@@ -83,6 +94,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		return nil, err
 	}
 
+	// Validate user mounts BEFORE the workspace dir + sandbox are
+	// created — so we reject bad input as a clean 400 without any
+	// rollback. The sandbox layer's mount validator runs again on
+	// Create with the host-side checks (absolute, cleaned, under an
+	// allowed root); this pass owns session-layer concerns:
+	// /workspace collisions, duplicate targets, mode validation.
+	userMounts, err := validateMountRequests(req.Mounts)
+	if err != nil {
+		return nil, err
+	}
+
 	id, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("session: generate id: %w", err)
@@ -139,11 +161,15 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 				"exec sleep infinity",
 		},
 		Env: req.Env,
-		Mounts: []sandbox.Mount{{
+		// Scratch workspace first; user mounts stacked on top. Order
+		// doesn't matter for bind mounts (no overlap is allowed) but
+		// keeping the scratch entry at index 0 means error messages
+		// referencing spec.Mounts[N] stay stable as user mounts grow.
+		Mounts: append([]sandbox.Mount{{
 			Source: workspace,
-			Target: "/workspace",
+			Target: scratchMountTarget,
 			Type:   sandbox.MountBind,
-		}},
+		}}, userMounts...),
 		// Coding agents need outbound network (LLM APIs, package
 		// installs in placeholder images, git, etc.) so the default
 		// is NetNAT. The sandbox.NetworkMode zero value (NetIsolated)
@@ -286,4 +312,66 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 // enforced by the mount-source validator.
 func (s *Service) WorkspaceRoot() string {
 	return s.sessions
+}
+
+// validateMountRequests checks session-layer mount invariants and
+// converts requests to sandbox.Mount entries ready to append to a
+// SandboxSpec. Host-side concerns (absolute, cleaned, under an
+// allowed root) are intentionally left to the sandbox validator —
+// running them here too would just duplicate error messages.
+//
+// Errors wrap ErrMountInvalid with a [N] index so the UI can point
+// the user at the offending row.
+func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	out := make([]sandbox.Mount, 0, len(reqs))
+	seenTargets := make(map[string]int, len(reqs))
+	for i, m := range reqs {
+		if m.HostPath == "" {
+			return nil, fmt.Errorf("%w: mounts[%d]: host_path is required", ErrMountInvalid, i)
+		}
+		if m.ContainerPath == "" {
+			return nil, fmt.Errorf("%w: mounts[%d]: container_path is required", ErrMountInvalid, i)
+		}
+		target := filepath.Clean(m.ContainerPath)
+		if target == scratchMountTarget {
+			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q collides with the reserved scratch workspace",
+				ErrMountInvalid, i, m.ContainerPath)
+		}
+		// Block container_path = "/" outright: a mount over root
+		// clobbers the entire container filesystem and there's no
+		// legitimate use. Sub-paths of system dirs (/etc/foo,
+		// /usr/local/bin) are deliberately permitted — a power user
+		// who wants to overlay a config snippet can.
+		if target == "/" {
+			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q cannot be the container root",
+				ErrMountInvalid, i, m.ContainerPath)
+		}
+		if prev, dup := seenTargets[target]; dup {
+			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q is also used by mounts[%d]",
+				ErrMountInvalid, i, m.ContainerPath, prev)
+		}
+		seenTargets[target] = i
+
+		var readOnly bool
+		switch strings.ToLower(m.Mode) {
+		case "", "rw":
+			readOnly = false
+		case "ro":
+			readOnly = true
+		default:
+			return nil, fmt.Errorf("%w: mounts[%d]: mode %q must be \"rw\" or \"ro\"",
+				ErrMountInvalid, i, m.Mode)
+		}
+
+		out = append(out, sandbox.Mount{
+			Source:   filepath.Clean(m.HostPath),
+			Target:   target,
+			ReadOnly: readOnly,
+			Type:     sandbox.MountBind,
+		})
+	}
+	return out, nil
 }
