@@ -49,6 +49,12 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, err := s.Create(r.Context(), req)
 	if err != nil {
+		// Mount validation failures and other user-input errors are
+		// 400. The sandbox layer's mount-source validator (allowed
+		// roots, abs path) also lands here as Create errors — those
+		// are also user input, so 400 is right. Real server failures
+		// (DB down, docker daemon gone) would benefit from 500 once
+		// we have distinguishable sentinels; defer until needed.
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

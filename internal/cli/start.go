@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -56,13 +57,23 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	logger.Info("database ready", "data_dir", cfg.DataDir)
 
-	// Sandbox driver: Docker is the v1 backend (SPEC §7.2). The
-	// session service bind-mounts $DataDir/sessions/<id>/ into
-	// each sandbox; that root is the only host path it's allowed
-	// to share, enforced by the sandbox layer's mount-source
-	// validator.
+	// Sandbox driver: Docker is the v1 backend (SPEC §7.2). Two
+	// host roots are sharable with sandboxes:
+	//   - $DataDir/sessions — the deepcove-managed scratch workspace
+	//     bind-mounted into every session at /workspace.
+	//   - $HOME — covers the common case where the user mounts a
+	//     project under their home dir (~/projects/foo, ~/code, etc.).
+	//     System dirs (/etc, /usr, /var, ...) stay blocked because
+	//     they aren't under $HOME. Power users who need to mount
+	//     outside $HOME will get a config-flag override as a
+	//     follow-up.
+	// The sandbox layer's mount-source validator enforces both roots.
 	workspaceRoot := filepath.Join(cfg.DataDir, "sessions")
-	sandbox, err := dockerdrv.New(dockerdrv.WithAllowedMountRoots(workspaceRoot))
+	allowedRoots := []string{workspaceRoot}
+	if home, herr := os.UserHomeDir(); herr == nil && home != "" {
+		allowedRoots = append(allowedRoots, home)
+	}
+	sandbox, err := dockerdrv.New(dockerdrv.WithAllowedMountRoots(allowedRoots...))
 	if err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}

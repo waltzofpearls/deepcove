@@ -93,4 +93,16 @@ export const sessions = {
 	remove(id: string): void {
 		list = list.filter((s) => s.id !== id);
 	},
+
+	// add pushes a newly-created session onto the list synchronously
+	// so the dashboard renders it immediately after POST /api/sessions
+	// returns. Without this, the new card wouldn't appear until the
+	// next poll tick — annoying lag right after a deliberate create.
+	// Idempotent: if a session with the same id is already in the
+	// list (unlikely but possible if the poll happens to land between
+	// the POST resolving and us calling add), we leave it alone.
+	add(session: Session): void {
+		if (list.some((s) => s.id === session.id)) return;
+		list = [...list, session];
+	},
 };
