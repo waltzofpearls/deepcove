@@ -13,6 +13,10 @@ export interface Session {
 	owner_email: string;
 	status: SessionStatus;
 	env: Record<string, string> | null;
+	// User mounts currently attached to the container. The scratch
+	// /workspace mount and the agent-home /root volume are NOT
+	// included — those are managed by deepcove, not the user.
+	mounts: MountRequest[] | null;
 	container_id?: string;
 	created_at: string; // ISO-8601 timestamp
 	updated_at: string;

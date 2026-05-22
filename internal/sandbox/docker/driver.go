@@ -188,6 +188,16 @@ func (d *Driver) Restore(ctx context.Context, h sandbox.Handle, id sandbox.Snaps
 	return sandbox.ErrNotSupported
 }
 
+// RemoveStorage deletes a named Docker volume. Force=true so a
+// volume still attached to a (stopped) container is removed without
+// requiring a separate detach step — the session layer always
+// removes the container first, so the attach window should be
+// closed, but Force keeps us robust against races.
+func (d *Driver) RemoveStorage(ctx context.Context, name string) error {
+	_, err := d.cli.VolumeRemove(ctx, name, client.VolumeRemoveOptions{Force: true})
+	return normalizeErr(err)
+}
+
 // ---- helpers ------------------------------------------------------------
 
 // normalizeErr maps moby's errdefs-tagged errors to sandbox sentinels.
@@ -225,19 +235,32 @@ func toMounts(ms []sandbox.Mount) []mount.Mount {
 	}
 	out := make([]mount.Mount, 0, len(ms))
 	for _, m := range ms {
-		// MountCopyIn is a sandbox-layer concept that doesn't map to
-		// a single Docker primitive (it would need a copy-on-create
-		// flow). For now the Docker driver only supports MountBind
-		// — callers requesting CopyIn get an error at validate time.
-		if m.Type != sandbox.MountBind {
-			continue
+		switch m.Type {
+		case sandbox.MountBind:
+			out = append(out, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   m.Source,
+				Target:   m.Target,
+				ReadOnly: m.ReadOnly,
+			})
+		case sandbox.MountVolume:
+			// Named Docker volume. Auto-created on container create
+			// if it doesn't exist, persists across container removal
+			// (container-removal opts only clear *anonymous* volumes),
+			// and is explicitly cleaned up via RemoveStorage when
+			// the session is destroyed.
+			out = append(out, mount.Mount{
+				Type:     mount.TypeVolume,
+				Source:   m.Source,
+				Target:   m.Target,
+				ReadOnly: m.ReadOnly,
+			})
+		default:
+			// MountCopyIn is a sandbox-layer concept that doesn't map
+			// to a single Docker primitive (it would need a
+			// copy-on-create flow). Silently drop — the validator
+			// catches misuse via SandboxSpec validation.
 		}
-		out = append(out, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   m.Source,
-			Target:   m.Target,
-			ReadOnly: m.ReadOnly,
-		})
 	}
 	return out
 }

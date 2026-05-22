@@ -87,6 +87,16 @@ type Sandbox interface {
 	// cold-creating a fresh sandbox.
 	Snapshot(ctx context.Context, h Handle) (SnapshotID, error)
 	Restore(ctx context.Context, h Handle, id SnapshotID) error
+
+	// RemoveStorage deletes a named persistent storage primitive
+	// (e.g. a Docker volume, a microVM volume image) by name.
+	// Used by the session layer to clean up the agent-home volume
+	// when a session is destroyed — named volumes survive
+	// container removal by design, so destroy needs a separate
+	// step to release them. Drivers without named storage return
+	// ErrNotSupported; the session layer treats that as a no-op.
+	// ErrNotFound is returned if the name doesn't exist.
+	RemoveStorage(ctx context.Context, name string) error
 }
 
 // SandboxSpec is the create-time configuration for a sandbox. Drivers
@@ -148,6 +158,16 @@ const (
 	// templates or read-only seed data on microVM backends that
 	// can't (or don't want to) share live.
 	MountCopyIn
+
+	// MountVolume is a driver-managed persistent storage primitive.
+	// For Docker: a named volume (`docker volume`). For microVM
+	// backends: a per-volume filesystem image. Survives container
+	// recreate by design — used by the session layer to persist
+	// agent state (`/root` and friends) across the destroy+recreate
+	// cycle of an edit-mounts operation. Source is the volume name,
+	// not a host path, so the allowed-roots check is skipped in
+	// validateMount.
+	MountVolume
 )
 
 // Resources limits CPU, memory, and disk for a sandbox.
@@ -280,11 +300,20 @@ func validateMount(m Mount, allowedRoots []string) error {
 	if m.Source == "" {
 		return fmt.Errorf("mount source is empty")
 	}
-	if !filepath.IsAbs(m.Source) {
-		return fmt.Errorf("mount source %q is not absolute", m.Source)
-	}
 	if !filepath.IsAbs(m.Target) {
 		return fmt.Errorf("mount target %q is not absolute", m.Target)
+	}
+	// Volume mounts use Source as a driver-managed volume name, not a
+	// host path. They don't go through the allowed-roots gate because
+	// the storage lives outside the host filesystem from the user's
+	// POV (Docker volumes are stored under the daemon's data dir, not
+	// $HOME). Only the host-path checks below are skipped — empty and
+	// non-absolute target still get caught above.
+	if m.Type == MountVolume {
+		return nil
+	}
+	if !filepath.IsAbs(m.Source) {
+		return fmt.Errorf("mount source %q is not absolute", m.Source)
 	}
 	cleaned := filepath.Clean(m.Source)
 	if cleaned != m.Source {

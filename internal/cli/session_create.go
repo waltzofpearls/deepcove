@@ -10,9 +10,9 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// cmdSessionCreate handles `deepcove session <agent> [--name <name>] [--mount HOST:CONTAINER[:ro]] [flags]`.
-// Creates a session on the local background service via the API,
-// printing the id + name. Attach is a separate command (TODO).
+// cmdSessionCreate handles `deepcove session <agent>` with optional --name and
+// repeatable --mount flags. Creates a session on the local background service
+// via the API, printing the id + name. Attach is a separate command (TODO).
 //
 // If --name is omitted, the service auto-generates one in the form
 // "<agent>-<adjective>_<scientist>" (Docker-style).

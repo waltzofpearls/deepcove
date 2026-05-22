@@ -44,6 +44,13 @@ type SessionRepository interface {
 	// open / 30s tick / disconnect; cheap by design.
 	UpdateActivity(ctx context.Context, owner, id string, at time.Time) error
 
+	// UpdateMountsAndContainer replaces the mounts JSON and
+	// container_id on a session, and bumps updated_at. Used by
+	// Service.EditMounts after the recreate-with-new-spec flow:
+	// the container instance changes, but the session row
+	// (especially the id and name) is preserved.
+	UpdateMountsAndContainer(ctx context.Context, owner, id string, mounts []MountRequest, containerID string, now time.Time) error
+
 	// Delete removes the session row.
 	Delete(ctx context.Context, owner, id string) error
 }
@@ -74,12 +81,24 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 	if err != nil {
 		return fmt.Errorf("session: marshal env: %w", err)
 	}
+	// Same nil→"[]" rule for mounts: the column is NOT NULL DEFAULT
+	// '[]' on disk; marshal nil to "[]" so a session created with
+	// no user mounts gets an explicit empty array rather than the
+	// scanner ever having to special-case the DB default.
+	mounts := sess.Mounts
+	if mounts == nil {
+		mounts = []MountRequest{}
+	}
+	mountsJSON, err := json.Marshal(mounts)
+	if err != nil {
+		return fmt.Errorf("session: marshal mounts: %w", err)
+	}
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, env, container_id, created_at, updated_at, last_activity_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, container_id, created_at, updated_at, last_activity_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
-		string(sess.Status), string(envJSON), sess.ContainerID,
+		string(sess.Status), string(mountsJSON), string(envJSON), sess.ContainerID,
 		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
 	)
 	if err != nil {
@@ -90,7 +109,7 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 
 func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*Session, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, agent, image, owner_email, status, env,
+		SELECT id, name, agent, image, owner_email, status, mounts, env,
 		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, owner)
@@ -106,7 +125,7 @@ func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*S
 
 func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includeAll bool) ([]*Session, error) {
 	query := `
-		SELECT id, name, agent, image, owner_email, status, env,
+		SELECT id, name, agent, image, owner_email, status, mounts, env,
 		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
@@ -168,6 +187,27 @@ func (r *duckdbSessionRepository) UpdateActivity(ctx context.Context, owner, id 
 	return rowsAffectedOrNotFound(res)
 }
 
+func (r *duckdbSessionRepository) UpdateMountsAndContainer(
+	ctx context.Context, owner, id string,
+	mounts []MountRequest, containerID string, now time.Time,
+) error {
+	if mounts == nil {
+		mounts = []MountRequest{}
+	}
+	mountsJSON, err := json.Marshal(mounts)
+	if err != nil {
+		return fmt.Errorf("session: marshal mounts: %w", err)
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET mounts = ?, container_id = ?, updated_at = ?
+		 WHERE id = ? AND owner_email = ?`,
+		string(mountsJSON), containerID, now, id, owner)
+	if err != nil {
+		return fmt.Errorf("session: update mounts: %w", err)
+	}
+	return rowsAffectedOrNotFound(res)
+}
+
 func (r *duckdbSessionRepository) Delete(ctx context.Context, owner, id string) error {
 	res, err := r.db.ExecContext(ctx,
 		`DELETE FROM sessions WHERE id = ? AND owner_email = ?`,
@@ -201,6 +241,7 @@ type rowScanner interface {
 func scanRow(r rowScanner) (*Session, error) {
 	var (
 		sess           Session
+		mountsJSON     sql.NullString
 		envJSON        sql.NullString
 		containerID    sql.NullString
 		status         string
@@ -208,7 +249,7 @@ func scanRow(r rowScanner) (*Session, error) {
 	)
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &envJSON, &containerID, &sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
+		&status, &mountsJSON, &envJSON, &containerID, &sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
 		return nil, err
 	}
@@ -227,6 +268,15 @@ func scanRow(r rowScanner) (*Session, error) {
 	if envJSON.Valid && strings.TrimSpace(envJSON.String) != "" && envJSON.String != "null" {
 		if err := json.Unmarshal([]byte(envJSON.String), &sess.Env); err != nil {
 			return nil, fmt.Errorf("session: unmarshal env: %w", err)
+		}
+	}
+	// Mounts: same null-token defense as env. Empty array on disk
+	// unmarshals to a nil slice, which the JSON encoder serializes as
+	// `null` on the wire — that's fine because the API consumer just
+	// reads it as "no user mounts".
+	if mountsJSON.Valid && strings.TrimSpace(mountsJSON.String) != "" && mountsJSON.String != "null" {
+		if err := json.Unmarshal([]byte(mountsJSON.String), &sess.Mounts); err != nil {
+			return nil, fmt.Errorf("session: unmarshal mounts: %w", err)
 		}
 	}
 	return &sess, nil

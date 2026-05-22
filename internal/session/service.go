@@ -20,6 +20,28 @@ import (
 // this — see validateMountRequests.
 const scratchMountTarget = "/workspace"
 
+// agentHomeMountTarget is where the per-session agent-home volume
+// is mounted inside the sandbox. It holds `~/.claude/`, `.gitconfig`,
+// shell history, and any other state Claude/codex/gemini write to
+// $HOME. The named volume survives container destroy+recreate (used
+// by EditMounts), so the user's conversation history isn't lost when
+// they reconfigure mounts.
+//
+// `/root` is the right path today because the deepcove agent images
+// (and the placeholder alpine setup) run as root. Future agent
+// images that use a non-root user will need a per-image override —
+// out of scope here.
+const agentHomeMountTarget = "/root"
+
+// agentHomeVolumeName is the Docker named-volume name for the
+// agent-home mount. Embedding the session id makes the volume
+// trivially traceable back to its owning session ("docker volume ls
+// | grep deepcove" picks them all out) and makes cleanup
+// straightforward in Destroy.
+func agentHomeVolumeName(sessionID string) string {
+	return "deepcove-session-" + sessionID + "-home"
+}
+
 // ErrMountInvalid is the sentinel for user mount validation failures.
 // HTTP handlers map this to 400. The wrapped error message tells the
 // caller which mount and why.
@@ -118,6 +140,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		OwnerEmail:     placeholderOwner,
 		Status:         StatusCreated,
 		Env:            req.Env,
+		Mounts:         req.Mounts,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		LastActivityAt: now,
@@ -133,49 +156,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		return nil, fmt.Errorf("session: mkdir workspace: %w", err)
 	}
 
-	spec := sandbox.SandboxSpec{
-		Image: image,
-		// Placeholder Cmd: install tmux at runtime (first boot
-		// only; subsequent restarts find it already installed)
-		// and start a detached tmux session named "main" — the
-		// attach handler exec's `tmux attach -t main` against it.
-		// `exec sleep infinity` keeps PID 1 alive.
-		//
-		// Restart safety: when a container is stopped + started,
-		// the filesystem persists (so tmux stays installed) but
-		// the previous tmux server's socket at /tmp/tmux-* is
-		// left behind as a stale file. A fresh tmux refuses to
-		// reuse it and fails silently from the user's POV. The
-		// `rm -rf /tmp/tmux-*` clears any leftover before we
-		// recreate the session. Real agent images will bake tmux
-		// in and replace this Cmd entirely.
-		Cmd: []string{"sh", "-c",
-			"command -v tmux >/dev/null 2>&1 || apk add --no-cache tmux >/dev/null 2>&1; " +
-				"rm -rf /tmp/tmux-* 2>/dev/null; " +
-				// -n main names the first window "main" explicitly
-				// so the windows API has a stable, well-known name
-				// to target. Without -n, tmux derives the window
-				// name from the running command ("sh"), which is
-				// neither meaningful nor stable across agents.
-				"tmux new-session -d -s main -n main sh; " +
-				"exec sleep infinity",
-		},
-		Env: req.Env,
-		// Scratch workspace first; user mounts stacked on top. Order
-		// doesn't matter for bind mounts (no overlap is allowed) but
-		// keeping the scratch entry at index 0 means error messages
-		// referencing spec.Mounts[N] stay stable as user mounts grow.
-		Mounts: append([]sandbox.Mount{{
-			Source: workspace,
-			Target: scratchMountTarget,
-			Type:   sandbox.MountBind,
-		}}, userMounts...),
-		// Coding agents need outbound network (LLM APIs, package
-		// installs in placeholder images, git, etc.) so the default
-		// is NetNAT. The sandbox.NetworkMode zero value (NetIsolated)
-		// would block apk add at startup.
-		Network: sandbox.NetworkConfig{Mode: sandbox.NetNAT},
-	}
+	spec := s.buildSandboxSpec(sess.ID, image, req.Env, workspace, userMounts)
 
 	handle, err := s.sandbox.Create(ctx, spec)
 	if err != nil {
@@ -283,7 +264,7 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 }
 
 // Destroy stops the sandbox (if running), removes it, deletes the
-// workspace directory, and removes the row.
+// workspace directory, the agent-home volume, and removes the row.
 func (s *Service) Destroy(ctx context.Context, id string) error {
 	sess, err := s.Get(ctx, id)
 	if err != nil {
@@ -291,9 +272,17 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	}
 	handle := sandbox.Handle(sess.ContainerID)
 	// Best-effort sandbox teardown — if the daemon already lost the
-	// container, we still want to clear our row + workspace.
+	// container, we still want to clear our row + workspace + volume.
 	if err := s.sandbox.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return fmt.Errorf("session: sandbox destroy: %w", err)
+	}
+	// Remove the per-session agent-home volume. It survives container
+	// removal by design, so this is the only place we drop it. Errors
+	// are logged but don't block destroy — a leaked volume is annoying
+	// but not catastrophic, and unblocking the user's destroy beats
+	// failing the whole operation on a volume-cleanup edge case.
+	if rerr := s.sandbox.RemoveStorage(ctx, agentHomeVolumeName(id)); rerr != nil && !errors.Is(rerr, sandbox.ErrNotFound) && !errors.Is(rerr, sandbox.ErrNotSupported) {
+		s.logger.Warn("session: remove agent-home volume", "id", id, "err", rerr)
 	}
 	workspace := filepath.Join(s.sessions, id)
 	if err := os.RemoveAll(workspace); err != nil {
@@ -306,12 +295,171 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	return nil
 }
 
+// EditMounts replaces a session's user mounts. Docker can't add or
+// remove bind mounts on a live container, so we destroy the current
+// container and recreate it with the new spec — the session id stays
+// the same, the agent-home volume (and its /root contents) survives,
+// and /workspace (host bind mount) survives.
+//
+// State that DOES NOT survive: anything in the container's writable
+// layer that wasn't under /root or /workspace. Today's placeholder
+// image installs tmux at first boot, so the new container reinstalls
+// it; real agent images will bake tmux in and the recreate is
+// near-instant.
+//
+// On any failure mid-recreate, the session is left as "errored"
+// rather than leaking partial state. The caller's UI is expected to
+// show the error and offer destroy as the recovery path.
+func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRequest) (*Session, error) {
+	sess, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// Validate the new mount set BEFORE touching the running
+	// container — a clean 400 on invalid input doesn't leave the
+	// session in an in-between state.
+	userMounts, err := validateMountRequests(newMounts)
+	if err != nil {
+		return nil, err
+	}
+
+	oldHandle := sandbox.Handle(sess.ContainerID)
+	wasRunning := sess.Status == StatusRunning
+
+	// Stop the old container if it's running. Idempotent on already-
+	// stopped containers via the sandbox layer's ErrNotFound tolerance.
+	if wasRunning {
+		if err := s.sandbox.Stop(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+			return nil, fmt.Errorf("session: stop sandbox: %w", err)
+		}
+	}
+	// Destroy the old container. Named volumes (agent-home) survive;
+	// anonymous volumes are removed by the driver's Destroy. Workspace
+	// dir is a host bind mount and untouched.
+	if err := s.sandbox.Destroy(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+		return nil, fmt.Errorf("session: destroy old sandbox: %w", err)
+	}
+
+	workspace := filepath.Join(s.sessions, sess.ID)
+	spec := s.buildSandboxSpec(sess.ID, sess.Image, sess.Env, workspace, userMounts)
+
+	newHandle, err := s.sandbox.Create(ctx, spec)
+	if err != nil {
+		// Best-effort: mark errored so the row reflects reality.
+		// The session is now in a half-state (no container), and
+		// the user's recovery path is destroy.
+		_ = s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC())
+		return nil, fmt.Errorf("session: create new sandbox: %w", err)
+	}
+	if wasRunning {
+		if err := s.sandbox.Start(ctx, newHandle); err != nil {
+			_ = s.sandbox.Destroy(context.Background(), newHandle)
+			_ = s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC())
+			return nil, fmt.Errorf("session: start new sandbox: %w", err)
+		}
+	}
+
+	now := time.Now().UTC()
+	if err := s.repo.UpdateMountsAndContainer(ctx, placeholderOwner, id, newMounts, string(newHandle), now); err != nil {
+		// Row update failed AFTER the new container is up — leave the
+		// new container running and surface the error. Next Get
+		// returns the stale container_id; manual repair via destroy
+		// is the fallback.
+		return nil, fmt.Errorf("session: update mounts row: %w", err)
+	}
+	// Bumping last_activity here doesn't undo "stop+recreate is a
+	// user action," but it pins the canvas ordering — a session you
+	// just reconfigured shouldn't drop to the bottom of the grid.
+	_ = s.repo.UpdateActivity(ctx, placeholderOwner, id, now)
+
+	// Re-Get to return the canonical row. Cheaper than mutating the
+	// in-memory sess and possibly drifting from the DB representation.
+	updated, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info("session mounts edited", "id", id, "name", sess.Name, "mounts", len(newMounts))
+	return updated, nil
+}
+
 // WorkspaceRoot is the host directory whose subdirectories the
 // sandbox driver may bind-mount. Callers pass this to the driver
 // constructor so SPEC §3 (sessions never cross host boundaries) is
 // enforced by the mount-source validator.
 func (s *Service) WorkspaceRoot() string {
 	return s.sessions
+}
+
+// buildSandboxSpec assembles a SandboxSpec for a session. Shared by
+// Create (initial container) and EditMounts (replacement container)
+// so the entrypoint Cmd, network mode, scratch workspace mount, and
+// agent-home volume entry stay identical across the two paths — drift
+// here would mean a recreated container behaves subtly differently
+// than the one it replaced.
+//
+// Mount order:
+//  1. scratch workspace bind  (/workspace)
+//  2. agent-home volume       (/root, survives recreate)
+//  3. user mounts             (caller-supplied, validated upstream)
+//
+// User mounts are stacked last so a user can't shadow /workspace or
+// /root via path-collision tricks — the validator already rejects
+// those targets, this order is belt-and-suspenders.
+func (s *Service) buildSandboxSpec(
+	sessionID, image string,
+	env map[string]string,
+	workspace string,
+	userMounts []sandbox.Mount,
+) sandbox.SandboxSpec {
+	mounts := []sandbox.Mount{
+		{
+			Source: workspace,
+			Target: scratchMountTarget,
+			Type:   sandbox.MountBind,
+		},
+		{
+			Source: agentHomeVolumeName(sessionID),
+			Target: agentHomeMountTarget,
+			Type:   sandbox.MountVolume,
+		},
+	}
+	mounts = append(mounts, userMounts...)
+
+	return sandbox.SandboxSpec{
+		Image: image,
+		// Placeholder Cmd: install tmux at runtime (first boot only;
+		// subsequent restarts find it already installed) and start a
+		// detached tmux session named "main" — the attach handler
+		// exec's `tmux attach -t main` against it. `exec sleep
+		// infinity` keeps PID 1 alive.
+		//
+		// Restart safety: when a container is stopped + started, the
+		// filesystem persists (so tmux stays installed) but the
+		// previous tmux server's socket at /tmp/tmux-* is left behind
+		// as a stale file. A fresh tmux refuses to reuse it and fails
+		// silently from the user's POV. The `rm -rf /tmp/tmux-*`
+		// clears any leftover before we recreate the session. Real
+		// agent images will bake tmux in and replace this Cmd
+		// entirely.
+		Cmd: []string{"sh", "-c",
+			"command -v tmux >/dev/null 2>&1 || apk add --no-cache tmux >/dev/null 2>&1; " +
+				"rm -rf /tmp/tmux-* 2>/dev/null; " +
+				// -n main names the first window "main" explicitly
+				// so the windows API has a stable, well-known name
+				// to target. Without -n, tmux derives the window
+				// name from the running command ("sh"), which is
+				// neither meaningful nor stable across agents.
+				"tmux new-session -d -s main -n main sh; " +
+				"exec sleep infinity",
+		},
+		Env:    env,
+		Mounts: mounts,
+		// Coding agents need outbound network (LLM APIs, package
+		// installs in placeholder images, git, etc.) so the default
+		// is NetNAT. The sandbox.NetworkMode zero value (NetIsolated)
+		// would block apk add at startup.
+		Network: sandbox.NetworkConfig{Mode: sandbox.NetNAT},
+	}
 }
 
 // validateMountRequests checks session-layer mount invariants and

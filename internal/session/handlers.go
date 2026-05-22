@@ -17,6 +17,7 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
 	mux.HandleFunc("GET /api/sessions/{id}/attach", s.handleAttach)
+	mux.HandleFunc("PUT /api/sessions/{id}/mounts", s.handleEditMounts)
 	mux.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreview)
 	mux.HandleFunc("GET /api/sessions/{id}/tmux-windows", s.handleListTmuxWindows)
 	mux.HandleFunc("POST /api/sessions/{id}/tmux-windows", s.handleCreateTmuxWindow)
@@ -99,6 +100,37 @@ func (s *Service) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// EditMountsRequest is the body shape of PUT /api/sessions/{id}/mounts.
+// We accept the whole new mount list (not a diff) so the wire format
+// matches what the UI's edit panel renders — fewer round-trips to
+// keep in sync, simpler conflict semantics.
+type EditMountsRequest struct {
+	Mounts []MountRequest `json:"mounts"`
+}
+
+func (s *Service) handleEditMounts(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req EditMountsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	sess, err := s.EditMounts(r.Context(), id, req.Mounts)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if errors.Is(err, ErrMountInvalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
 }
 
 func (s *Service) handleDestroy(w http.ResponseWriter, r *http.Request) {
