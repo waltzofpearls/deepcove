@@ -439,6 +439,153 @@ func TestService_Destroy(t *testing.T) {
 	}
 }
 
+func TestService_Create_PersistsMounts(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+
+	req := CreateRequest{
+		Agent: "claude",
+		Mounts: []MountRequest{
+			{HostPath: "/Users/x/a", ContainerPath: "/in-ct/a", Mode: "rw"},
+			{HostPath: "/Users/x/b", ContainerPath: "/in-ct/b", Mode: "ro"},
+		},
+	}
+	sess, err := svc.Create(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := svc.Get(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Mounts) != 2 {
+		t.Fatalf("Mounts len: want 2, got %d (%+v)", len(got.Mounts), got.Mounts)
+	}
+	if got.Mounts[0].HostPath != "/Users/x/a" || got.Mounts[0].Mode != "rw" {
+		t.Errorf("Mounts[0]: %+v", got.Mounts[0])
+	}
+	if got.Mounts[1].HostPath != "/Users/x/b" || got.Mounts[1].Mode != "ro" {
+		t.Errorf("Mounts[1]: %+v", got.Mounts[1])
+	}
+}
+
+func TestService_Destroy_RemovesAgentHomeVolume(t *testing.T) {
+	svc, fake, _, _ := newTestService(t)
+	sess := mustCreate(t, svc, "claude")
+
+	if err := svc.Destroy(context.Background(), sess.ID); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	wantName := agentHomeVolumeName(sess.ID)
+	if len(fake.removedStorage) != 1 {
+		t.Fatalf("RemoveStorage call count: want 1, got %d (%v)", len(fake.removedStorage), fake.removedStorage)
+	}
+	if fake.removedStorage[0] != wantName {
+		t.Errorf("RemoveStorage arg: want %q, got %q", wantName, fake.removedStorage[0])
+	}
+}
+
+func TestService_EditMounts(t *testing.T) {
+	tests := []struct {
+		name            string
+		setup           func(t *testing.T, svc *Service) string // returns session id
+		newMounts       []MountRequest
+		wantErrIs       error
+		wantErrContains string
+		wantSandboxOps  string // expected sandbox call sequence DURING EditMounts (excludes setup)
+		wantMountsLen   int
+	}{
+		{
+			name: "happy path: replaces mounts on a running session — stop, destroy, create, start",
+			setup: func(t *testing.T, svc *Service) string {
+				return mustCreate(t, svc, "claude").ID
+			},
+			newMounts: []MountRequest{
+				{HostPath: "/Users/x/repo", ContainerPath: "/deepcove"},
+			},
+			wantSandboxOps: "Stop,Destroy,Create,Start",
+			wantMountsLen:  1,
+		},
+		{
+			name: "stopped session: skips stop, recreates without start",
+			setup: func(t *testing.T, svc *Service) string {
+				sess := mustCreate(t, svc, "claude")
+				if err := svc.Stop(context.Background(), sess.ID); err != nil {
+					t.Fatalf("setup Stop: %v", err)
+				}
+				return sess.ID
+			},
+			newMounts: []MountRequest{
+				{HostPath: "/Users/x/repo", ContainerPath: "/deepcove"},
+			},
+			wantSandboxOps: "Destroy,Create",
+			wantMountsLen:  1,
+		},
+		{
+			name: "invalid mount rejected before any sandbox work",
+			setup: func(t *testing.T, svc *Service) string {
+				return mustCreate(t, svc, "claude").ID
+			},
+			newMounts: []MountRequest{
+				{HostPath: "/x", ContainerPath: "/workspace"}, // collides
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "scratch workspace",
+			wantSandboxOps:  "",
+			wantMountsLen:   0, // not relevant; we check err
+		},
+		{
+			name: "unknown session id returns ErrNotFound",
+			setup: func(t *testing.T, svc *Service) string {
+				return "no-such-id"
+			},
+			newMounts:      nil,
+			wantErrIs:      ErrNotFound,
+			wantSandboxOps: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fake, _, _ := newTestService(t)
+			id := tc.setup(t, svc)
+			// Reset call sequence after setup so the assertion only
+			// reflects what EditMounts itself did.
+			fake.mu.Lock()
+			fake.calls = nil
+			fake.mu.Unlock()
+
+			updated, err := svc.EditMounts(context.Background(), id, tc.newMounts)
+			if tc.wantErrIs != nil {
+				if !errors.Is(err, tc.wantErrIs) {
+					t.Fatalf("err: want errors.Is(_, %v), got %v", tc.wantErrIs, err)
+				}
+				if tc.wantErrContains != "" && !strings.Contains(err.Error(), tc.wantErrContains) {
+					t.Errorf("err message: want substring %q, got %q", tc.wantErrContains, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("EditMounts: %v", err)
+				}
+				if updated == nil {
+					t.Fatal("got nil session on success")
+				}
+				if len(updated.Mounts) != tc.wantMountsLen {
+					t.Errorf("updated.Mounts len: want %d, got %d (%+v)", tc.wantMountsLen, len(updated.Mounts), updated.Mounts)
+				}
+				if updated.ContainerID == "" {
+					t.Errorf("updated.ContainerID should be non-empty after recreate")
+				}
+			}
+
+			if got := fake.callSequence(); got != tc.wantSandboxOps {
+				t.Errorf("sandbox ops during EditMounts: want %q, got %q", tc.wantSandboxOps, got)
+			}
+		})
+	}
+}
+
 func TestValidateMountRequests(t *testing.T) {
 	tests := []struct {
 		name             string

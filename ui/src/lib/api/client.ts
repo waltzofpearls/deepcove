@@ -6,6 +6,7 @@ import type {
 	Agent,
 	CreateSessionRequest,
 	CreateTmuxWindowRequest,
+	MountRequest,
 	Session,
 	SessionPreview,
 	TmuxWindow,
@@ -72,6 +73,20 @@ export const api = {
 
 	destroySession(id: string): Promise<void> {
 		return request(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+	},
+
+	// editMounts replaces the session's user mounts. Server-side this
+	// destroys the running container and recreates it with the new
+	// spec — agent-home volume (/root) and the scratch /workspace
+	// survive, but anything in the writable layer (apt-installed
+	// packages, files outside /root and /workspace) is gone. UI is
+	// expected to warn before calling. Returns the updated Session.
+	editMounts(id: string, mounts: MountRequest[]): Promise<Session> {
+		return request(`/sessions/${encodeURIComponent(id)}/mounts`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ mounts }),
+		});
 	},
 
 	sessionPreview(id: string): Promise<SessionPreview> {

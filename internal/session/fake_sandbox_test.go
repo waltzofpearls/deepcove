@@ -40,6 +40,12 @@ type fakeSandbox struct {
 	// asserting on execCalls verifies the cmds the service issued.
 	execResponses []execResponse
 	execCalls     [][]string
+
+	// removedStorage records every RemoveStorage call argument in
+	// order. Used by destroy + edit-mounts tests to assert the
+	// agent-home volume cleanup actually fires.
+	removedStorage   []string
+	removeStorageErr error
 }
 
 // execResponse scripts a single Exec invocation. Set err to make
@@ -186,6 +192,22 @@ func (f *fakeSandbox) Snapshot(ctx context.Context, h sandbox.Handle) (sandbox.S
 
 func (f *fakeSandbox) Restore(ctx context.Context, h sandbox.Handle, id sandbox.SnapshotID) error {
 	return sandbox.ErrNotSupported
+}
+
+// removedStorage records volume names passed to RemoveStorage so
+// EditMounts and Destroy tests can verify the agent-home cleanup
+// path actually fires. Driver-level mock concerns (the call
+// happened) belong here; whether Docker actually deleted the volume
+// is the driver's contract, not session.Service's.
+func (f *fakeSandbox) RemoveStorage(ctx context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "RemoveStorage")
+	f.removedStorage = append(f.removedStorage, name)
+	if f.removeStorageErr != nil {
+		return f.removeStorageErr
+	}
+	return nil
 }
 
 // liveCount is a test helper: how many sandboxes are still "alive"

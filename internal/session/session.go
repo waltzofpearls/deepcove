@@ -29,6 +29,11 @@ const (
 
 // Session is the API + DB shape of a coding-agent session. JSON tags
 // are the HTTP API contract — keep stable as the SPA grows against it.
+//
+// Mounts holds the user-supplied mount entries that were active when
+// the current container was created. The deepcove-managed scratch
+// workspace and agent-home volume are NOT included — those are
+// implementation details and would just confuse the API surface.
 type Session struct {
 	ID             string            `json:"id"`
 	Name           string            `json:"name"`
@@ -37,6 +42,7 @@ type Session struct {
 	OwnerEmail     string            `json:"owner_email"`
 	Status         Status            `json:"status"`
 	Env            map[string]string `json:"env"`
+	Mounts         []MountRequest    `json:"mounts"`
 	ContainerID    string            `json:"container_id,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
