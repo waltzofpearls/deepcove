@@ -27,13 +27,8 @@ const (
 	StatusErrored Status = "errored"
 )
 
-// Session is the API + DB shape of a coding-agent session. JSON tags
-// are the HTTP API contract — keep stable as the SPA grows against it.
-//
-// Mounts holds the user-supplied mount entries that were active when
-// the current container was created. The deepcove-managed scratch
-// workspace and agent-home volume are NOT included — those are
-// implementation details and would just confuse the API surface.
+// Mounts only holds USER-supplied mounts; the scratch workspace and agent-home volume
+// are implementation details and stay out of the API.
 type Session struct {
 	ID             string            `json:"id"`
 	Name           string            `json:"name"`
@@ -43,19 +38,21 @@ type Session struct {
 	Status         Status            `json:"status"`
 	Env            map[string]string `json:"env"`
 	Mounts         []MountRequest    `json:"mounts"`
+	SetupScript    string            `json:"setup_script"`
 	ContainerID    string            `json:"container_id,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
 	LastActivityAt time.Time         `json:"last_activity_at"`
 }
 
-// CreateRequest is the body of POST /api/sessions. The session
-// Service auto-generates Name if empty.
+// Empty Image / SetupScript / Name fall back to agent registry defaults.
 type CreateRequest struct {
-	Agent  string            `json:"agent"`
-	Name   string            `json:"name,omitempty"`
-	Env    map[string]string `json:"env,omitempty"`
-	Mounts []MountRequest    `json:"mounts,omitempty"`
+	Agent       string            `json:"agent"`
+	Name        string            `json:"name,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Mounts      []MountRequest    `json:"mounts,omitempty"`
+	Image       string            `json:"image,omitempty"`
+	SetupScript string            `json:"setup_script,omitempty"`
 }
 
 // MountRequest is one entry in CreateRequest.Mounts — a host path

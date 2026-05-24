@@ -24,7 +24,7 @@
   import Terminal from '$lib/components/session/Terminal.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
-  import EditMountsSheet from '$lib/components/session/EditMountsSheet.svelte';
+  import EditMountsDialog from '$lib/components/session/EditMountsDialog.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import HardDrive from '@lucide/svelte/icons/hard-drive';
@@ -55,7 +55,7 @@
   // (it stays inside a TooltipTrigger like its siblings) — opening
   // the dialog is a plain onclick.
   let destroyOpen = $state(false);
-  // Bound to the EditMountsSheet. Opens via the topbar HardDrive
+  // Bound to the EditMountsDialog. Opens via the topbar HardDrive
   // button; the sheet does its own PUT and writes the updated
   // session back to our `session` via bind:session.
   let editMountsOpen = $state(false);
@@ -412,7 +412,7 @@
   <!-- Edit-mounts sheet. Bind session so the sheet can write the
        updated row back after a successful PUT — keeps the toolbar
        and the rest of the page in sync without an extra fetch. -->
-  <EditMountsSheet bind:open={editMountsOpen} bind:session />
+  <EditMountsDialog bind:open={editMountsOpen} bind:session />
 
   <!-- Destroy confirmation. State-driven open via `destroyOpen` so
        the Trash button can keep its Tooltip wrapper instead of

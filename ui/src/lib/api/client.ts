@@ -4,6 +4,7 @@
 
 import type {
 	Agent,
+	BootstrapResponse,
 	CreateSessionRequest,
 	CreateTmuxWindowRequest,
 	MountRequest,
@@ -91,6 +92,10 @@ export const api = {
 
 	sessionPreview(id: string): Promise<SessionPreview> {
 		return request(`/sessions/${encodeURIComponent(id)}/preview`);
+	},
+
+	sessionBootstrap(id: string): Promise<BootstrapResponse> {
+		return request(`/sessions/${encodeURIComponent(id)}/bootstrap`);
 	},
 
 	// createTmuxWindow creates a new tmux window in the session.

@@ -46,6 +46,11 @@ type fakeSandbox struct {
 	// agent-home volume cleanup actually fires.
 	removedStorage   []string
 	removeStorageErr error
+
+	// specs records every SandboxSpec passed to Create, in order. Lets entrypoint /
+	// MOTD / mount-layout tests assert on what the service actually built without
+	// reaching into the service's internals.
+	specs []sandbox.SandboxSpec
 }
 
 // execResponse scripts a single Exec invocation. Set err to make
@@ -73,6 +78,7 @@ func (f *fakeSandbox) Create(ctx context.Context, spec sandbox.SandboxSpec) (san
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "Create")
+	f.specs = append(f.specs, spec)
 	if f.createErr != nil {
 		return "", f.createErr
 	}

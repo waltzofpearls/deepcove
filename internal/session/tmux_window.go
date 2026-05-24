@@ -127,18 +127,19 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 		name = pickNextShellName(existingNames)
 	}
 
-	// -d: don't switch focus to the new window (Service.SelectTmuxWindow
-	//     is the only way focus changes via the API).
-	// -P -F: print the new window's index so we don't need a second
-	//     list-windows round-trip.
-	// -t "main:" (with trailing colon) targets the SESSION named
-	// "main" rather than the window. Without the colon tmux parses
-	// `-t main` as a target-window — and since our agent window is
-	// also named "main", new-window tries to insert at that window's
-	// index (0), which is "in use" → fails. The colon disambiguates.
-	out, err := s.execTmux(ctx, sess.ContainerID,
-		"new-window", "-d", "-t", AgentTmuxWindowName+":", "-n", name,
-		"-P", "-F", "#{window_index}")
+	// -d: don't switch focus. -P -F: print the new window's index. The trailing colon
+	// on -t "main:" targets the SESSION (not the window of the same name) — without
+	// it tmux tries to insert at the existing main window's index 0 and fails.
+	args := []string{
+		"new-window", "-d", "-t", AgentTmuxWindowName + ":", "-n", name,
+		"-P", "-F", "#{window_index}",
+	}
+	// SSH-mode shell window gets a wrapper that prints the MOTD before exec'ing the
+	// shell. The MOTD file is dropped in the entrypoint preamble.
+	if name == "shell" {
+		args = append(args, "sh", "-c", "cat /etc/deepcove-motd 2>/dev/null; exec sh")
+	}
+	out, err := s.execTmux(ctx, sess.ContainerID, args...)
 	if err != nil {
 		return nil, fmt.Errorf("session: new-window: %w", err)
 	}

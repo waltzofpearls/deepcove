@@ -1,11 +1,11 @@
 <script lang="ts">
   import {
-    Sheet,
-    SheetContent,
-    SheetDescription,
-    SheetHeader,
-    SheetTitle,
-  } from '$lib/components/ui/sheet';
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+  } from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
@@ -28,7 +28,7 @@
     session?: Session | null;
   } = $props();
 
-  // FormMount mirrors NewSessionSheet's local shape — boolean for
+  // FormMount mirrors NewSessionDialog's local shape — boolean for
   // RO so checkbox binding is straightforward. Converted to
   // MountRequest at submit time.
   type FormMount = {
@@ -72,7 +72,7 @@
     submitError = null;
 
     const payload: MountRequest[] = mounts
-      // Drop incomplete rows — same rule as NewSessionSheet.
+      // Drop incomplete rows — same rule as NewSessionDialog.
       .filter((m) => m.host_path && m.container_path)
       .map((m) => ({
         host_path: m.host_path,
@@ -99,16 +99,16 @@
   }
 </script>
 
-<Sheet bind:open>
-  <SheetContent side="right" class="sm:max-w-md">
-    <SheetHeader>
-      <SheetTitle>Edit mounts</SheetTitle>
-      <SheetDescription>
+<Dialog bind:open>
+  <DialogContent class="max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl gap-0 p-0 sm:max-w-2xl">
+    <DialogHeader class="border-b border-border px-6 py-4">
+      <DialogTitle>Edit mounts</DialogTitle>
+      <DialogDescription>
         Add, remove, or change the host paths exposed to this session.
-      </SheetDescription>
-    </SheetHeader>
+      </DialogDescription>
+    </DialogHeader>
 
-    <div class="mt-6 flex flex-col gap-5 overflow-y-auto px-4 pb-4">
+    <div class="flex flex-col gap-5 overflow-y-auto px-6 pb-6 pt-4">
       <!-- Recreate warning. Saving destroys the current container
            and creates a new one — the agent's conversation history
            (under /root) and the scratch /workspace survive (both
@@ -146,7 +146,7 @@
         {/if}
         {#each mounts as m, i (i)}
           <div class="space-y-2 rounded-md border border-border p-2.5">
-            <div class="space-y-2">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div class="space-y-1">
                 <Label class="text-xs" for="edit-mount-host-{i}">Host path</Label>
                 <Input
@@ -201,5 +201,5 @@
         </Button>
       </div>
     </div>
-  </SheetContent>
-</Sheet>
+  </DialogContent>
+</Dialog>

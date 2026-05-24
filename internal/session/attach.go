@@ -133,12 +133,9 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	defer ws.CloseNow()
 
-	// Attach this client to the per-connection view session. The
-	// chained `; select-window -t <view>:<name>` runs against the
-	// new client only, focusing it on the requested window without
-	// disturbing main's current-window or any other attached
-	// client's view.
-	cmd := []string{"tmux", "attach", "-t", viewSession}
+	// `-u` forces UTF-8 client mode. Without it, tmux substitutes non-ASCII bytes with
+	// `_` when sending to clients (Alpine has no locale set, so tmux defaults to 8-bit).
+	cmd := []string{"tmux", "-u", "attach", "-t", viewSession}
 	if tmuxWindow != "" {
 		cmd = append(cmd, ";", "select-window", "-t", viewSession+":"+tmuxWindow)
 	}

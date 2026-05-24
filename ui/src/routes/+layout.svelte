@@ -5,7 +5,7 @@
   import { ModeWatcher } from 'mode-watcher';
   import TopBar from '$lib/components/layout/TopBar.svelte';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
-  import NewSessionSheet from '$lib/components/session/NewSessionSheet.svelte';
+  import NewSessionDialog from '$lib/components/session/NewSessionDialog.svelte';
   import { Sheet, SheetContent } from '$lib/components/ui/sheet';
 
   let { children } = $props();
@@ -51,4 +51,4 @@
   </SheetContent>
 </Sheet>
 
-<NewSessionSheet bind:open={newSessionOpen} />
+<NewSessionDialog bind:open={newSessionOpen} />
