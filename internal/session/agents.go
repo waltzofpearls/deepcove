@@ -36,7 +36,7 @@ var agents = map[string]AgentInfo{
 		Name:          "claude",
 		DisplayName:   "Claude Code",
 		DefaultImage:  "alpine:3.20",
-		OfficialImage: "",
+		OfficialImage: "ghcr.io/waltzofpearls/deepcove-claude:latest",
 		DefaultSetup: `apk add --no-cache curl bash tmux libgcc libstdc++ ripgrep
 command -v claude >/dev/null 2>&1 || curl -fsSL https://claude.ai/install.sh | bash
 [ -x /root/.local/bin/claude ] && ln -sf /root/.local/bin/claude /usr/local/bin/claude`,

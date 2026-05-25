@@ -109,6 +109,17 @@ bootstrap: ## Install ui/node_modules from a Linux container (run before first `
 dev: ## Run the dev stack (Go server with air + Vite dev server) in docker compose
 	docker compose up --build
 
+# GHCR_NAMESPACE / IMAGE_TAG let CI (and curious humans) override the image ref. The
+# default tags as `:latest` for the local cache so the agent registry's
+# OfficialImage reference resolves without a registry pull.
+GHCR_NAMESPACE ?= ghcr.io/waltzofpearls
+IMAGE_TAG      ?= latest
+
+.PHONY: image-claude
+image-claude: ## Build the deepcove-claude session image locally (tagged for the GHCR namespace so Docker resolves it from cache)
+	docker build -f deepcove-claude.Dockerfile \
+		-t $(GHCR_NAMESPACE)/deepcove-claude:$(IMAGE_TAG) .
+
 .PHONY: clean
 clean: ## Remove built binaries
 	rm -f deepcove
