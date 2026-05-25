@@ -32,6 +32,7 @@ func openTestDB(t *testing.T) *sql.DB {
 			status           TEXT NOT NULL DEFAULT 'created',
 			mounts           TEXT NOT NULL DEFAULT '[]',
 			env              TEXT NOT NULL DEFAULT '{}',
+			setup_script     TEXT NOT NULL DEFAULT '',
 			container_id     TEXT,
 			created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -121,8 +122,11 @@ func TestService_Create(t *testing.T) {
 			wantStatus:       StatusRunning,
 		},
 		{
-			name:             "happy path with a different known agent",
-			req:              CreateRequest{Agent: "codex"},
+			// In v1 the registry only contains Claude; replace this with a second known
+			// agent (e.g. codex) once it's added to internal/session/agents.go. Kept as a
+			// placeholder so the diff is small when that happens.
+			name:             "happy path with explicit name override",
+			req:              CreateRequest{Agent: "claude", Name: "explicit-name"},
 			wantCallSequence: "Create,Start",
 			wantLive:         1,
 			wantRows:         1,
@@ -209,8 +213,13 @@ func TestService_Create(t *testing.T) {
 				if sess.Name == "" {
 					t.Errorf("name not populated")
 				}
-				if !strings.HasPrefix(sess.Name, tc.req.Agent+"-") {
+				// Auto-name should start with `<agent>-` only when the request didn't
+				// supply an explicit name. Explicit names should pass through verbatim.
+				if tc.req.Name == "" && !strings.HasPrefix(sess.Name, tc.req.Agent+"-") {
 					t.Errorf("auto-name should start with agent prefix; got %q", sess.Name)
+				}
+				if tc.req.Name != "" && sess.Name != tc.req.Name {
+					t.Errorf("explicit name not preserved: want %q, got %q", tc.req.Name, sess.Name)
 				}
 				if !pathExists(filepath.Join(dataDir, "sessions", sess.ID)) {
 					t.Errorf("workspace dir not created")
@@ -247,8 +256,11 @@ func TestService_List(t *testing.T) {
 		{
 			name: "default filter returns only running",
 			setup: func(t *testing.T, svc *Service) {
-				_ = mustCreate(t, svc, "claude")
-				stopped := mustCreate(t, svc, "codex")
+				// Two claude sessions with explicit names so the UNIQUE constraint on
+				// `name` doesn't bite — in v1 the registry only has one agent, so we
+				// can't differentiate by agent name like the test used to.
+				_, _ = svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "list-running"})
+				stopped, _ := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "list-stopped"})
 				if err := svc.Stop(context.Background(), stopped.ID); err != nil {
 					t.Fatalf("setup Stop: %v", err)
 				}
@@ -260,8 +272,8 @@ func TestService_List(t *testing.T) {
 		{
 			name: "IncludeAll returns running and stopped",
 			setup: func(t *testing.T, svc *Service) {
-				_ = mustCreate(t, svc, "claude")
-				stopped := mustCreate(t, svc, "codex")
+				_, _ = svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "list-all-1"})
+				stopped, _ := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "list-all-2"})
 				if err := svc.Stop(context.Background(), stopped.ID); err != nil {
 					t.Fatalf("setup Stop: %v", err)
 				}
@@ -439,6 +451,139 @@ func TestService_Destroy(t *testing.T) {
 	}
 }
 
+func TestAgents_ClaudeRegistryDefaults(t *testing.T) {
+	// Pins the Claude registry entry's load-bearing fields so accidental edits during
+	// refactors are caught before they ship. If we deliberately update the install
+	// command or launch loop, this test gets updated alongside.
+	a, err := resolveAgent("claude")
+	if err != nil {
+		t.Fatalf("resolveAgent(claude): %v", err)
+	}
+	if a.Name != "claude" {
+		t.Errorf("Name: want claude, got %q", a.Name)
+	}
+	if a.DisplayName == "" {
+		t.Errorf("DisplayName must be non-empty (UI displays it in the dropdown)")
+	}
+	if a.DefaultImage == "" {
+		t.Errorf("DefaultImage must be non-empty (default for 'Install at startup' radio)")
+	}
+	if !strings.Contains(a.DefaultSetup, "claude.ai/install.sh") {
+		t.Errorf("DefaultSetup should reference the native installer URL; got: %s", a.DefaultSetup)
+	}
+	if !strings.Contains(a.LaunchCmd, "claude") {
+		t.Errorf("LaunchCmd should invoke the claude binary; got: %s", a.LaunchCmd)
+	}
+	if !strings.Contains(a.LaunchCmd, "while") {
+		t.Errorf("LaunchCmd should auto-restart on exit (while loop); got: %s", a.LaunchCmd)
+	}
+	if a.Env["USE_BUILTIN_RIPGREP"] != "0" {
+		t.Errorf("Env should set USE_BUILTIN_RIPGREP=0 for Alpine musl; got: %v", a.Env)
+	}
+}
+
+func TestService_Create_WithCustomImage(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+
+	req := CreateRequest{Agent: "claude", Image: "my-registry/custom-claude:v1.2.3"}
+	sess, err := svc.Create(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sess.Image != "my-registry/custom-claude:v1.2.3" {
+		t.Errorf("Image: want override to flow through, got %q", sess.Image)
+	}
+
+	// Round-trip through the DB — Get should return the same image.
+	got, err := svc.Get(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Image != "my-registry/custom-claude:v1.2.3" {
+		t.Errorf("Image after Get: want override preserved, got %q", got.Image)
+	}
+}
+
+func TestService_Create_WithCustomSetupScript(t *testing.T) {
+	svc, fake, _, _ := newTestService(t)
+
+	customSetup := `echo "custom setup" > /tmp/custom-marker`
+	req := CreateRequest{Agent: "claude", SetupScript: customSetup}
+	sess, err := svc.Create(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sess.SetupScript != customSetup {
+		t.Errorf("SetupScript verbatim: want %q, got %q", customSetup, sess.SetupScript)
+	}
+
+	// The fake sandbox records the spec it received on Create. Verify the entrypoint
+	// includes the custom setup script — drift here would mean user-supplied setup
+	// silently gets ignored.
+	if len(fake.specs) == 0 {
+		t.Fatal("fake didn't record any Create specs")
+	}
+	cmd := strings.Join(fake.specs[0].Cmd, " ")
+	if !strings.Contains(cmd, customSetup) {
+		t.Errorf("entrypoint should embed the custom setup script verbatim; got: %s", cmd)
+	}
+	// And NOT the agent's default setup, since the user overrode it.
+	if strings.Contains(cmd, "claude.ai/install.sh") {
+		t.Errorf("user override should replace agent default, but DefaultSetup still appears in entrypoint")
+	}
+}
+
+func TestService_Create_DefaultsToAgentRegistry(t *testing.T) {
+	// Blank Image + blank SetupScript should pick up agent.DefaultImage and inline
+	// agent.DefaultSetup in the entrypoint.
+	svc, fake, _, _ := newTestService(t)
+
+	sess, err := svc.Create(context.Background(), CreateRequest{Agent: "claude"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	a, _ := resolveAgent("claude")
+	if sess.Image != a.DefaultImage {
+		t.Errorf("Image: want agent default %q, got %q", a.DefaultImage, sess.Image)
+	}
+	// SetupScript stays empty on the row (sentinel for "use agent default at runtime").
+	if sess.SetupScript != "" {
+		t.Errorf("SetupScript: want empty sentinel, got %q", sess.SetupScript)
+	}
+	// But the entrypoint should contain the agent's default setup commands.
+	if len(fake.specs) == 0 {
+		t.Fatal("fake didn't record any Create specs")
+	}
+	cmd := strings.Join(fake.specs[0].Cmd, " ")
+	if !strings.Contains(cmd, "claude.ai/install.sh") {
+		t.Errorf("entrypoint should inline agent.DefaultSetup; got: %s", cmd)
+	}
+}
+
+func TestService_Create_MotdInEntrypoint(t *testing.T) {
+	// The MOTD heredoc in the preamble is what SSH-mode shell windows cat at attach
+	// time. If the preamble drifts (e.g. accidentally moved into the user-editable
+	// setup), users could remove it.
+	svc, fake, _, _ := newTestService(t)
+
+	if _, err := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "motd-test"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(fake.specs) == 0 {
+		t.Fatal("fake didn't record any Create specs")
+	}
+	cmd := strings.Join(fake.specs[0].Cmd, " ")
+	if !strings.Contains(cmd, "/etc/deepcove-motd") {
+		t.Errorf("entrypoint should write /etc/deepcove-motd; got: %s", cmd)
+	}
+	if !strings.Contains(cmd, `Welcome to deepcove session "motd-test"`) {
+		t.Errorf("MOTD should embed the session name; got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "/deepcove") || !strings.Contains(cmd, "/workspace") || !strings.Contains(cmd, "/root") {
+		t.Errorf("MOTD should mention the three persistent mount targets; got: %s", cmd)
+	}
+}
+
 func TestService_Create_PersistsMounts(t *testing.T) {
 	svc, _, _, _ := newTestService(t)
 
@@ -469,7 +614,11 @@ func TestService_Create_PersistsMounts(t *testing.T) {
 	}
 }
 
-func TestService_Destroy_RemovesAgentHomeVolume(t *testing.T) {
+func TestService_Destroy_DoesNotRemoveSharedAgentVolume(t *testing.T) {
+	// The agent-home volume is shared across all sessions of the same agent — it holds
+	// the user's login credentials and the installed agent binary. Destroying one
+	// claude session must not clobber the volume; another claude session created later
+	// expects to still be logged in.
 	svc, fake, _, _ := newTestService(t)
 	sess := mustCreate(t, svc, "claude")
 
@@ -477,12 +626,35 @@ func TestService_Destroy_RemovesAgentHomeVolume(t *testing.T) {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	wantName := agentHomeVolumeName(sess.ID)
-	if len(fake.removedStorage) != 1 {
-		t.Fatalf("RemoveStorage call count: want 1, got %d (%v)", len(fake.removedStorage), fake.removedStorage)
+	if len(fake.removedStorage) != 0 {
+		t.Errorf("RemoveStorage should NOT be called on session destroy (shared volume); got %v", fake.removedStorage)
 	}
-	if fake.removedStorage[0] != wantName {
-		t.Errorf("RemoveStorage arg: want %q, got %q", wantName, fake.removedStorage[0])
+}
+
+func TestService_Create_UsesPerAgentSharedVolume(t *testing.T) {
+	// Pin the shared-volume behavior: two sessions of the same agent must reference the
+	// same volume name, so Docker mounts the same persistent storage and both see the
+	// same /root/.claude and /root/.local/bin/claude.
+	svc, fake, _, _ := newTestService(t)
+	a, _ := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "share-a"})
+	b, _ := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "share-b"})
+
+	if len(fake.specs) < 2 {
+		t.Fatalf("expected 2 Create specs, got %d", len(fake.specs))
+	}
+	homeName := agentHomeVolumeName("claude")
+	for i, spec := range fake.specs[:2] {
+		found := false
+		for _, m := range spec.Mounts {
+			if m.Target == agentHomeMountTarget && m.Source == homeName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("session %d (%s/%s): expected agent-home mount Source=%q Target=%q in spec.Mounts=%v",
+				i, []string{a.ID, b.ID}[i], []string{a.Name, b.Name}[i], homeName, agentHomeMountTarget, spec.Mounts)
+		}
 	}
 }
 
@@ -737,19 +909,20 @@ func TestAgents(t *testing.T) {
 		}
 	}
 
+	// v1: Claude only. Other agents (codex, gemini, opencode) are deferred and must NOT
+	// appear in the public registry — see project_agent_works_deferred.md. If you're
+	// adding a new agent, append it here AND verify the install/launch end-to-end first.
 	tests := []struct {
 		agent string
 	}{
 		{agent: "claude"},
-		{agent: "codex"},
-		{agent: "gemini"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.agent, func(t *testing.T) {
 			for _, a := range got {
 				if a.Name == tc.agent {
-					if a.Image == "" {
-						t.Errorf("agent %q has empty Image", tc.agent)
+					if a.DefaultImage == "" {
+						t.Errorf("agent %q has empty DefaultImage", tc.agent)
 					}
 					return
 				}

@@ -158,18 +158,18 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 		{
 			name:          "no ?tmux_window= → plain attach to view",
 			tmuxWindow:    "",
-			wantAttachLen: 4, // tmux attach -t view-XXX
+			wantAttachLen: 5, // tmux -u attach -t view-XXX
 		},
 		{
 			name:           "?tmux_window=main → chained select-window to view:main",
 			tmuxWindow:     "main",
-			wantAttachLen:  8, // tmux attach -t view-XXX ; select-window -t view-XXX:main
+			wantAttachLen:  9, // tmux -u attach -t view-XXX ; select-window -t view-XXX:main
 			wantSelectArgs: []string{";", "select-window", "-t"},
 		},
 		{
 			name:           "?tmux_window=shell → chained select-window to view:shell",
 			tmuxWindow:     "shell",
-			wantAttachLen:  8,
+			wantAttachLen:  9,
 			wantSelectArgs: []string{";", "select-window", "-t"},
 		},
 	}
@@ -245,17 +245,20 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 			if len(gotAttach) != tc.wantAttachLen {
 				t.Errorf("attach cmd length: got %d, want %d (%v)", len(gotAttach), tc.wantAttachLen, gotAttach)
 			}
-			wantAttachHead := []string{"tmux", "attach", "-t", viewName}
+			// The -u between tmux and attach forces UTF-8 client mode — fixes the
+			// `_` substitution of high-bit chars (❯ ← •) on Alpine where no locale
+			// is set. Drift here without test catching it would re-break the TUI.
+			wantAttachHead := []string{"tmux", "-u", "attach", "-t", viewName}
 			if !sliceHasPrefix(gotAttach, wantAttachHead) {
 				t.Errorf("attach cmd head: got %v, want prefix %v", gotAttach, wantAttachHead)
 			}
 			if tc.tmuxWindow != "" {
 				wantTarget := viewName + ":" + tc.tmuxWindow
-				if len(gotAttach) < 8 || gotAttach[7] != wantTarget {
+				if len(gotAttach) < 9 || gotAttach[8] != wantTarget {
 					t.Errorf("select-window target: got %v, want trailing %s", gotAttach, wantTarget)
 				}
-				if !sliceHasPrefix(gotAttach[4:], tc.wantSelectArgs) {
-					t.Errorf("select-window middle: got %v, want %v after attach head", gotAttach[4:], tc.wantSelectArgs)
+				if !sliceHasPrefix(gotAttach[5:], tc.wantSelectArgs) {
+					t.Errorf("select-window middle: got %v, want %v after attach head", gotAttach[5:], tc.wantSelectArgs)
 				}
 			}
 

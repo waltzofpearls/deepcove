@@ -94,11 +94,11 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 		return fmt.Errorf("session: marshal mounts: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, container_id, created_at, updated_at, last_activity_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, container_id, created_at, updated_at, last_activity_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
-		string(sess.Status), string(mountsJSON), string(envJSON), sess.ContainerID,
+		string(sess.Status), string(mountsJSON), string(envJSON), sess.SetupScript, sess.ContainerID,
 		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
 	)
 	if err != nil {
@@ -109,7 +109,7 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 
 func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*Session, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, agent, image, owner_email, status, mounts, env,
+		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script,
 		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, owner)
@@ -125,7 +125,7 @@ func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*S
 
 func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includeAll bool) ([]*Session, error) {
 	query := `
-		SELECT id, name, agent, image, owner_email, status, mounts, env,
+		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script,
 		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
@@ -243,15 +243,20 @@ func scanRow(r rowScanner) (*Session, error) {
 		sess           Session
 		mountsJSON     sql.NullString
 		envJSON        sql.NullString
+		setupScript    sql.NullString
 		containerID    sql.NullString
 		status         string
 		lastActivityAt sql.NullTime
 	)
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &mountsJSON, &envJSON, &containerID, &sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
+		&status, &mountsJSON, &envJSON, &setupScript, &containerID,
+		&sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
 		return nil, err
+	}
+	if setupScript.Valid {
+		sess.SetupScript = setupScript.String
 	}
 	// last_activity_at is nullable on disk (DuckDB ALTER limitation
 	// means we can't enforce NOT NULL); fall back to created_at when

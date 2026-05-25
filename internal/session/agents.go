@@ -5,45 +5,79 @@ import (
 	"sort"
 )
 
-// AgentInfo is the public shape returned by GET /api/agents. The
-// SPA's "new session" form populates its agent dropdown from this
-// list; the JSON tags are the wire contract.
+// AgentInfo is the public shape returned by GET /api/agents — the SPA's "new session"
+// form reads it for the agent dropdown and to pre-populate the setup-script textarea.
+// v1 returns Claude only; codex/gemini/opencode are deferred until each is verified
+// end-to-end (see project_agent_works_deferred.md).
 type AgentInfo struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
+	Name          string            `json:"name"`
+	DisplayName   string            `json:"display_name"`
+	DefaultImage  string            `json:"default_image"`
+	OfficialImage string            `json:"official_image"`
+	DefaultSetup  string            `json:"default_setup"`
+	LaunchCmd     string            `json:"launch_cmd"`
+	Env           map[string]string `json:"env"`
 }
 
-// Agents returns the list of agent shorthands the service knows
-// how to launch, sorted by name for stable output.
 func Agents() []AgentInfo {
-	out := make([]AgentInfo, 0, len(agentImages))
-	for name, image := range agentImages {
-		out = append(out, AgentInfo{Name: name, Image: image})
+	out := make([]AgentInfo, 0, len(agents))
+	for _, a := range agents {
+		out = append(out, a)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// agentImages is the v0 agent-name → OCI image map. Hardcoded by
-// design — the SPEC §8.1 promise is that `deepcove session <agent>`
-// resolves a short name internally. When we have more agents we'll
-// move this to config (file or DB), but a map keeps the abstraction
-// honest with zero ceremony in the meantime.
-//
-// The images themselves are placeholders for now. Real images will
-// pin a known agent CLI + tmux + a sane shell environment.
-var agentImages = map[string]string{
-	"claude": "alpine:3.20", // TODO: real claude-code image
-	"codex":  "alpine:3.20", // TODO: real codex image
-	"gemini": "alpine:3.20", // TODO: real gemini image
+// DefaultSetup must be idempotent (`command -v <bin>` before installing) — runs every
+// container boot. LaunchCmd runs in tmux window `main` and auto-restarts on agent exit;
+// SSH mode is the shell escape hatch.
+var agents = map[string]AgentInfo{
+	"claude": {
+		Name:          "claude",
+		DisplayName:   "Claude Code",
+		DefaultImage:  "alpine:3.20",
+		OfficialImage: "",
+		DefaultSetup: `apk add --no-cache curl bash tmux libgcc libstdc++ ripgrep
+command -v claude >/dev/null 2>&1 || curl -fsSL https://claude.ai/install.sh | bash
+[ -x /root/.local/bin/claude ] && ln -sf /root/.local/bin/claude /usr/local/bin/claude`,
+		LaunchCmd: `while true; do
+  cd /deepcove 2>/dev/null || cd /workspace
+  claude
+  ec=$?
+  echo ""
+  echo "claude exited (code $ec); restarting in 3s — switch to SSH mode for a shell"
+  sleep 3
+done`,
+		Env: map[string]string{
+			// Claude's bundled ripgrep is glibc-linked and segfaults on Alpine musl.
+			"USE_BUILTIN_RIPGREP": "0",
+			// Alpine ships no locale; without UTF-8 tmux substitutes non-ASCII with `_`
+			// when sending to clients. `tmux -u` in attach.go is the actual fix; this
+			// just keeps less/vim/git-pager from doing similar things.
+			"LANG":   "C.UTF-8",
+			"LC_ALL": "C.UTF-8",
+		},
+	},
 }
 
-// resolveImage looks up the OCI image for an agent shorthand. Returns
-// a clear error for unknown agents so the CLI / API can surface them.
-func resolveImage(agent string) (string, error) {
-	img, ok := agentImages[agent]
+func resolveAgent(name string) (AgentInfo, error) {
+	a, ok := agents[name]
 	if !ok {
-		return "", fmt.Errorf("unknown agent %q (known: claude, codex, gemini)", agent)
+		known := make([]string, 0, len(agents))
+		for n := range agents {
+			known = append(known, n)
+		}
+		sort.Strings(known)
+		return AgentInfo{}, fmt.Errorf("unknown agent %q (known: %v)", name, known)
 	}
-	return img, nil
+	return a, nil
+}
+
+// resolveImage is a back-compat shim — new code should call resolveAgent directly.
+func resolveImage(agent string) (string, error) {
+	a, err := resolveAgent(agent)
+	if err != nil {
+		return "", err
+	}
+	return a.DefaultImage, nil
 }

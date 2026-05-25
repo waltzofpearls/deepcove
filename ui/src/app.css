@@ -1,5 +1,15 @@
 @import 'tailwindcss';
 
+/* JetBrains Mono webfont. Self-hosted via @fontsource so xterm.js doesn't depend on
+   what the user has installed locally. The 400/500/700 weights cover regular, the
+   xterm.js cursor-emphasis bold, and any "extra-bold" UI text agents emit. We import
+   only the latin subset to keep the bundle small — Claude Code's TUI uses arrows
+   (←→), dingbats (❯), bullets (•), and box-drawing characters that the latin subset
+   already includes (they're not in CJK ranges). The Menlo fallback chain kicks in
+   only if the webfont fails to load. */
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/700.css';
+
 /* Tailwind v4 dropped the `darkMode: 'class'` JS config; declaring a
    `dark` variant via @custom-variant restores the `.dark` class
    approach that mode-watcher drives. */

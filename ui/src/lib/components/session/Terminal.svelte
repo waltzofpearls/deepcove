@@ -16,6 +16,9 @@
   import '@xterm/xterm/css/xterm.css';
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { api } from '$lib/api/client';
+  import type { BootstrapStatus } from '$lib/api/types';
+  import Loader2 from '@lucide/svelte/icons/loader-2';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
   // tmuxWindow optionally targets a specific tmux window in the
   // session. Omit/undefined → follow the session's current window
@@ -26,9 +29,20 @@
 
   let container: HTMLDivElement;
   let status = $state<'connecting' | 'open' | 'closed' | 'error'>('connecting');
+  // While bootstrap is "installing" we don't open the WS — opening before tmux is up
+  // errors in a tight retry loop.
+  let bootstrap = $state<BootstrapStatus>('installing');
+  let bootstrapLog = $state('');
+  // Auto-scroll the log <pre> to bottom on every update.
+  let logPreEl = $state<HTMLPreElement | undefined>(undefined);
+  $effect(() => {
+    if (!logPreEl || !bootstrapLog) return;
+    logPreEl.scrollTop = logPreEl.scrollHeight;
+  });
 
-  const MAX_RECONNECT_ATTEMPTS = 8;
-  const EARLY_CLOSE_THRESHOLD_MS = 3000;
+  const maxReconnectAttempts = 8;
+  const earlyCloseThresholdMs = 3000;
+  const bootstrapPollMs = 1000;
 
   $effect(() => {
     // Synchronous reads of reactive props so Svelte tracks them as
@@ -49,10 +63,29 @@
     let ro: ResizeObserver | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let bootstrapTimer: ReturnType<typeof setTimeout> | undefined;
     let lastCols = 0;
     let lastRows = 0;
     let disposed = false;
     let attempts = 0;
+
+    async function pollBootstrap(): Promise<BootstrapStatus> {
+      while (!disposed) {
+        try {
+          const resp = await api.sessionBootstrap(id);
+          if (disposed) return 'errored';
+          bootstrap = resp.status;
+          bootstrapLog = resp.log;
+          if (resp.status !== 'installing') return resp.status;
+        } catch {
+          // Transient errors recover on the next poll.
+        }
+        await new Promise<void>((resolve) => {
+          bootstrapTimer = setTimeout(resolve, bootstrapPollMs);
+        });
+      }
+      return 'errored';
+    }
 
     const sendResize = () => {
       if (!term || ws?.readyState !== 1) return;
@@ -102,8 +135,8 @@
         // failed to exec `tmux attach` because the container is
         // mid-startup.
         if (
-          attempts < MAX_RECONNECT_ATTEMPTS &&
-          (!everOpened || lifetime < EARLY_CLOSE_THRESHOLD_MS)
+          attempts < maxReconnectAttempts &&
+          (!everOpened || lifetime < earlyCloseThresholdMs)
         ) {
           attempts++;
           status = 'connecting';
@@ -120,17 +153,29 @@
     }
 
     (async () => {
-      const [{ Terminal }, { FitAddon }, { WebLinksAddon }, { WebglAddon }] =
+      const final = await pollBootstrap();
+      if (disposed || final === 'errored') return;
+
+      // xterm.js measures cell width at init using whatever font is currently
+      // resolvable; waiting for the webfont avoids locking in Menlo's metrics.
+      try {
+        await document.fonts.load('13px "JetBrains Mono"');
+      } catch {
+        /* not supported in this browser; fall through */
+      }
+      if (disposed) return;
+
+      const [{ Terminal }, { FitAddon }, { WebLinksAddon }, { Unicode11Addon }] =
         await Promise.all([
           import('@xterm/xterm'),
           import('@xterm/addon-fit'),
           import('@xterm/addon-web-links'),
-          import('@xterm/addon-webgl'),
+          import('@xterm/addon-unicode11'),
         ]);
       if (disposed) return;
 
       term = new Terminal({
-        fontFamily: 'ui-monospace, "JetBrains Mono", Menlo, monospace',
+        fontFamily: '"JetBrains Mono", Menlo, "Cascadia Code", Consolas, monospace',
         fontSize: 13,
         cursorBlink: true,
         cursorStyle: 'block',
@@ -141,14 +186,12 @@
       fit = new FitAddon();
       term.loadAddon(fit);
       term.loadAddon(new WebLinksAddon());
+      term.loadAddon(new Unicode11Addon());
+      term.unicode.activeVersion = '11';
+      // No @xterm/addon-webgl on purpose — its sprite atlas can't draw many glyphs
+      // Claude's TUI uses and falls back to underline placeholders. DOM renderer
+      // delegates to browser text rendering, which handles everything correctly.
       term.open(container);
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch {
-        /* fall back to DOM renderer */
-      }
       fit.fit();
 
       const enc = new TextEncoder();
@@ -176,6 +219,7 @@
       disposed = true;
       clearTimeout(resizeTimer);
       clearTimeout(reconnectTimer);
+      clearTimeout(bootstrapTimer);
       ro?.disconnect();
       ws?.close();
       term?.dispose();
@@ -196,7 +240,50 @@
 
 <div class="relative h-full w-full bg-[var(--term-bg)]">
   <div bind:this={container} class="h-full w-full"></div>
-  {#if status === 'connecting'}
+
+  {#if bootstrap === 'installing'}
+    <div
+      class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground"
+    >
+      <div class="flex shrink-0 flex-col items-center gap-2">
+        <div class="flex items-center gap-2 text-sm">
+          <Loader2 class="size-4 animate-spin text-primary" />
+          Setting up your session…
+        </div>
+        <p class="max-w-md text-center text-xs text-muted-foreground">
+          Installing the coding agent and its dependencies. This is one-time per agent;
+          future sessions of the same agent skip this step.
+        </p>
+      </div>
+      {#if bootstrapLog}
+        <pre
+          bind:this={logPreEl}
+          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-border bg-card/50 px-3 py-2 font-mono text-[11px] leading-tight text-muted-foreground"
+        >{bootstrapLog}</pre>
+      {/if}
+    </div>
+  {:else if bootstrap === 'errored'}
+    <div
+      class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground"
+    >
+      <div class="flex shrink-0 flex-col items-center gap-2">
+        <div class="flex items-center gap-2 text-sm text-destructive">
+          <TriangleAlert class="size-4" />
+          Setup failed
+        </div>
+        <p class="max-w-md text-center text-xs text-muted-foreground">
+          The container's entrypoint setup script exited non-zero. Use SSH mode to
+          inspect, or destroy and recreate the session.
+        </p>
+      </div>
+      {#if bootstrapLog}
+        <pre
+          bind:this={logPreEl}
+          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 font-mono text-[11px] leading-tight"
+        >{bootstrapLog}</pre>
+      {/if}
+    </div>
+  {:else if status === 'connecting'}
     <div
       class="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--term-bg)]/80 text-sm text-muted-foreground"
     >

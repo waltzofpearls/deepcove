@@ -28,6 +28,8 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 
 	fs := flag.NewFlagSet("session "+agent, flag.ContinueOnError)
 	name := fs.String("name", "", "session name (auto-generated if omitted)")
+	image := fs.String("image", "", "container image override (default: agent's registered image)")
+	setupScript := fs.String("setup-script", "", "shell script run on container start (default: agent's registered setup)")
 	mounts := &mountFlag{}
 	fs.Var(mounts, "mount", "mount host:container[:ro]; repeatable")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -41,9 +43,11 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 
 	client := newSessionClient(cfg)
 	sess, err := client.Create(ctx, session.CreateRequest{
-		Agent:  agent,
-		Name:   *name,
-		Mounts: mounts.values,
+		Agent:       agent,
+		Name:        *name,
+		Image:       *image,
+		SetupScript: *setupScript,
+		Mounts:      mounts.values,
 	})
 	if err != nil {
 		return err

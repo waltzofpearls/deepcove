@@ -17,6 +17,8 @@ export interface Session {
 	// /workspace mount and the agent-home /root volume are NOT
 	// included — those are managed by deepcove, not the user.
 	mounts: MountRequest[] | null;
+	// Empty means "use the agent registry's default".
+	setup_script: string;
 	container_id?: string;
 	created_at: string; // ISO-8601 timestamp
 	updated_at: string;
@@ -28,6 +30,9 @@ export interface CreateSessionRequest {
 	name?: string;
 	env?: Record<string, string>;
 	mounts?: MountRequest[];
+	// Empty falls back to agent registry defaults.
+	image?: string;
+	setup_script?: string;
 }
 
 // MountRequest mirrors internal/session.MountRequest. host_path must
@@ -40,9 +45,16 @@ export interface MountRequest {
 	mode?: 'rw' | 'ro';
 }
 
+// official_image is empty until a prebuilt deepcove image is published — UI uses that
+// to gate the "Official deepcove image" radio with a "coming soon" callout.
 export interface Agent {
 	name: string;
-	image: string;
+	display_name: string;
+	default_image: string;
+	official_image: string;
+	default_setup: string;
+	launch_cmd: string;
+	env: Record<string, string>;
 }
 
 export interface SessionPreview {
@@ -68,4 +80,11 @@ export interface CreateTmuxWindowRequest {
 
 export interface ApiError {
 	error: string;
+}
+
+export type BootstrapStatus = 'installing' | 'ready' | 'errored';
+
+export interface BootstrapResponse {
+	status: BootstrapStatus;
+	log: string;
 }

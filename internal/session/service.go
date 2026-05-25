@@ -20,26 +20,18 @@ import (
 // this — see validateMountRequests.
 const scratchMountTarget = "/workspace"
 
-// agentHomeMountTarget is where the per-session agent-home volume
-// is mounted inside the sandbox. It holds `~/.claude/`, `.gitconfig`,
-// shell history, and any other state Claude/codex/gemini write to
-// $HOME. The named volume survives container destroy+recreate (used
-// by EditMounts), so the user's conversation history isn't lost when
-// they reconfigure mounts.
-//
-// `/root` is the right path today because the deepcove agent images
-// (and the placeholder alpine setup) run as root. Future agent
-// images that use a non-root user will need a per-image override —
-// out of scope here.
+// /root is hardcoded — agent images run as root today. Non-root images would need a
+// per-image override (out of scope).
 const agentHomeMountTarget = "/root"
 
-// agentHomeVolumeName is the Docker named-volume name for the
-// agent-home mount. Embedding the session id makes the volume
-// trivially traceable back to its owning session ("docker volume ls
-// | grep deepcove" picks them all out) and makes cleanup
-// straightforward in Destroy.
-func agentHomeVolumeName(sessionID string) string {
-	return "deepcove-session-" + sessionID + "-home"
+// Volume is shared across ALL sessions of the same agent so auth + installed binary
+// persist across sessions. Tradeoff: shell history, gitconfig, and Claude conversation
+// history (under `.claude/projects/<encoded-cwd>/`) are all shared. Different repos get
+// different project subdirs so concurrent sessions on different repos don't conflict.
+// Volume is never auto-removed; user runs `docker volume rm deepcove-agent-<name>-home`
+// to log out everywhere / reset agent state.
+func agentHomeVolumeName(agentName string) string {
+	return "deepcove-agent-" + agentName + "-home"
 }
 
 // ErrMountInvalid is the sentinel for user mount validation failures.
@@ -103,25 +95,21 @@ func NewService(repo SessionRepository, sb sandbox.Sandbox, dataDir string, logg
 	}
 }
 
-// Create allocates a new session, creates a sandbox, starts it, and
-// persists the row. On any failure after the workspace dir is made,
-// it rolls back the sandbox and the workspace so the caller doesn't
-// leave orphans behind.
+// Image override is resolved + locked in at create time. SetupScript override is
+// stored verbatim; empty means "use agent.DefaultSetup at spec-build time" so registry
+// updates flow into existing sessions on recreate.
 func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, error) {
 	if req.Agent == "" {
 		return nil, fmt.Errorf("agent is required")
 	}
-	image, err := resolveImage(req.Agent)
+	agent, err := resolveAgent(req.Agent)
 	if err != nil {
 		return nil, err
 	}
 
-	// Validate user mounts BEFORE the workspace dir + sandbox are
-	// created — so we reject bad input as a clean 400 without any
-	// rollback. The sandbox layer's mount validator runs again on
-	// Create with the host-side checks (absolute, cleaned, under an
-	// allowed root); this pass owns session-layer concerns:
-	// /workspace collisions, duplicate targets, mode validation.
+	// Validate before any sandbox work so bad input fails as a clean 400 without
+	// rollback. Owns session-layer concerns (/workspace collision, dup targets, mode);
+	// the sandbox layer's validator owns host-path concerns (absolute, allowed root).
 	userMounts, err := validateMountRequests(req.Mounts)
 	if err != nil {
 		return nil, err
@@ -132,6 +120,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		return nil, fmt.Errorf("session: generate id: %w", err)
 	}
 	now := time.Now().UTC()
+
+	image := req.Image
+	if image == "" {
+		image = agent.DefaultImage
+	}
+
 	sess := &Session{
 		ID:             id.String(),
 		Name:           req.Name,
@@ -141,6 +135,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		Status:         StatusCreated,
 		Env:            req.Env,
 		Mounts:         req.Mounts,
+		SetupScript:    req.SetupScript,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		LastActivityAt: now,
@@ -149,14 +144,14 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		sess.Name = generateName(req.Agent)
 	}
 
-	// Workspace dir lives under $dataDir/sessions/<id>/ and gets
-	// bind-mounted into the sandbox at /workspace.
+	// Workspace dir lives under $dataDir/sessions/<id>/ and gets bind-mounted into the
+	// sandbox at /workspace.
 	workspace := filepath.Join(s.sessions, sess.ID)
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return nil, fmt.Errorf("session: mkdir workspace: %w", err)
 	}
 
-	spec := s.buildSandboxSpec(sess.ID, image, req.Env, workspace, userMounts)
+	spec := s.buildSandboxSpec(sess, agent, workspace, userMounts)
 
 	handle, err := s.sandbox.Create(ctx, spec)
 	if err != nil {
@@ -276,14 +271,7 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if err := s.sandbox.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return fmt.Errorf("session: sandbox destroy: %w", err)
 	}
-	// Remove the per-session agent-home volume. It survives container
-	// removal by design, so this is the only place we drop it. Errors
-	// are logged but don't block destroy — a leaked volume is annoying
-	// but not catastrophic, and unblocking the user's destroy beats
-	// failing the whole operation on a volume-cleanup edge case.
-	if rerr := s.sandbox.RemoveStorage(ctx, agentHomeVolumeName(id)); rerr != nil && !errors.Is(rerr, sandbox.ErrNotFound) && !errors.Is(rerr, sandbox.ErrNotSupported) {
-		s.logger.Warn("session: remove agent-home volume", "id", id, "err", rerr)
-	}
+	// Don't remove the agent-home volume — it's shared (see agentHomeVolumeName).
 	workspace := filepath.Join(s.sessions, id)
 	if err := os.RemoveAll(workspace); err != nil {
 		return fmt.Errorf("session: remove workspace: %w", err)
@@ -295,29 +283,14 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	return nil
 }
 
-// EditMounts replaces a session's user mounts. Docker can't add or
-// remove bind mounts on a live container, so we destroy the current
-// container and recreate it with the new spec — the session id stays
-// the same, the agent-home volume (and its /root contents) survives,
-// and /workspace (host bind mount) survives.
-//
-// State that DOES NOT survive: anything in the container's writable
-// layer that wasn't under /root or /workspace. Today's placeholder
-// image installs tmux at first boot, so the new container reinstalls
-// it; real agent images will bake tmux in and the recreate is
-// near-instant.
-//
-// On any failure mid-recreate, the session is left as "errored"
-// rather than leaking partial state. The caller's UI is expected to
-// show the error and offer destroy as the recovery path.
+// Docker can't change bind mounts on a live container; this destroys + recreates.
+// Session id and the persistent storage (/root volume + /workspace bind) survive;
+// anything in the writable layer (apt-installed packages, /etc edits) does not.
 func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRequest) (*Session, error) {
 	sess, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	// Validate the new mount set BEFORE touching the running
-	// container — a clean 400 on invalid input doesn't leave the
-	// session in an in-between state.
 	userMounts, err := validateMountRequests(newMounts)
 	if err != nil {
 		return nil, err
@@ -326,28 +299,26 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	oldHandle := sandbox.Handle(sess.ContainerID)
 	wasRunning := sess.Status == StatusRunning
 
-	// Stop the old container if it's running. Idempotent on already-
-	// stopped containers via the sandbox layer's ErrNotFound tolerance.
 	if wasRunning {
 		if err := s.sandbox.Stop(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 			return nil, fmt.Errorf("session: stop sandbox: %w", err)
 		}
 	}
-	// Destroy the old container. Named volumes (agent-home) survive;
-	// anonymous volumes are removed by the driver's Destroy. Workspace
-	// dir is a host bind mount and untouched.
 	if err := s.sandbox.Destroy(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return nil, fmt.Errorf("session: destroy old sandbox: %w", err)
 	}
 
+	agent, err := resolveAgent(sess.Agent)
+	if err != nil {
+		return nil, fmt.Errorf("session: %w", err)
+	}
+
 	workspace := filepath.Join(s.sessions, sess.ID)
-	spec := s.buildSandboxSpec(sess.ID, sess.Image, sess.Env, workspace, userMounts)
+	spec := s.buildSandboxSpec(sess, agent, workspace, userMounts)
 
 	newHandle, err := s.sandbox.Create(ctx, spec)
 	if err != nil {
-		// Best-effort: mark errored so the row reflects reality.
-		// The session is now in a half-state (no container), and
-		// the user's recovery path is destroy.
+		// Half-state: row exists but no container. User's recovery is destroy.
 		_ = s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC())
 		return nil, fmt.Errorf("session: create new sandbox: %w", err)
 	}
@@ -361,19 +332,11 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 
 	now := time.Now().UTC()
 	if err := s.repo.UpdateMountsAndContainer(ctx, placeholderOwner, id, newMounts, string(newHandle), now); err != nil {
-		// Row update failed AFTER the new container is up — leave the
-		// new container running and surface the error. Next Get
-		// returns the stale container_id; manual repair via destroy
-		// is the fallback.
 		return nil, fmt.Errorf("session: update mounts row: %w", err)
 	}
-	// Bumping last_activity here doesn't undo "stop+recreate is a
-	// user action," but it pins the canvas ordering — a session you
-	// just reconfigured shouldn't drop to the bottom of the grid.
+	// Keep the just-reconfigured session at the top of the canvas.
 	_ = s.repo.UpdateActivity(ctx, placeholderOwner, id, now)
 
-	// Re-Get to return the canonical row. Cheaper than mutating the
-	// in-memory sess and possibly drifting from the DB representation.
 	updated, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -390,24 +353,14 @@ func (s *Service) WorkspaceRoot() string {
 	return s.sessions
 }
 
-// buildSandboxSpec assembles a SandboxSpec for a session. Shared by
-// Create (initial container) and EditMounts (replacement container)
-// so the entrypoint Cmd, network mode, scratch workspace mount, and
-// agent-home volume entry stay identical across the two paths — drift
-// here would mean a recreated container behaves subtly differently
-// than the one it replaced.
-//
-// Mount order:
-//  1. scratch workspace bind  (/workspace)
-//  2. agent-home volume       (/root, survives recreate)
-//  3. user mounts             (caller-supplied, validated upstream)
-//
-// User mounts are stacked last so a user can't shadow /workspace or
-// /root via path-collision tricks — the validator already rejects
-// those targets, this order is belt-and-suspenders.
+// Shared by Create + EditMounts so the entrypoint, mount layout, and network mode
+// stay identical between initial and recreated containers. Mount order — workspace
+// bind, agent-home volume, then user mounts — keeps the validator-blocked
+// /workspace+/root targets unshadowable even if the validator misses something.
+// User env wins on key conflicts with agent.Env.
 func (s *Service) buildSandboxSpec(
-	sessionID, image string,
-	env map[string]string,
+	sess *Session,
+	agent AgentInfo,
 	workspace string,
 	userMounts []sandbox.Mount,
 ) sandbox.SandboxSpec {
@@ -418,58 +371,100 @@ func (s *Service) buildSandboxSpec(
 			Type:   sandbox.MountBind,
 		},
 		{
-			Source: agentHomeVolumeName(sessionID),
+			Source: agentHomeVolumeName(agent.Name),
 			Target: agentHomeMountTarget,
 			Type:   sandbox.MountVolume,
 		},
 	}
 	mounts = append(mounts, userMounts...)
 
+	effectiveSetup := sess.SetupScript
+	if effectiveSetup == "" {
+		effectiveSetup = agent.DefaultSetup
+	}
+
+	mergedEnv := make(map[string]string, len(agent.Env)+len(sess.Env))
+	for k, v := range agent.Env {
+		mergedEnv[k] = v
+	}
+	for k, v := range sess.Env {
+		mergedEnv[k] = v
+	}
+
 	return sandbox.SandboxSpec{
-		Image: image,
-		// Placeholder Cmd: install tmux at runtime (first boot only;
-		// subsequent restarts find it already installed) and start a
-		// detached tmux session named "main" — the attach handler
-		// exec's `tmux attach -t main` against it. `exec sleep
-		// infinity` keeps PID 1 alive.
-		//
-		// Restart safety: when a container is stopped + started, the
-		// filesystem persists (so tmux stays installed) but the
-		// previous tmux server's socket at /tmp/tmux-* is left behind
-		// as a stale file. A fresh tmux refuses to reuse it and fails
-		// silently from the user's POV. The `rm -rf /tmp/tmux-*`
-		// clears any leftover before we recreate the session. Real
-		// agent images will bake tmux in and replace this Cmd
-		// entirely.
-		Cmd: []string{"sh", "-c",
-			"command -v tmux >/dev/null 2>&1 || apk add --no-cache tmux >/dev/null 2>&1; " +
-				"rm -rf /tmp/tmux-* 2>/dev/null; " +
-				// -n main names the first window "main" explicitly
-				// so the windows API has a stable, well-known name
-				// to target. Without -n, tmux derives the window
-				// name from the running command ("sh"), which is
-				// neither meaningful nor stable across agents.
-				"tmux new-session -d -s main -n main sh; " +
-				"exec sleep infinity",
-		},
-		Env:    env,
+		Image:  sess.Image,
+		Cmd:    buildEntrypoint(sess.Name, effectiveSetup, agent.LaunchCmd),
+		Env:    mergedEnv,
 		Mounts: mounts,
-		// Coding agents need outbound network (LLM APIs, package
-		// installs in placeholder images, git, etc.) so the default
-		// is NetNAT. The sandbox.NetworkMode zero value (NetIsolated)
-		// would block apk add at startup.
+		// NetNAT for outbound LLM API calls + package installs. Zero value (NetIsolated)
+		// would block `apk add` at startup.
 		Network: sandbox.NetworkConfig{Mode: sandbox.NetNAT},
 	}
 }
 
-// validateMountRequests checks session-layer mount invariants and
-// converts requests to sandbox.Mount entries ready to append to a
-// SandboxSpec. Host-side concerns (absolute, cleaned, under an
-// allowed root) are intentionally left to the sandbox validator —
-// running them here too would just duplicate error messages.
-//
-// Errors wrap ErrMountInvalid with a [N] index so the UI can point
-// the user at the offending row.
+// LaunchCmd is written to a file rather than passed inline to tmux — quoting a
+// multi-line shell script as a tmux new-window argument is nightmare-tier. Heredocs
+// use the single-quoted `<<'TERM'` form so user-supplied session names can't inject
+// shell metacharacters into the MOTD.
+func buildEntrypoint(sessName, setupScript, launchCmd string) []string {
+	body := fmt.Sprintf(`mkdir -p /etc /usr/local/bin /var/log
+
+# deepcove preamble: drop the SSH-mode MOTD. Refreshed every boot so name/path
+# changes propagate; not in user setup because it's not theirs to edit.
+cat > /etc/deepcove-motd <<'DEEPCOVE_MOTD_END'
+
+Welcome to deepcove session "%s".
+
+  /deepcove   ← your mounted code (if you added a mount at create time)
+  /workspace  ← scratch space (persists across container restarts)
+  /root       ← your home dir (persists across container recreates)
+
+Type 'claude' to start the coding agent. Switch to Agent mode to attach
+to the agent's running session in the main tmux window.
+
+DEEPCOVE_MOTD_END
+
+# Default to installing so the UI sees the right state if it polls before setup writes.
+echo installing > /etc/deepcove-bootstrap-status
+: > /var/log/deepcove-bootstrap.log
+
+{
+  set -e
+  echo "[deepcove] Starting setup at $(date -u +%%H:%%M:%%SZ)"
+%s
+  echo "[deepcove] Setup complete"
+} >> /var/log/deepcove-bootstrap.log 2>&1
+setup_rc=$?
+
+if [ $setup_rc -ne 0 ]; then
+  echo errored > /etc/deepcove-bootstrap-status
+  echo "[deepcove] Setup failed (exit $setup_rc) — see log above" >> /var/log/deepcove-bootstrap.log
+  # Park so the user can inspect via SSH mode.
+  exec sleep infinity
+fi
+
+cat > /usr/local/bin/deepcove-agent-launch <<'DEEPCOVE_LAUNCH_END'
+#!/bin/sh
+%s
+DEEPCOVE_LAUNCH_END
+chmod +x /usr/local/bin/deepcove-agent-launch
+
+# A fresh tmux refuses to reuse a stale socket from a previous boot.
+rm -rf /tmp/tmux-* 2>/dev/null || true
+tmux new-session -d -s main -n main /usr/local/bin/deepcove-agent-launch
+
+# Flip to ready only after tmux is up — the frontend gates WS attach on this.
+echo ready > /etc/deepcove-bootstrap-status
+
+exec sleep infinity
+`, sessName, setupScript, launchCmd)
+
+	return []string{"sh", "-c", body}
+}
+
+// Errors wrap ErrMountInvalid with a [N] index so the UI can point at the bad row.
+// Host-path checks (absolute, cleaned, under an allowed root) live in the sandbox
+// layer's validator.
 func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
 	if len(reqs) == 0 {
 		return nil, nil
@@ -488,11 +483,8 @@ func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
 			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q collides with the reserved scratch workspace",
 				ErrMountInvalid, i, m.ContainerPath)
 		}
-		// Block container_path = "/" outright: a mount over root
-		// clobbers the entire container filesystem and there's no
-		// legitimate use. Sub-paths of system dirs (/etc/foo,
-		// /usr/local/bin) are deliberately permitted — a power user
-		// who wants to overlay a config snippet can.
+		// Sub-paths of system dirs are deliberately allowed; only the root itself
+		// is blocked (mounting over / would clobber the whole filesystem).
 		if target == "/" {
 			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q cannot be the container root",
 				ErrMountInvalid, i, m.ContainerPath)
