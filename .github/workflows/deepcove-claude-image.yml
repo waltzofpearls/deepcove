@@ -1,0 +1,66 @@
+# Builds and pushes the deepcove-claude session image to GHCR.
+#
+# Triggers:
+#   workflow_dispatch — manual button in the Actions tab, for ad-hoc rebuilds.
+#   tag push deepcove-claude-v* — versioned releases (e.g. `git tag deepcove-claude-v0.1.0`).
+#
+# Tags pushed to GHCR:
+#   latest            — always, so the agent registry's OfficialImage ref resolves.
+#   <short-sha>       — every build, for traceability + rollback.
+#   <version>         — only on tag push, stripped from the `deepcove-claude-v` prefix.
+#
+# After the first successful run, walk through Package Settings → Danger Zone →
+# Change visibility → Public so users can `docker pull` without authentication.
+
+name: deepcove-claude image
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'deepcove-claude-v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: tags
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/deepcove-claude
+          TAGS="$IMAGE:latest,$IMAGE:${GITHUB_SHA::7}"
+          if [[ "$GITHUB_REF" == refs/tags/deepcove-claude-v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/deepcove-claude-}"
+            TAGS="$TAGS,$IMAGE:$VERSION"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deepcove-claude.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
