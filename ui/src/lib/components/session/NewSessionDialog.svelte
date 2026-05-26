@@ -53,13 +53,16 @@
       .catch((e) => (agentsError = String(e)));
   });
 
-  // Re-seed the install-panel defaults whenever the agent changes. Switching agents
+  // Re-seed image-related defaults whenever the agent changes. Switching agents
   // mid-edit is rare; the registry defaults are almost always what you want.
+  // The strategy default prefers the agent's prebuilt image when one exists,
+  // since that's the fastest-boot path.
   const selectedAgent = $derived(agents.find((a) => a.name === agent));
   $effect(() => {
     if (!selectedAgent) return;
     baseImage = selectedAgent.default_image;
     setupScript = selectedAgent.default_setup;
+    imageStrategy = selectedAgent.official_image ? 'official' : 'install';
   });
 
   const command = $derived.by(() => {
@@ -108,10 +111,9 @@
     mounts = [];
     submitError = null;
     submitting = false;
-    imageStrategy = 'install';
     customImage = '';
     customSetup = '';
-    // baseImage / setupScript get re-seeded by the agent-change $effect.
+    // baseImage / setupScript / imageStrategy get re-seeded by the agent-change $effect.
   }
 
   function buildPayload() {
@@ -154,7 +156,7 @@
     if (submitting) return;
     if (imageStrategy === 'official' && !selectedAgent?.official_image) return;
     if (imageStrategy === 'custom' && !customImage.trim()) {
-      submitError = 'Custom image: please enter an image reference.';
+      submitError = 'Bring your own image: please enter an image reference.';
       return;
     }
     submitting = true;
@@ -231,22 +233,6 @@
       <div class="space-y-2">
         <Label>Image</Label>
         <div class="space-y-2 rounded-md border border-border p-3">
-          <label class="flex cursor-pointer items-start gap-2.5 text-sm">
-            <input
-              type="radio"
-              bind:group={imageStrategy}
-              value="install"
-              class="mt-0.5 size-4 border-input"
-            />
-            <div class="flex-1">
-              <div class="font-medium">Install at startup</div>
-              <div class="text-xs text-muted-foreground">
-                Use a base image and run a setup script on first boot. Recommended for
-                Claude today (~15s install).
-              </div>
-            </div>
-          </label>
-
           <label
             class="flex items-start gap-2.5 text-sm"
             class:cursor-pointer={selectedAgent?.official_image}
@@ -261,12 +247,12 @@
               class="mt-0.5 size-4 border-input disabled:cursor-not-allowed"
             />
             <div class="flex-1">
-              <div class="font-medium">Official deepcove image</div>
+              <div class="font-medium">Default deepcove image</div>
               <div class="text-xs text-muted-foreground">
                 {#if selectedAgent?.official_image}
                   Prebuilt and ready — fastest boot. <code>{selectedAgent.official_image}</code>
                 {:else}
-                  Not yet published for this agent. Use "Install at startup" for now.
+                  Not yet published for this agent. Use "Run install script at startup" for now.
                 {/if}
               </div>
             </div>
@@ -280,9 +266,25 @@
               class="mt-0.5 size-4 border-input"
             />
             <div class="flex-1">
-              <div class="font-medium">Custom image</div>
+              <div class="font-medium">Bring your own image</div>
               <div class="text-xs text-muted-foreground">
-                Bring your own image. Optionally run extra setup on first boot.
+                Use a custom image. Optionally run extra setup on first boot.
+              </div>
+            </div>
+          </label>
+
+          <label class="flex cursor-pointer items-start gap-2.5 text-sm">
+            <input
+              type="radio"
+              bind:group={imageStrategy}
+              value="install"
+              class="mt-0.5 size-4 border-input"
+            />
+            <div class="flex-1">
+              <div class="font-medium">Run install script at startup</div>
+              <div class="text-xs text-muted-foreground">
+                Start from a base image and install the agent on first boot
+                (~15s for Claude).
               </div>
             </div>
           </label>

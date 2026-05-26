@@ -42,18 +42,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	return (await resp.json()) as T;
 }
 
+// Read endpoints accept an optional AbortSignal so callers can cancel an
+// in-flight request on component unmount. Without this, a fetch from an
+// unmounted component leaks — its keep-alive connection stays occupied
+// until the server responds. With 4+ session cards each polling /preview,
+// a single leaked request is enough to push past Firefox's default
+// 6-connections-per-origin limit and queue the next /preview indefinitely.
+
 export const api = {
 	listAgents(): Promise<Agent[]> {
 		return request('/agents');
 	},
 
-	listSessions(opts: { all?: boolean } = {}): Promise<Session[]> {
+	listSessions(opts: { all?: boolean; signal?: AbortSignal } = {}): Promise<Session[]> {
 		const q = opts.all ? '?all=true' : '';
-		return request(`/sessions${q}`);
+		return request(`/sessions${q}`, { signal: opts.signal });
 	},
 
-	getSession(id: string): Promise<Session> {
-		return request(`/sessions/${encodeURIComponent(id)}`);
+	getSession(id: string, signal?: AbortSignal): Promise<Session> {
+		return request(`/sessions/${encodeURIComponent(id)}`, { signal });
 	},
 
 	createSession(req: CreateSessionRequest): Promise<Session> {
@@ -90,12 +97,12 @@ export const api = {
 		});
 	},
 
-	sessionPreview(id: string): Promise<SessionPreview> {
-		return request(`/sessions/${encodeURIComponent(id)}/preview`);
+	sessionPreview(id: string, signal?: AbortSignal): Promise<SessionPreview> {
+		return request(`/sessions/${encodeURIComponent(id)}/preview`, { signal });
 	},
 
-	sessionBootstrap(id: string): Promise<BootstrapResponse> {
-		return request(`/sessions/${encodeURIComponent(id)}/bootstrap`);
+	sessionBootstrap(id: string, signal?: AbortSignal): Promise<BootstrapResponse> {
+		return request(`/sessions/${encodeURIComponent(id)}/bootstrap`, { signal });
 	},
 
 	// createTmuxWindow creates a new tmux window in the session.

@@ -68,17 +68,22 @@
     let lastRows = 0;
     let disposed = false;
     let attempts = 0;
+    // Aborts any in-flight bootstrap fetch when this effect tears down. Each
+    // leaked fetch holds a keep-alive connection slot until the server
+    // responds, and only takes a few to push past Firefox's per-origin
+    // connection cap — see client.ts for the full story.
+    const bootstrapAC = new AbortController();
 
     async function pollBootstrap(): Promise<BootstrapStatus> {
       while (!disposed) {
         try {
-          const resp = await api.sessionBootstrap(id);
+          const resp = await api.sessionBootstrap(id, bootstrapAC.signal);
           if (disposed) return 'errored';
           bootstrap = resp.status;
           bootstrapLog = resp.log;
           if (resp.status !== 'installing') return resp.status;
         } catch {
-          // Transient errors recover on the next poll.
+          // Aborts and transient errors both land here.
         }
         await new Promise<void>((resolve) => {
           bootstrapTimer = setTimeout(resolve, bootstrapPollMs);
@@ -217,6 +222,7 @@
 
     return () => {
       disposed = true;
+      bootstrapAC.abort();
       clearTimeout(resizeTimer);
       clearTimeout(reconnectTimer);
       clearTimeout(bootstrapTimer);

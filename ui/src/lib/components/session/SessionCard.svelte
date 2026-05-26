@@ -46,24 +46,28 @@
     };
   });
 
-  // Poll the preview endpoint at the configured cadence. The server
-  // serves cached previews when the session isn't running, so we keep
-  // polling on stopped sessions too — that way we still pick up the
-  // cached snapshot if we mounted after the session stopped. Poll
-  // failures are silent: the next tick will recover, and persistent
-  // failure is already visible via the stale snapshot + status dot.
-  $effect(() =>
-    usePolling(
+  // Poll the preview endpoint at the configured cadence. AbortController is
+  // required so an in-flight fetch from a briefly-mounted card (e.g. the
+  // dashboard render between sessions.add(created) and goto(/sessions/<id>))
+  // doesn't leak its connection slot — see client.ts for the pool-exhaustion
+  // story.
+  $effect(() => {
+    const ac = new AbortController();
+    const stop = usePolling(
       async () => {
         try {
-          preview = await api.sessionPreview(session.id);
+          preview = await api.sessionPreview(session.id, ac.signal);
         } catch {
-          /* swallow; next tick retries */
+          /* aborts and transient failures both land here; next tick retries */
         }
       },
       () => preferences.pollIntervalMs
-    )
-  );
+    );
+    return () => {
+      ac.abort();
+      stop();
+    };
+  });
 
   // Convert preview ANSI → HTML whenever either changes. The
   // converter chains internally so back-to-back calls don't
