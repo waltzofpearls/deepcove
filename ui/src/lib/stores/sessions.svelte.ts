@@ -35,14 +35,19 @@ let error = $state<string | null>(null);
 let subscriberCount = 0;
 let stopPolling: (() => void) | undefined;
 
+let abortCtrl: AbortController | undefined;
+
 function startIfIdle(): void {
 	if (stopPolling) return;
+	abortCtrl = new AbortController();
+	const signal = abortCtrl.signal;
 	stopPolling = usePolling(
 		async () => {
 			try {
-				list = await api.listSessions({ all: true });
+				list = await api.listSessions({ all: true, signal });
 				error = null;
 			} catch (e) {
+				if (signal.aborted) return;
 				error = e instanceof ApiError ? e.message : String(e);
 			} finally {
 				loading = false;
@@ -54,6 +59,8 @@ function startIfIdle(): void {
 
 function stopIfDone(): void {
 	if (subscriberCount > 0) return;
+	abortCtrl?.abort();
+	abortCtrl = undefined;
 	stopPolling?.();
 	stopPolling = undefined;
 }

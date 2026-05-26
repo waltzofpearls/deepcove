@@ -139,26 +139,31 @@
   let converter = $state<Awaited<ReturnType<typeof createConverter>> | undefined>(undefined);
 
   $effect(() => {
-    let cancelled = false;
+    // AbortController, not just a cancelled flag: a leaked /preview fetch
+    // here was the root cause of the dashboard "card stuck on 'waiting for
+    // first snapshot…'" bug — navigating back left the request occupying a
+    // Firefox connection slot, and the dashboard SessionCard's own /preview
+    // for the same id queued behind it indefinitely. See client.ts.
+    const ac = new AbortController();
     api
-      .getSession(id)
+      .getSession(id, ac.signal)
       .then((s) => {
-        if (!cancelled) session = s;
+        if (!ac.signal.aborted) session = s;
       })
       .catch((e) => {
-        if (!cancelled) loadError = String(e);
+        if (!ac.signal.aborted) loadError = String(e);
       });
     // Fetch the preview once on mount — the server's cache returns
     // the last good capture even when the session is stopped, so
     // there's something to render in the not-running branch.
     api
-      .sessionPreview(id)
+      .sessionPreview(id, ac.signal)
       .then((p) => {
-        if (!cancelled) preview = p;
+        if (!ac.signal.aborted) preview = p;
       })
       .catch(() => {});
     return () => {
-      cancelled = true;
+      ac.abort();
     };
   });
 
