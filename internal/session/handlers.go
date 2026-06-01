@@ -4,12 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 // AttachRoutes registers the session API on mux. Routes follow
 // Go 1.22's method-aware patterns so each verb has its own handler.
 func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
+	mux.HandleFunc("GET /api/preflight", s.handlePreflight)
+	mux.HandleFunc("GET /api/images/exists", s.handleImageExists)
+	mux.HandleFunc("POST /api/images/pull", s.handlePullImage)
 	mux.HandleFunc("POST /api/sessions", s.handleCreate)
 	mux.HandleFunc("GET /api/sessions", s.handleList)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
@@ -51,13 +56,11 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, err := s.Create(r.Context(), req)
 	if err != nil {
-		// Mount validation failures and other user-input errors are
-		// 400. The sandbox layer's mount-source validator (allowed
-		// roots, abs path) also lands here as Create errors — those
-		// are also user input, so 400 is right. Real server failures
-		// (DB down, docker daemon gone) would benefit from 500 once
-		// we have distinguishable sentinels; defer until needed.
-		writeError(w, http.StatusBadRequest, err.Error())
+		// Sandbox sentinels get precise status + a stable code the SPA
+		// can act on (Docker down → 503, image absent → 422). Mount and
+		// other user-input failures fall through to 400. See
+		// writeSandboxError.
+		writeSandboxError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, sess)
@@ -226,4 +229,40 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// Error codes carried in the {error, code} envelope. The SPA maps these
+// to friendly copy + actions; unknown/absent codes fall back to the raw
+// message. Stable strings — don't rename without updating the client.
+const (
+	codeInvalidInput      = "invalid_input"
+	codeDockerUnreachable = "docker_unreachable"
+	codeImageNotFound     = "image_not_found"
+	codeNotFound          = "not_found"
+	codeConflict          = "conflict"
+)
+
+func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg, "code": code})
+}
+
+// writeSandboxError maps sandbox sentinels to an HTTP status + stable
+// code so the SPA never sees a raw daemon string for the cases it can
+// act on. Non-sentinel errors (validation, unknown agent, and — today —
+// internal failures) default to 400, matching the prior create-handler
+// behavior.
+func writeSandboxError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sandbox.ErrUnavailable):
+		writeErrorCode(w, http.StatusServiceUnavailable, codeDockerUnreachable,
+			"Docker isn't reachable. Start Docker and try again.")
+	case errors.Is(err, sandbox.ErrImageNotFound):
+		writeErrorCode(w, http.StatusUnprocessableEntity, codeImageNotFound, err.Error())
+	case errors.Is(err, ErrNotFound) || errors.Is(err, sandbox.ErrNotFound):
+		writeErrorCode(w, http.StatusNotFound, codeNotFound, "not found")
+	case errors.Is(err, sandbox.ErrConflict):
+		writeErrorCode(w, http.StatusConflict, codeConflict, err.Error())
+	default:
+		writeErrorCode(w, http.StatusBadRequest, codeInvalidInput, err.Error())
+	}
 }

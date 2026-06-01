@@ -48,7 +48,57 @@ var (
 	ErrNotSupported = errors.New("sandbox: operation not supported by this driver")
 	ErrNotFound     = errors.New("sandbox: handle not found")
 	ErrConflict     = errors.New("sandbox: lifecycle conflict")
+
+	// ErrUnavailable means the backend itself is unreachable — the
+	// Docker daemon isn't running, the socket is gone, etc. Distinct
+	// from ErrNotFound (the daemon is up but the handle/image is
+	// absent). The session layer maps this to a 503 + actionable
+	// "start Docker" guidance instead of a raw socket error.
+	ErrUnavailable = errors.New("sandbox: backend unavailable")
+
+	// ErrImageNotFound means the requested image isn't present on the
+	// backend and hasn't been pulled. The session layer maps this to a
+	// 422 so the UI can offer to download it, rather than surfacing the
+	// daemon's raw "No such image" string.
+	ErrImageNotFound = errors.New("sandbox: image not found")
 )
+
+// Pinger is an optional capability: a driver that can cheaply check
+// whether its backend is reachable implements it. The session layer
+// uses it for the GET /api/preflight environment check. Drivers that
+// don't implement it are treated as "readiness unknown."
+type Pinger interface {
+	// Ping reports backend liveness. The returned string is a
+	// human-meaningful version identifier (e.g. the Docker API
+	// version) when reachable; it's best-effort and may be empty.
+	// A non-nil error (typically wrapping ErrUnavailable) means the
+	// backend is unreachable.
+	Ping(ctx context.Context) (version string, err error)
+}
+
+// ImageManager is an optional capability for container-style backends
+// that pull images from a registry. microVM backends that materialize
+// a rootfs differently won't implement it, and the session layer skips
+// the image-readiness path for them.
+type ImageManager interface {
+	// ImageExists reports whether ref is already present locally.
+	ImageExists(ctx context.Context, ref string) (bool, error)
+	// ImagePull fetches ref from its registry, blocking until the pull
+	// completes. onProgress, if non-nil, is invoked with aggregate
+	// progress updates during the pull (for a UI progress bar); pass
+	// nil for a silent pull.
+	ImagePull(ctx context.Context, ref string, onProgress func(PullProgress)) error
+}
+
+// PullProgress is a backend-agnostic image-pull progress update.
+// Current/Total are aggregate bytes across all layers; Total is 0 early
+// in the pull before layer sizes are known (the UI shows an
+// indeterminate bar until then).
+type PullProgress struct {
+	Status  string // short phase, e.g. "Downloading", "Extracting"
+	Current int64
+	Total   int64
+}
 
 // Handle is an opaque, driver-owned reference to a created sandbox.
 // Treat it as a token to pass back into the same driver — do not

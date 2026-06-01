@@ -8,6 +8,7 @@ import type {
 	CreateSessionRequest,
 	CreateTmuxWindowRequest,
 	MountRequest,
+	Preflight,
 	Session,
 	SessionPreview,
 	TmuxWindow,
@@ -16,7 +17,14 @@ import type {
 const BASE = '/api';
 
 export class ApiError extends Error {
-	constructor(public status: number, message: string) {
+	// code is the stable machine tag from the {error, code} envelope,
+	// undefined for generic/older errors. Callers map it to friendly
+	// copy + actions (see lib/api/errors.ts).
+	constructor(
+		public status: number,
+		message: string,
+		public code?: string,
+	) {
 		super(message);
 		this.name = 'ApiError';
 	}
@@ -25,17 +33,19 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const resp = await fetch(BASE + path, init);
 	if (!resp.ok) {
-		// API errors come back as {"error": "..."} per writeError() on
-		// the Go side. Fall back to the status line if the body isn't
-		// shaped that way.
+		// API errors come back as {"error": "...", "code": "..."} per
+		// writeError/writeErrorCode on the Go side. Fall back to the
+		// status line if the body isn't shaped that way.
 		let msg = resp.statusText;
+		let code: string | undefined;
 		try {
-			const body = (await resp.json()) as { error?: string };
+			const body = (await resp.json()) as { error?: string; code?: string };
 			if (body.error) msg = body.error;
+			code = body.code;
 		} catch {
 			/* non-JSON body */
 		}
-		throw new ApiError(resp.status, msg);
+		throw new ApiError(resp.status, msg, code);
 	}
 	// 204 No Content — caller doesn't get a body. Cast to satisfy T.
 	if (resp.status === 204) return undefined as T;
@@ -52,6 +62,78 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
 	listAgents(): Promise<Agent[]> {
 		return request('/agents');
+	},
+
+	// preflight reports environment readiness (Docker reachable?). Read
+	// on app load and before New Session so we can warn/block instead of
+	// failing a create with a raw daemon error.
+	preflight(signal?: AbortSignal): Promise<Preflight> {
+		return request('/preflight', { signal });
+	},
+
+	// imageExists reports whether an image ref is already downloaded, so
+	// the New Session form can show a "will download" hint before create.
+	imageExists(image: string, signal?: AbortSignal): Promise<boolean> {
+		return request<{ present: boolean }>(
+			`/images/exists?image=${encodeURIComponent(image)}`,
+			{ signal },
+		).then((r) => r.present);
+	},
+
+	// pullImageStream downloads an image, reporting progress via
+	// onProgress (percent is -1 while still indeterminate). Resolves when
+	// the pull completes; rejects with ApiError on a known-up-front
+	// failure (e.g. 503 Docker down) or an in-band stream error.
+	async pullImageStream(
+		image: string,
+		onProgress: (p: { status: string; percent: number }) => void,
+	): Promise<void> {
+		const resp = await fetch(`${BASE}/images/pull`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ image }),
+		});
+		if (!resp.ok) {
+			let msg = resp.statusText;
+			let code: string | undefined;
+			try {
+				const b = (await resp.json()) as { error?: string; code?: string };
+				if (b.error) msg = b.error;
+				code = b.code;
+			} catch {
+				/* non-JSON */
+			}
+			throw new ApiError(resp.status, msg, code);
+		}
+		if (!resp.body) return; // no stream — assume done
+		const reader = resp.body.getReader();
+		const decoder = new TextDecoder();
+		let buf = '';
+		const handleLine = (line: string) => {
+			const t = line.trim();
+			if (!t) return;
+			const ev = JSON.parse(t) as {
+				status?: string;
+				percent?: number;
+				done?: boolean;
+				error?: string;
+			};
+			if (ev.error) throw new ApiError(resp.status, ev.error);
+			if (ev.done) return;
+			onProgress({
+				status: ev.status ?? '',
+				percent: typeof ev.percent === 'number' ? ev.percent : -1,
+			});
+		};
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buf += decoder.decode(value, { stream: true });
+			const lines = buf.split('\n');
+			buf = lines.pop() ?? '';
+			for (const line of lines) handleLine(line);
+		}
+		if (buf.trim()) handleLine(buf); // trailing line without newline
 	},
 
 	listSessions(opts: { all?: boolean; signal?: AbortSignal } = {}): Promise<Session[]> {

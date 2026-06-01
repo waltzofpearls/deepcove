@@ -51,6 +51,11 @@ type fakeSandbox struct {
 	// MOTD / mount-layout tests assert on what the service actually built without
 	// reaching into the service's internals.
 	specs []sandbox.SandboxSpec
+
+	// Optional Pinger capability — preflight tests set pingErr to
+	// simulate a down daemon; pingVersion is returned when reachable.
+	pingErr     error
+	pingVersion string
 }
 
 // execResponse scripts a single Exec invocation. Set err to make
@@ -72,7 +77,21 @@ func newFakeSandbox() *fakeSandbox {
 	}
 }
 
-var _ sandbox.Sandbox = (*fakeSandbox)(nil)
+var (
+	_ sandbox.Sandbox = (*fakeSandbox)(nil)
+	_ sandbox.Pinger  = (*fakeSandbox)(nil)
+)
+
+// Ping implements sandbox.Pinger for preflight tests.
+func (f *fakeSandbox) Ping(ctx context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Ping")
+	if f.pingErr != nil {
+		return "", f.pingErr
+	}
+	return f.pingVersion, nil
+}
 
 func (f *fakeSandbox) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.Handle, error) {
 	f.mu.Lock()
