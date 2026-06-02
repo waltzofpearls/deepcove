@@ -22,6 +22,7 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -69,14 +70,91 @@ func (d *Driver) Close() error {
 	return d.cli.Close()
 }
 
-// Compile-time check.
-var _ sandbox.Sandbox = (*Driver)(nil)
+// Compile-time checks: the Driver is a full Sandbox and also provides
+// the optional Pinger / ImageManager capabilities the session layer
+// type-asserts for preflight and image readiness.
+var (
+	_ sandbox.Sandbox      = (*Driver)(nil)
+	_ sandbox.Pinger       = (*Driver)(nil)
+	_ sandbox.ImageManager = (*Driver)(nil)
+)
+
+// Ping implements sandbox.Pinger. It returns the daemon's negotiated
+// API version when reachable, and an ErrUnavailable-wrapped error when
+// the daemon can't be reached (not running, socket gone, etc).
+func (d *Driver) Ping(ctx context.Context) (string, error) {
+	res, err := d.cli.Ping(ctx, client.PingOptions{})
+	if err != nil {
+		return "", normalizeErr(err)
+	}
+	return res.APIVersion, nil
+}
+
+// ImageExists implements sandbox.ImageManager. A daemon "not found"
+// for the image is a clean false; any other failure propagates.
+func (d *Driver) ImageExists(ctx context.Context, ref string) (bool, error) {
+	if _, err := d.cli.ImageInspect(ctx, ref); err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return false, nil
+		}
+		return false, normalizeErr(err)
+	}
+	return true, nil
+}
+
+// ImagePull implements sandbox.ImageManager. It blocks until the pull
+// completes, invoking onProgress (if non-nil) with aggregate progress
+// derived from the daemon's per-layer JSON stream.
+func (d *Driver) ImagePull(ctx context.Context, ref string, onProgress func(sandbox.PullProgress)) error {
+	resp, err := d.cli.ImagePull(ctx, ref, client.ImagePullOptions{})
+	if err != nil {
+		return normalizeErr(err)
+	}
+	defer resp.Close()
+
+	// Aggregate across layers: keep each layer's latest current/total
+	// (keyed by id) and sum. Total stays 0 until at least one layer
+	// reports a size, which the UI renders as an indeterminate bar.
+	layers := map[string]jsonstream.Progress{}
+	for msg, err := range resp.JSONMessages(ctx) {
+		if err != nil {
+			return normalizeErr(err)
+		}
+		if msg.Error != nil {
+			return fmt.Errorf("pull %s: %s", ref, msg.Error.Message)
+		}
+		if onProgress == nil {
+			continue
+		}
+		if msg.ID != "" && msg.Progress != nil && msg.Progress.Total > 0 {
+			layers[msg.ID] = *msg.Progress
+		}
+		var cur, tot int64
+		for _, p := range layers {
+			cur += p.Current
+			tot += p.Total
+		}
+		onProgress(sandbox.PullProgress{Status: msg.Status, Current: cur, Total: tot})
+	}
+	return nil
+}
 
 // Create makes a container from spec but does not start it. Returns
 // the container ID as a sandbox.Handle.
 func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.Handle, error) {
 	if err := sandbox.ValidateSpec(spec, d.allowedRoots); err != nil {
 		return "", err
+	}
+
+	// Surface a missing image as a distinct, actionable error up front
+	// rather than letting ContainerCreate bury it under the daemon's
+	// generic "No such image" string — the session layer turns this
+	// into a 422 so the UI can offer to download it. This also
+	// normalizes a down daemon to ErrUnavailable here.
+	if exists, err := d.ImageExists(ctx, spec.Image); err != nil {
+		return "", err
+	} else if !exists {
+		return "", fmt.Errorf("%w: %s", sandbox.ErrImageNotFound, spec.Image)
 	}
 
 	cfg := &container.Config{
@@ -208,6 +286,8 @@ func normalizeErr(err error) error {
 		return nil
 	}
 	switch {
+	case client.IsErrConnectionFailed(err) || cerrdefs.IsUnavailable(err):
+		return fmt.Errorf("%w: %v", sandbox.ErrUnavailable, err)
 	case cerrdefs.IsNotFound(err):
 		return fmt.Errorf("%w: %v", sandbox.ErrNotFound, err)
 	case cerrdefs.IsConflict(err):

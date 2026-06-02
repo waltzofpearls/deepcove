@@ -10,13 +10,16 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
-  import { api, ApiError } from '$lib/api/client';
+  import { api } from '$lib/api/client';
+  import { friendlyError, type FriendlyError } from '$lib/api/errors';
   import { sessions } from '$lib/stores/sessions.svelte';
+  import { preflight } from '$lib/stores/preflight.svelte';
   import type { Agent, MountRequest } from '$lib/api/types';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
+  import Download from '@lucide/svelte/icons/download';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -37,7 +40,16 @@
   let customSetup = $state('');
 
   let submitting = $state(false);
-  let submitError = $state<string | null>(null);
+  let submitError = $state<FriendlyError | null>(null);
+  // Image readiness: null = not yet checked, false = absent (will be
+  // downloaded on create), true = already present. Checked proactively
+  // as the agent/image selection changes.
+  let imagePresent = $state<boolean | null>(null);
+  // Download state while pulling: percent is -1 until the daemon reports
+  // layer sizes (rendered as an indeterminate bar).
+  let pulling = $state(false);
+  let pullPercent = $state(-1);
+  let pullStatus = $state('');
   let copied = $state(false);
 
   $effect(() => {
@@ -111,6 +123,10 @@
     mounts = [];
     submitError = null;
     submitting = false;
+    pulling = false;
+    pullPercent = -1;
+    pullStatus = '';
+    imagePresent = null;
     customImage = '';
     customSetup = '';
     // baseImage / setupScript / imageStrategy get re-seeded by the agent-change $effect.
@@ -152,31 +168,88 @@
     return payload;
   }
 
+  // The image ref a create will actually use. Mirrors the image
+  // resolution in buildPayload (install falls back to the base image).
+  function effectiveImage(): string {
+    if (imageStrategy === 'official') return selectedAgent?.official_image ?? '';
+    if (imageStrategy === 'custom') return customImage.trim();
+    return baseImage || selectedAgent?.default_image || '';
+  }
+
+  // Proactively check whether the selected image is downloaded so we can
+  // show a "will download" hint before the user commits. Debounced — the
+  // custom-image field changes per keystroke. Reads the image-strategy
+  // inputs so Svelte re-runs this when any of them change.
+  $effect(() => {
+    const img = effectiveImage();
+    const reachable = preflight.dockerReachable;
+    imagePresent = null;
+    if (!img || !reachable) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const present = await api.imageExists(img);
+        if (!cancelled) imagePresent = present;
+      } catch {
+        // Don't block create on a flaky check — leave it unknown; the
+        // create path still pulls on demand via the 422 fallback.
+        if (!cancelled) imagePresent = null;
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  });
+
+  // Download the effective image, streaming progress into the bar.
+  async function pullCurrentImage(): Promise<void> {
+    pulling = true;
+    pullPercent = -1;
+    pullStatus = '';
+    try {
+      await api.pullImageStream(effectiveImage(), (p) => {
+        pullPercent = p.percent;
+        pullStatus = p.status;
+      });
+      imagePresent = true;
+    } finally {
+      pulling = false;
+    }
+  }
+
   async function submit() {
-    if (submitting) return;
+    if (submitting || pulling) return;
     if (imageStrategy === 'official' && !selectedAgent?.official_image) return;
     if (imageStrategy === 'custom' && !customImage.trim()) {
-      submitError = 'Bring your own image: please enter an image reference.';
+      submitError = {
+        title: 'Enter an image reference',
+        raw: 'Bring your own image requires an image reference.',
+      };
       return;
     }
     submitting = true;
     submitError = null;
 
     try {
+      // Download first if we know it's absent, so the create itself is
+      // fast and we can show a real progress bar.
+      if (imagePresent === false) await pullCurrentImage();
+
       const created = await api.createSession(buildPayload());
       sessions.add(created);
       open = false;
       resetForm();
       await goto(`/sessions/${created.id}`);
     } catch (e) {
-      submitError =
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e);
+      const fe = friendlyError(e);
+      submitError = fe;
+      // Race fallback: the image vanished or wasn't detected up front.
+      // Flag it absent so the hint + next create retry will download it.
+      if (fe.code === 'image_not_found') imagePresent = false;
     } finally {
       submitting = false;
+      pulling = false;
     }
   }
 
@@ -392,22 +465,81 @@
       </div>
 
       {#if submitError}
-        <div class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {submitError}
+        <div class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2.5 text-sm">
+          <div class="font-medium text-destructive">{submitError.title}</div>
+          {#if submitError.guidance}
+            <div class="mt-0.5 text-xs text-foreground">{submitError.guidance}</div>
+          {/if}
+          {#if submitError.raw && submitError.raw !== submitError.title}
+            <div class="mt-1 break-words font-mono text-[11px] text-muted-foreground">
+              {submitError.raw}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if preflight.loaded && !preflight.dockerReachable}
+        <div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground">
+          {preflight.docker.message || "Docker isn't running."} Start it to create a session.
+        </div>
+      {:else if pulling}
+        <!-- Live download progress. Determinate once the daemon reports
+             layer sizes; indeterminate (pulsing) before that. -->
+        <div class="space-y-1.5 rounded-md border border-border bg-secondary/40 px-3 py-2.5">
+          <div class="flex items-center justify-between text-xs">
+            <span class="flex items-center gap-1.5 text-foreground">
+              <Download class="size-3.5" />
+              {pullStatus || 'Downloading image…'}
+            </span>
+            {#if pullPercent >= 0}
+              <span class="font-mono text-muted-foreground">{pullPercent}%</span>
+            {/if}
+          </div>
+          <div class="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+            {#if pullPercent >= 0}
+              <div
+                class="h-full rounded-full bg-primary transition-[width] duration-300"
+                style="width: {pullPercent}%"
+              ></div>
+            {:else}
+              <div class="h-full w-1/3 animate-pulse rounded-full bg-primary"></div>
+            {/if}
+          </div>
+        </div>
+      {:else if imagePresent === false && !submitError}
+        <!-- Proactive heads-up so the download isn't a surprise on click. -->
+        <div
+          class="flex items-start gap-2 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground"
+        >
+          <Download class="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            This agent image isn't downloaded yet. It downloads once when you create
+            the session, then is reused.
+          </span>
         </div>
       {/if}
 
       <div class="flex items-center justify-end gap-2">
-        <Button variant="ghost" onclick={() => (open = false)} disabled={submitting}>
+        <Button variant="ghost" onclick={() => (open = false)} disabled={submitting || pulling}>
           Cancel
         </Button>
         <Button
           onclick={submit}
           disabled={submitting
+            || pulling
+            || !preflight.dockerReachable
             || (imageStrategy === 'official' && !selectedAgent?.official_image)
             || (imageStrategy === 'custom' && !customImage.trim())}
         >
-          {submitting ? 'Creating…' : 'Create session'}
+          {#if pulling}
+            Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}
+          {:else if submitting}
+            Creating…
+          {:else if imagePresent === false}
+            Download & create
+          {:else}
+            Create session
+          {/if}
         </Button>
       </div>
 

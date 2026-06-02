@@ -78,8 +78,35 @@ export interface CreateTmuxWindowRequest {
 	name?: string;
 }
 
+// Wire shape of an API error body. `code` is a stable machine-readable
+// tag (e.g. "docker_unreachable", "image_not_found") the client maps to
+// friendly copy + actions; absent on older/generic errors.
 export interface ApiError {
 	error: string;
+	code?: string;
+}
+
+// Stable error codes mirrored from internal/session/handlers.go. Keep
+// in sync — renames here without a server change break the mapping.
+export type ApiErrorCode =
+	| 'invalid_input'
+	| 'docker_unreachable'
+	| 'image_not_found'
+	| 'not_found'
+	| 'conflict';
+
+// GET /api/preflight — environment readiness the dashboard reads on load
+// and the New Session form reads before allowing create. Mirrors
+// internal/session.PreflightResponse.
+export interface Preflight {
+	docker: DockerStatus;
+}
+
+export interface DockerStatus {
+	reachable: boolean;
+	version: string;
+	// Human-facing guidance shown when reachable is false.
+	message: string;
 }
 
 export type BootstrapStatus = 'installing' | 'ready' | 'errored';
