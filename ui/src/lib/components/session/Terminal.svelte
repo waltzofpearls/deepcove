@@ -193,6 +193,18 @@
       term.loadAddon(new WebLinksAddon());
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = '11';
+      // Swallow the mouse-tracking DECSET enables so Claude's TUI can't grab
+      // the mouse — then a normal drag selects and Cmd-C copies natively.
+      // (Bracketed paste, alt screen, etc. pass through.) DECSET ?_h codes:
+      //   1000 = click   1001 = highlight   1002 = drag   1003 = any-motion
+      const mouseModes = new Set([1000, 1001, 1002, 1003]);
+      // Return true => handled (suppressed), only when every param is a mouse mode.
+      term.parser.registerCsiHandler(
+        { prefix: '?', final: 'h' },
+        (params) =>
+          params.length > 0 &&
+          params.every((p) => mouseModes.has(typeof p === 'number' ? p : p[0])),
+      );
       // No @xterm/addon-webgl on purpose — its sprite atlas can't draw many glyphs
       // Claude's TUI uses and falls back to underline placeholders. DOM renderer
       // delegates to browser text rendering, which handles everything correctly.
