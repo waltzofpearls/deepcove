@@ -8,6 +8,7 @@
     DropdownMenuSeparator,
     DropdownMenuTrigger,
   } from '$lib/components/ui/dropdown-menu';
+  import { goto } from '$app/navigation';
   import UserCircle from '@lucide/svelte/icons/user-circle';
 
   // Owner identity isn't wired yet — until tsnet WhoIs middleware lands
@@ -31,7 +32,6 @@
       </div>
     </DropdownMenuLabel>
     <DropdownMenuSeparator />
-    <DropdownMenuItem disabled>Settings (soon)</DropdownMenuItem>
-    <DropdownMenuItem disabled>About</DropdownMenuItem>
+    <DropdownMenuItem onclick={() => goto('/settings')}>Settings</DropdownMenuItem>
   </DropdownMenuContent>
 </DropdownMenu>
