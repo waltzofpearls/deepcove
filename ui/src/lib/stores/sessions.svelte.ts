@@ -112,4 +112,12 @@ export const sessions = {
 		if (list.some((s) => s.id === session.id)) return;
 		list = [...list, session];
 	},
+
+	// patch optimistically merges fields into a session already in the
+	// list — used by card quick actions (stop/start) so the status
+	// indicator flips immediately instead of lagging until the next poll
+	// tick. The next poll is still the source of truth and reconciles.
+	patch(id: string, fields: Partial<Session>): void {
+		list = list.map((s) => (s.id === id ? { ...s, ...fields } : s));
+	},
 };

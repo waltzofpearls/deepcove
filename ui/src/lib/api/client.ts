@@ -64,6 +64,12 @@ export const api = {
 		return request('/agents');
 	},
 
+	// health is the liveness probe; the Settings "About" section reads
+	// the version from it.
+	health(): Promise<{ ok: boolean; version: string }> {
+		return request('/health');
+	},
+
 	// preflight reports environment readiness (Docker reachable?). Read
 	// on app load and before New Session so we can warn/block instead of
 	// failing a create with a raw daemon error.
