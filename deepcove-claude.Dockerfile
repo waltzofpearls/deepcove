@@ -21,5 +21,10 @@ ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     USE_BUILTIN_RIPGREP=0
 
+# Put the native installer's bin dir on PATH. The /usr/local/bin symlink above
+# makes `claude` launchable, but Claude Code separately checks that ~/.local/bin
+# is on PATH (for its self-update) and warns when it isn't.
+ENV PATH="/root/.local/bin:${PATH}"
+
 # Entrypoint is supplied by deepcove at container create time (see buildEntrypoint in
 # internal/session/service.go) — we leave CMD/ENTRYPOINT unset on purpose.

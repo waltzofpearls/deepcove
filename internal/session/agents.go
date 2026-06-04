@@ -40,7 +40,8 @@ var agents = map[string]AgentInfo{
 		DefaultSetup: `apk add --no-cache curl bash tmux libgcc libstdc++ ripgrep
 command -v claude >/dev/null 2>&1 || curl -fsSL https://claude.ai/install.sh | bash
 [ -x /root/.local/bin/claude ] && ln -sf /root/.local/bin/claude /usr/local/bin/claude`,
-		LaunchCmd: `while true; do
+		LaunchCmd: `export PATH="$HOME/.local/bin:$PATH"
+while true; do
   cd /deepcove 2>/dev/null || cd /workspace
   claude
   ec=$?
