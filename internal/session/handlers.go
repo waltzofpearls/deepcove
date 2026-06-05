@@ -25,6 +25,7 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions/{id}/attach", s.handleAttach)
 	mux.HandleFunc("GET /api/sessions/{id}/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("PUT /api/sessions/{id}/mounts", s.handleEditMounts)
+	mux.HandleFunc("PUT /api/sessions/{id}/uploads", s.handleUpload)
 	mux.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreview)
 	mux.HandleFunc("GET /api/sessions/{id}/tmux-windows", s.handleListTmuxWindows)
 	mux.HandleFunc("POST /api/sessions/{id}/tmux-windows", s.handleCreateTmuxWindow)

@@ -19,6 +19,7 @@
   import type { BootstrapStatus } from '$lib/api/types';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import Check from '@lucide/svelte/icons/check';
 
   // tmuxWindow optionally targets a specific tmux window in the
   // session. Omit/undefined → follow the session's current window
@@ -29,6 +30,21 @@
 
   let container: HTMLDivElement;
   let status = $state<'connecting' | 'open' | 'closed' | 'error'>('connecting');
+  // Upload indicator for terminal-focused file paste/drop. uploading is a
+  // count (sequential, but a count keeps the {#if} simple); uploadPct is the
+  // live XHR progress; uploadNote/uploadOk drive the brief done/error flash.
+  let uploading = $state(0);
+  let uploadLabel = $state('');
+  let uploadPct = $state(0);
+  let uploadNote = $state('');
+  let uploadOk = $state(true);
+  let uploadNoteTimer: ReturnType<typeof setTimeout> | undefined;
+  function flashNote(msg: string, ok: boolean) {
+    uploadNote = msg;
+    uploadOk = ok;
+    clearTimeout(uploadNoteTimer);
+    uploadNoteTimer = setTimeout(() => (uploadNote = ''), ok ? 1500 : 3500);
+  }
   // While bootstrap is "installing" we don't open the WS — opening before tmux is up
   // errors in a tight retry loop.
   let bootstrap = $state<BootstrapStatus>('installing');
@@ -61,6 +77,9 @@
     let fit: any;
     let ws: WebSocket | undefined;
     let ro: ResizeObserver | undefined;
+    let onPaste: ((e: ClipboardEvent) => void) | undefined;
+    let onDragOver: ((e: DragEvent) => void) | undefined;
+    let onDrop: ((e: DragEvent) => void) | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let bootstrapTimer: ReturnType<typeof setTimeout> | undefined;
@@ -216,6 +235,46 @@
         if (ws?.readyState === 1) ws.send(enc.encode(s));
       });
 
+      // Terminal-focused paste/drop of files & images. Upload each into the
+      // container and inject its in-container path into the prompt (the
+      // native-Claude path-paste UX; the chip isn't reproducible in a Linux
+      // container). Plain-text paste falls through to xterm untouched.
+      async function uploadAndInject(files: File[]) {
+        for (const file of files) {
+          uploading += 1;
+          uploadLabel = file.name || 'file';
+          uploadPct = 0;
+          try {
+            const { path } = await api.uploadFile(id, file, (pct) => (uploadPct = pct));
+            term?.paste(path + ' ');
+            flashNote(`Uploaded ${file.name || 'file'}`, true);
+          } catch (err) {
+            flashNote(`Upload failed: ${err instanceof Error ? err.message : String(err)}`, false);
+          } finally {
+            uploading -= 1;
+          }
+        }
+      }
+      // Capture phase + stopPropagation so xterm's own (text-only) paste
+      // handler doesn't also fire on a file paste.
+      onPaste = (e: ClipboardEvent) => {
+        const files = filesFrom(e.clipboardData);
+        if (files.length === 0) return; // text paste → let xterm handle it
+        e.preventDefault();
+        e.stopPropagation();
+        void uploadAndInject(files);
+      };
+      onDragOver = (e: DragEvent) => e.preventDefault();
+      onDrop = (e: DragEvent) => {
+        const files = filesFrom(e.dataTransfer);
+        if (files.length === 0) return;
+        e.preventDefault();
+        void uploadAndInject(files);
+      };
+      container.addEventListener('paste', onPaste, { capture: true });
+      container.addEventListener('dragover', onDragOver);
+      container.addEventListener('drop', onDrop);
+
       ro = new ResizeObserver(() => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
@@ -238,11 +297,31 @@
       clearTimeout(resizeTimer);
       clearTimeout(reconnectTimer);
       clearTimeout(bootstrapTimer);
+      if (onPaste) container.removeEventListener('paste', onPaste, { capture: true });
+      if (onDragOver) container.removeEventListener('dragover', onDragOver);
+      if (onDrop) container.removeEventListener('drop', onDrop);
       ro?.disconnect();
       ws?.close();
       term?.dispose();
     };
   });
+
+  // filesFrom collects File objects from a paste/drop — covers both real
+  // files and pasted image bytes (clipboard items of kind "file").
+  function filesFrom(dt: DataTransfer | null): File[] {
+    if (!dt) return [];
+    const out: File[] = [];
+    for (const item of dt.items ?? []) {
+      if (item.kind === 'file') {
+        const f = item.getAsFile();
+        if (f) out.push(f);
+      }
+    }
+    if (out.length === 0) {
+      for (const f of dt.files ?? []) out.push(f);
+    }
+    return out;
+  }
 
   function readTheme() {
     const s = getComputedStyle(document.documentElement);
@@ -258,6 +337,33 @@
 
 <div class="relative h-full w-full bg-[var(--term-bg)]">
   <div bind:this={container} class="h-full w-full"></div>
+
+  {#if uploading > 0 || uploadNote}
+    <!-- Bottom bar overlaying the tmux status line. Left-aligned so it sits
+         where the prompt/cursor and the user's attention already are, and it
+         never covers Claude's output or the prompt where the path lands. -->
+    <div
+      class="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-center gap-3 border-t border-border bg-card/95 px-3 py-2 text-sm backdrop-blur"
+    >
+      {#if uploading > 0}
+        <Loader2 class="size-4 shrink-0 animate-spin text-primary" />
+        <span class="min-w-0 truncate font-medium" title={uploadLabel}>{uploadLabel}</span>
+        <div class="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-secondary">
+          <div
+            class="h-full rounded-full bg-primary transition-[width] duration-200"
+            style="width: {Math.max(uploadPct, 4)}%"
+          ></div>
+        </div>
+        <span class="shrink-0 text-xs tabular-nums text-muted-foreground">{uploadPct}%</span>
+      {:else if uploadOk}
+        <Check class="size-4 shrink-0 text-[var(--color-success)]" />
+        <span class="min-w-0 truncate">{uploadNote}</span>
+      {:else}
+        <TriangleAlert class="size-4 shrink-0 text-destructive" />
+        <span class="min-w-0 truncate">{uploadNote}</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if bootstrap === 'installing'}
     <div
