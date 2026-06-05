@@ -24,9 +24,19 @@
     AlertDialogHeader,
     AlertDialogTitle,
   } from '$lib/components/ui/alert-dialog';
+  import {
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+  } from '$lib/components/ui/dialog';
+  import { Input } from '$lib/components/ui/input';
+  import { Button } from '$lib/components/ui/button';
   import Pause from '@lucide/svelte/icons/pause';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
+  import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
   import Trash from '@lucide/svelte/icons/trash-2';
@@ -142,6 +152,31 @@
       /* next poll re-adds it if the destroy didn't take */
     }
   }
+
+  let renameOpen = $state(false);
+  let renameDraft = $state('');
+  let renameError = $state('');
+
+  function openRename() {
+    renameDraft = session.name;
+    renameError = '';
+    renameOpen = true;
+  }
+
+  async function doRename() {
+    const name = renameDraft.trim();
+    if (!name || name === session.name) {
+      renameOpen = false;
+      return;
+    }
+    try {
+      const updated = await api.renameSession(session.id, name);
+      sessions.patch(updated.id, { name: updated.name });
+      renameOpen = false;
+    } catch (e) {
+      renameError = e instanceof Error ? e.message : String(e);
+    }
+  }
 </script>
 
 <div
@@ -225,6 +260,10 @@
                 Start
               </DropdownMenuItem>
             {/if}
+            <DropdownMenuItem onclick={openRename}>
+              <Pencil class="size-4" />
+              Rename
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onclick={() => (destroyOpen = true)}
@@ -255,6 +294,30 @@
     </AlertDialogFooter>
   </AlertDialogContent>
 </AlertDialog>
+
+<Dialog bind:open={renameOpen}>
+  <DialogContent class="sm:max-w-sm">
+    <DialogHeader>
+      <DialogTitle>Rename session</DialogTitle>
+    </DialogHeader>
+    <form
+      onsubmit={(e) => {
+        e.preventDefault();
+        doRename();
+      }}
+    >
+      <!-- svelte-ignore a11y_autofocus -->
+      <Input bind:value={renameDraft} maxlength={100} autofocus placeholder="Session name" />
+      {#if renameError}
+        <p class="mt-2 text-xs text-destructive">{renameError}</p>
+      {/if}
+      <DialogFooter class="mt-4">
+        <Button type="button" variant="ghost" onclick={() => (renameOpen = false)}>Cancel</Button>
+        <Button type="submit">Save</Button>
+      </DialogFooter>
+    </form>
+  </DialogContent>
+</Dialog>
 
 <style>
   /* xterm.js's serializeAsHTML emits a fixed shape:

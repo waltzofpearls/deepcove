@@ -44,6 +44,9 @@ type SessionRepository interface {
 	// open / 30s tick / disconnect; cheap by design.
 	UpdateActivity(ctx context.Context, owner, id string, at time.Time) error
 
+	// Rename sets the session's display name and bumps updated_at.
+	Rename(ctx context.Context, owner, id, name string, now time.Time) error
+
 	// UpdateMountsAndContainer replaces the mounts JSON and
 	// container_id on a session, and bumps updated_at. Used by
 	// Service.EditMounts after the recreate-with-new-spec flow:
@@ -183,6 +186,17 @@ func (r *duckdbSessionRepository) UpdateActivity(ctx context.Context, owner, id 
 		at, id, owner)
 	if err != nil {
 		return fmt.Errorf("session: update activity: %w", err)
+	}
+	return rowsAffectedOrNotFound(res)
+}
+
+func (r *duckdbSessionRepository) Rename(ctx context.Context, owner, id, name string, now time.Time) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET name = ?, updated_at = ?
+		 WHERE id = ? AND owner_email = ?`,
+		name, now, id, owner)
+	if err != nil {
+		return fmt.Errorf("session: rename: %w", err)
 	}
 	return rowsAffectedOrNotFound(res)
 }

@@ -31,6 +31,7 @@
   import Maximize from '@lucide/svelte/icons/maximize';
   import Minimize from '@lucide/svelte/icons/minimize';
   import Pause from '@lucide/svelte/icons/pause';
+  import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
   import Trash from '@lucide/svelte/icons/trash-2';
@@ -59,6 +60,44 @@
   // button; the sheet does its own PUT and writes the updated
   // session back to our `session` via bind:session.
   let editMountsOpen = $state(false);
+
+  // Inline rename of the session name in the toolbar. Click the name to
+  // edit; Enter (or blur) commits, Esc cancels.
+  let editingName = $state(false);
+  let nameDraft = $state('');
+  let nameInput = $state<HTMLInputElement | undefined>(undefined);
+
+  function startRename() {
+    if (!session) return;
+    nameDraft = session.name;
+    editingName = true;
+    // Focus + select after the input renders.
+    setTimeout(() => nameInput?.select(), 0);
+  }
+
+  async function commitRename() {
+    if (!editingName || !session) return;
+    const name = nameDraft.trim();
+    editingName = false;
+    if (!name || name === session.name) return;
+    try {
+      const updated = await api.renameSession(session.id, name);
+      session = updated;
+      sessions.patch(updated.id, { name: updated.name });
+    } catch (e) {
+      actionError = `Rename failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
+  function onNameKey(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      nameInput?.blur(); // blur commits
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      editingName = false; // unmount without saving
+    }
+  }
 
   // Mode lives in the URL (?mode=agent|ssh|split) so it's
   // shareable / refreshable. Default agent (omitted from URL).
@@ -295,7 +334,27 @@
       {#if session}
         <StatusIndicator status={session.status} />
         <div class="min-w-0">
-          <div class="truncate font-mono text-sm font-medium">{session.name}</div>
+          {#if editingName}
+            <input
+              bind:this={nameInput}
+              bind:value={nameDraft}
+              onkeydown={onNameKey}
+              onblur={commitRename}
+              maxlength="100"
+              class="w-44 max-w-full rounded border border-input bg-transparent px-1.5 py-0.5 font-mono text-sm font-medium focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          {:else}
+            <button
+              onclick={startRename}
+              title="Rename session"
+              class="group/name flex max-w-full items-center gap-1 font-mono text-sm font-medium"
+            >
+              <span class="truncate">{session.name}</span>
+              <Pencil
+                class="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/name:opacity-100"
+              />
+            </button>
+          {/if}
           <!-- Subtitle is cosmetic (agent kind + short id). Hidden
                below md so the name has room to breathe on phones. -->
           <div class="hidden truncate text-xs text-muted-foreground md:block">
