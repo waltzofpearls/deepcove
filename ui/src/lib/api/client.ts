@@ -151,6 +151,48 @@ export const api = {
 		return request(`/sessions/${encodeURIComponent(id)}`, { signal });
 	},
 
+	// uploadFile streams a pasted/dropped file into the session's container
+	// (written via docker exec, never the host) and returns its in-container
+	// path for injection into the agent's prompt. Uses XHR (not fetch) so the
+	// caller gets real upload progress via onProgress (0–100).
+	uploadFile(
+		sessionId: string,
+		file: File,
+		onProgress?: (pct: number) => void,
+	): Promise<{ path: string; name: string }> {
+		const url = `${BASE}/sessions/${encodeURIComponent(sessionId)}/uploads?name=${encodeURIComponent(file.name)}`;
+		return new Promise((resolve, reject) => {
+			const xhr = new XMLHttpRequest();
+			xhr.open('PUT', url);
+			xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+			xhr.upload.onprogress = (e) => {
+				if (onProgress && e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+			};
+			xhr.onload = () => {
+				if (xhr.status >= 200 && xhr.status < 300) {
+					try {
+						resolve(JSON.parse(xhr.responseText));
+					} catch {
+						resolve({ path: '', name: '' });
+					}
+					return;
+				}
+				let msg = xhr.statusText;
+				let code: string | undefined;
+				try {
+					const b = JSON.parse(xhr.responseText) as { error?: string; code?: string };
+					if (b.error) msg = b.error;
+					code = b.code;
+				} catch {
+					/* non-JSON */
+				}
+				reject(new ApiError(xhr.status, msg, code));
+			};
+			xhr.onerror = () => reject(new ApiError(0, 'network error during upload'));
+			xhr.send(file);
+		});
+	},
+
 	// renameSession updates a session's display name; returns the updated session.
 	renameSession(id: string, name: string): Promise<Session> {
 		return request(`/sessions/${encodeURIComponent(id)}`, {
