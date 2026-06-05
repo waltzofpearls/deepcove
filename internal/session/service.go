@@ -196,6 +196,27 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 	return s.repo.Get(ctx, placeholderOwner, id)
 }
 
+// maxSessionNameLen bounds the user-set display name. The name is
+// display-only (ids drive routing/containers), so this is just a
+// sanity cap, not a hard constraint.
+const maxSessionNameLen = 100
+
+// Rename sets a session's display name and returns the updated session.
+// The name is trimmed; empty or over-long input is a user error.
+func (s *Service) Rename(ctx context.Context, id, name string) (*Session, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("session: name is required")
+	}
+	if len(name) > maxSessionNameLen {
+		return nil, fmt.Errorf("session: name too long (max %d characters)", maxSessionNameLen)
+	}
+	if err := s.repo.Rename(ctx, placeholderOwner, id, name, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
+}
+
 // RecordActivity bumps last_activity_at to NOW for a session. Called
 // by the attach handler on connect, periodic 30s ticker while
 // attached, and on disconnect. Cheap (single indexed UPDATE) and

@@ -151,6 +151,15 @@ export const api = {
 		return request(`/sessions/${encodeURIComponent(id)}`, { signal });
 	},
 
+	// renameSession updates a session's display name; returns the updated session.
+	renameSession(id: string, name: string): Promise<Session> {
+		return request(`/sessions/${encodeURIComponent(id)}`, {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name }),
+		});
+	},
+
 	createSession(req: CreateSessionRequest): Promise<Session> {
 		return request('/sessions', {
 			method: 'POST',

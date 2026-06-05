@@ -18,6 +18,7 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions", s.handleCreate)
 	mux.HandleFunc("GET /api/sessions", s.handleList)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleRename)
 	mux.HandleFunc("POST /api/sessions/{id}/start", s.handleStart)
 	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
@@ -77,6 +78,29 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		out = []*Session{}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleRename updates a session's display name. PATCH /api/sessions/{id}
+// with {"name": "..."}; returns the updated session.
+func (s *Service) handleRename(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	sess, err := s.Rename(r.Context(), id, req.Name)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
 }
 
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
