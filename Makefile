@@ -103,7 +103,7 @@ build-linux-arm64: ## Build a linux/arm64 binary (glibc, dynamic)
 .PHONY: bootstrap
 bootstrap: ## Install ui/node_modules from a Linux container (run before first `make dev`, or after package.json changes)
 	rm -rf ui/node_modules
-	docker run --rm -v "$$(pwd)/ui:/app" -w /app node:22.11-alpine3.20 npm install
+	docker run --rm -v "$$(pwd)/ui:/app" -w /app node:24.16-alpine3.23 npm install
 
 .PHONY: dev
 dev: ## Run the dev stack (Go server with air + Vite dev server) in docker compose
