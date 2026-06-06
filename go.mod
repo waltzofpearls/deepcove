@@ -1,6 +1,6 @@
 module github.com/waltzofpearls/deepcove
 
-go 1.26.2
+go 1.26.4
 
 require (
 	github.com/marcboeker/go-duckdb/v2 v2.4.3
