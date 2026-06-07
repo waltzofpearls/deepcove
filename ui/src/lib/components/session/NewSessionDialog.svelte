@@ -14,12 +14,15 @@
   import { friendlyError, type FriendlyError } from '$lib/api/errors';
   import { sessions } from '$lib/stores/sessions.svelte';
   import { preflight } from '$lib/stores/preflight.svelte';
+  import HostPathField from './HostPathField.svelte';
+  import { shellQuote } from '$lib/util/shell';
   import type { Agent, MountRequest } from '$lib/api/types';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import Download from '@lucide/svelte/icons/download';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -30,7 +33,16 @@
   let agentsError = $state<string | null>(null);
   let agent = $state('claude');
   let name = $state('');
-  let mounts = $state<FormMount[]>([]);
+  // The last auto-suggested name, so the prefill effect can refresh it on agent
+  // change without clobbering a name the user has typed.
+  let suggestedName = $state('');
+  // Prefer-setting: start with one folder row ready to fill (the conventional
+  // /workspace). The user can opt out ("Run without a folder") to clear it.
+  let mounts = $state<FormMount[]>([{ host_path: '', container_path: '/workspace', read_only: false }]);
+  // The deepcove host's home dir — where the host-path picker/autocomplete starts.
+  // Fetched on open so we can pre-fill the host-path field (with a trailing slash
+  // so suggestions appear immediately) instead of leaving it blank.
+  let homeDir = $state('');
 
   // Each strategy keeps its own fields so switching radios doesn't lose what's typed.
   let imageStrategy = $state<ImageStrategy>('install');
@@ -63,6 +75,36 @@
         }
       })
       .catch((e) => (agentsError = String(e)));
+  });
+
+  // Resolve the host's home dir once, then seed the default folder row's host
+  // path so it opens pre-filled at $HOME/ rather than blank.
+  $effect(() => {
+    if (!open || homeDir) return;
+    api
+      .fsList()
+      .then((res) => {
+        homeDir = res.path;
+        if (mounts.length > 0 && !mounts[0].host_path) {
+          mounts[0].host_path = res.path + '/';
+        }
+      })
+      .catch(() => {});
+  });
+
+  // Pre-fill the Name field with a generated suggestion on open and when the agent
+  // changes — but never clobber a name the user has typed (only overwrite when the
+  // field is empty or still shows the previous suggestion).
+  $effect(() => {
+    if (!open) return;
+    const a = agent;
+    api
+      .suggestName(a)
+      .then((n) => {
+        if (!name || name === suggestedName) name = n;
+        suggestedName = n;
+      })
+      .catch(() => {});
   });
 
   // Re-seed image-related defaults whenever the agent changes. Switching agents
@@ -105,22 +147,40 @@
     return parts.join(' ');
   });
 
-  function shellQuote(s: string): string {
-    if (/^[A-Za-z0-9_@%+=:,./\-~]+$/.test(s)) return s;
-    return `'${s.replace(/'/g, "'\\''")}'`;
+  // A fresh folder row, pre-filled at the host home dir (with trailing slash) when known.
+  function newMountRow(): FormMount {
+    return { host_path: homeDir ? homeDir + '/' : '', container_path: '/workspace', read_only: false };
   }
 
   function addMount() {
-    mounts = [...mounts, { host_path: '', container_path: '/deepcove', read_only: false }];
+    mounts = [...mounts, newMountRow()];
   }
 
   function removeMount(i: number) {
     mounts = mounts.filter((_, idx) => idx !== i);
   }
 
+  // The "Use a folder" header toggle: off clears the rows (the session runs with an
+  // empty in-container /workspace), on restores one pre-filled row.
+  const useFolder = $derived(mounts.length > 0);
+  function toggleFolder() {
+    mounts = useFolder ? [] : [newMountRow()];
+  }
+
+  // Roll a fresh suggested name (the ↻ button).
+  function regenerateName() {
+    api
+      .suggestName(agent)
+      .then((n) => {
+        name = n;
+        suggestedName = n;
+      })
+      .catch(() => {});
+  }
+
   function resetForm() {
     name = '';
-    mounts = [];
+    mounts = [newMountRow()];
     submitError = null;
     submitting = false;
     pulling = false;
@@ -265,12 +325,12 @@
 </script>
 
 <Dialog bind:open>
-  <DialogContent class="max-h-[90vh] w-[calc(100%-2rem)] max-w-3xl gap-0 p-0 sm:max-w-3xl">
+  <DialogContent class="max-h-[90vh] w-[calc(100%-2rem)] max-w-4xl gap-0 p-0 sm:max-w-4xl">
     <DialogHeader class="border-b border-border px-6 py-4">
       <DialogTitle>New session</DialogTitle>
       <DialogDescription>
-        Spin up a coding-agent sandbox on this node. Mount a host directory to give the
-        agent access to your code.
+        Spin up a coding-agent sandbox on this node. Pick the folder the agent should
+        work in — or run without one.
       </DialogDescription>
     </DialogHeader>
 
@@ -294,12 +354,20 @@
         </div>
 
         <div class="space-y-2">
-          <Label for="session-name">Name (optional)</Label>
-          <Input
-            id="session-name"
-            bind:value={name}
-            placeholder="auto-generated if blank"
-          />
+          <Label for="session-name">Name</Label>
+          <div class="flex gap-2">
+            <Input id="session-name" bind:value={name} placeholder="session name" />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              class="shrink-0"
+              aria-label="Generate a new name"
+              onclick={regenerateName}
+            >
+              <RefreshCw class="size-4" />
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -411,57 +479,78 @@
 
       <div class="space-y-2">
         <div class="flex items-center justify-between">
-          <Label>Mounts</Label>
+          <Label>Folder</Label>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={useFolder}
+            onclick={toggleFolder}
+            class="flex items-center gap-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <span>Use a folder</span>
+            <span
+              class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {useFolder
+                ? 'bg-primary'
+                : 'bg-input'}"
+            >
+              <span
+                class="inline-block size-4 rounded-full bg-background shadow transition-transform {useFolder
+                  ? 'translate-x-4'
+                  : 'translate-x-0.5'}"
+              ></span>
+            </span>
+          </button>
+        </div>
+        {#if !useFolder}
+          <p class="text-xs text-muted-foreground">
+            No folder — the agent starts in an empty <code>/workspace</code>. Turn on
+            "Use a folder" to mount your code.
+          </p>
+        {:else}
+          <p class="text-xs text-muted-foreground">
+            The agent works in this folder (mounted at <code>/workspace</code>).
+          </p>
+          {#each mounts as m, i (i)}
+            <div class="space-y-2 rounded-md border border-border p-2.5">
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div class="min-w-0 space-y-1 sm:col-span-2">
+                  <Label class="text-xs" for="mount-host-{i}">Host path</Label>
+                  <HostPathField id="mount-host-{i}" bind:value={m.host_path} />
+                </div>
+                <div class="min-w-0 space-y-1">
+                  <Label class="text-xs" for="mount-container-{i}">Mounts to</Label>
+                  <Input
+                    id="mount-container-{i}"
+                    bind:value={m.container_path}
+                    placeholder="/workspace"
+                  />
+                </div>
+              </div>
+              <div class="flex items-center justify-between">
+                <label class="flex cursor-pointer select-none items-center gap-1.5 text-xs">
+                  <input
+                    type="checkbox"
+                    bind:checked={m.read_only}
+                    class="size-3.5 rounded border-input"
+                  />
+                  Read-only
+                </label>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onclick={() => removeMount(i)}
+                  aria-label="Remove folder"
+                >
+                  <X class="size-4" />
+                </Button>
+              </div>
+            </div>
+          {/each}
           <Button size="sm" variant="ghost" onclick={addMount}>
             <Plus class="size-4" />
-            Add mount
+            Add another folder
           </Button>
-        </div>
-        {#if mounts.length === 0}
-          <p class="text-xs text-muted-foreground">
-            No mounts. Add one to expose a host directory to the agent.
-          </p>
         {/if}
-        {#each mounts as m, i (i)}
-          <div class="space-y-2 rounded-md border border-border p-2.5">
-            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <div class="space-y-1">
-                <Label class="text-xs" for="mount-host-{i}">Host path</Label>
-                <Input
-                  id="mount-host-{i}"
-                  bind:value={m.host_path}
-                  placeholder="/Users/you/code/myrepo"
-                />
-              </div>
-              <div class="space-y-1">
-                <Label class="text-xs" for="mount-container-{i}">Container path</Label>
-                <Input
-                  id="mount-container-{i}"
-                  bind:value={m.container_path}
-                  placeholder="/deepcove"
-                />
-              </div>
-            </div>
-            <div class="flex items-center justify-between">
-              <label class="flex cursor-pointer select-none items-center gap-1.5 text-xs">
-                <input
-                  type="checkbox"
-                  bind:checked={m.read_only}
-                  class="size-3.5 rounded border-input"
-                />
-                Read-only
-              </label>
-              <Button
-                size="sm"
-                variant="ghost"
-                onclick={() => removeMount(i)}
-                aria-label="Remove mount"
-              >
-                <X class="size-4" />
-              </Button>
-            </div>
-          </div>
-        {/each}
       </div>
 
       {#if submitError}
@@ -527,6 +616,7 @@
           onclick={submit}
           disabled={submitting
             || pulling
+            || !name.trim()
             || !preflight.dockerReachable
             || (imageStrategy === 'official' && !selectedAgent?.official_image)
             || (imageStrategy === 'custom' && !customImage.trim())}

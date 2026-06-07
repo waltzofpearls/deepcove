@@ -1,0 +1,9 @@
+# golangci-lint v2 config. Default linters (errcheck, govet, ineffassign,
+# staticcheck, unused). No exclusions — print-to-stdout writes are handled at the
+# call site (single writes), not hidden here. Uncap issue reporting so a future
+# `defer x.Close()` etc. can't be silently truncated by the default max-same-issues.
+version: "2"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -13,10 +13,12 @@ import (
 func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	mux.HandleFunc("GET /api/preflight", s.handlePreflight)
+	mux.HandleFunc("GET /api/fs/list", s.handleFsList)
 	mux.HandleFunc("GET /api/images/exists", s.handleImageExists)
 	mux.HandleFunc("POST /api/images/pull", s.handlePullImage)
 	mux.HandleFunc("POST /api/sessions", s.handleCreate)
 	mux.HandleFunc("GET /api/sessions", s.handleList)
+	mux.HandleFunc("GET /api/sessions/suggest-name", s.handleSuggestName)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleRename)
 	mux.HandleFunc("POST /api/sessions/{id}/start", s.handleStart)
@@ -48,6 +50,14 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Agents())
+}
+
+// handleSuggestName returns a generated session name so the web UI can pre-fill
+// the (now required) Name field with a predictable default the user can keep or
+// edit. Same generator the server uses when a name is omitted.
+// GET /api/sessions/suggest-name?agent=claude
+func (s *Service) handleSuggestName(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"name": generateName(r.URL.Query().Get("agent"))})
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {

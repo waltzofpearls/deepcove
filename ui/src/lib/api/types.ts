@@ -37,12 +37,26 @@ export interface CreateSessionRequest {
 
 // MountRequest mirrors internal/session.MountRequest. host_path must
 // be absolute on the deepcove host; container_path must be absolute
-// inside the sandbox and can't collide with /workspace (the reserved
-// scratch dir). Mode defaults to "rw" if omitted.
+// inside the sandbox. /workspace is the conventional target (your
+// code, where the agent starts); /root is reserved. Mode defaults to
+// "rw" if omitted.
 export interface MountRequest {
 	host_path: string;
 	container_path: string;
 	mode?: 'rw' | 'ro';
+}
+
+// FsEntry / FsListResponse mirror internal/session — GET /api/fs/list
+// lists subdirectories of a host path (scoped to $HOME) for the host-path
+// autocomplete + Browse modal. parent is "" at the home root.
+export interface FsEntry {
+	name: string;
+	path: string;
+}
+export interface FsListResponse {
+	path: string;
+	parent: string;
+	entries: FsEntry[];
 }
 
 // official_image is empty until a prebuilt deepcove image is published — UI uses that

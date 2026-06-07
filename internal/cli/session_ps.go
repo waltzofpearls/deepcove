@@ -34,13 +34,13 @@ func cmdSessionPs(ctx context.Context, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	defer w.Flush()
-	fmt.Fprintln(w, "ID\tNAME\tAGENT\tSTATUS\tAGE")
+	lines := []string{"ID\tNAME\tAGENT\tSTATUS\tAGE"}
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			short(s.ID), s.Name, s.Agent, s.Status, ageOf(s.CreatedAt),
-		)
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s",
+			short(s.ID), s.Name, s.Agent, s.Status, ageOf(s.CreatedAt)))
 	}
+	_, _ = fmt.Fprint(w, joinStringLines(lines))
+	_ = w.Flush()
 	return nil
 }
 

@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/api"
@@ -51,25 +50,20 @@ func cmdStart(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("db: %w", err)
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 	if err := db.Migrate(sqlDB); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	logger.Info("database ready", "data_dir", cfg.DataDir)
 
-	// Sandbox driver: Docker is the v1 backend (SPEC §7.2). Two
-	// host roots are sharable with sandboxes:
-	//   - $DataDir/sessions — the deepcove-managed scratch workspace
-	//     bind-mounted into every session at /workspace.
-	//   - $HOME — covers the common case where the user mounts a
-	//     project under their home dir (~/projects/foo, ~/code, etc.).
-	//     System dirs (/etc, /usr, /var, ...) stay blocked because
-	//     they aren't under $HOME. Power users who need to mount
-	//     outside $HOME will get a config-flag override as a
-	//     follow-up.
-	// The sandbox layer's mount-source validator enforces both roots.
-	workspaceRoot := filepath.Join(cfg.DataDir, "sessions")
-	allowedRoots := []string{workspaceRoot}
+	// Sandbox driver: Docker is the v1 backend (SPEC §7.2). $HOME is the
+	// one host root sharable with sandboxes — it covers the common case
+	// where the user mounts a project under their home dir
+	// (~/projects/foo, ~/code, etc.). System dirs (/etc, /usr, /var, ...)
+	// stay blocked because they aren't under $HOME. Power users who need
+	// to mount outside $HOME will get a config-flag override as a
+	// follow-up. The sandbox layer's mount-source validator enforces this.
+	var allowedRoots []string
 	if home, herr := os.UserHomeDir(); herr == nil && home != "" {
 		allowedRoots = append(allowedRoots, home)
 	}
@@ -77,14 +71,14 @@ func cmdStart(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}
-	defer sandbox.Close()
+	defer func() { _ = sandbox.Close() }()
 
 	// Persistence: domain-owned SessionRepository over the shared
 	// DuckDB handle. Each domain package owns its own CRUD wrapper
 	// (cohesion by bounded context) — `internal/db` is just the
 	// connection lifecycle.
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
-	sessionSvc := session.NewService(sessionRepo, sandbox, cfg.DataDir, logger)
+	sessionSvc := session.NewService(sessionRepo, sandbox, logger)
 
 	mux := http.NewServeMux()
 	if err := api.New(

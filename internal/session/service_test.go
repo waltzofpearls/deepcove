@@ -53,7 +53,7 @@ func newTestService(t *testing.T) (*Service, *fakeSandbox, string, *sql.DB) {
 	db := openTestDB(t)
 	fake := newFakeSandbox()
 	dataDir := t.TempDir()
-	svc := NewService(NewDuckDBSessionRepository(db), fake, dataDir, nil)
+	svc := NewService(NewDuckDBSessionRepository(db), fake, nil)
 	return svc, fake, dataDir, db
 }
 
@@ -173,10 +173,10 @@ func TestService_Create(t *testing.T) {
 			req: CreateRequest{
 				Agent: "claude",
 				Mounts: []MountRequest{
-					{HostPath: "/tmp/x", ContainerPath: "/workspace"},
+					{HostPath: "/tmp/x", ContainerPath: "/root"},
 				},
 			},
-			wantErrContains:  "scratch workspace",
+			wantErrContains:  "reserved for the agent home",
 			wantCallSequence: "",
 			wantLive:         0,
 			wantRows:         0,
@@ -185,7 +185,7 @@ func TestService_Create(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, fake, dataDir, db := newTestService(t)
+			svc, fake, _, db := newTestService(t)
 			fake.startErr = tc.startErr
 			fake.createErr = tc.createErr
 
@@ -204,8 +204,9 @@ func TestService_Create(t *testing.T) {
 				t.Errorf("sessions rows: want %d, got %d", tc.wantRows, got)
 			}
 
-			// On success the session should be running, named (auto
-			// or explicit), and have a workspace dir on disk.
+			// On success the session should be running and named (auto or explicit).
+			// There's no host-side scratch dir anymore — /workspace lives inside the
+			// container (or is a user mount), so there's nothing on disk to assert.
 			if tc.wantRows > 0 && sess != nil {
 				if sess.Status != tc.wantStatus {
 					t.Errorf("status: want %q, got %q", tc.wantStatus, sess.Status)
@@ -221,19 +222,8 @@ func TestService_Create(t *testing.T) {
 				if tc.req.Name != "" && sess.Name != tc.req.Name {
 					t.Errorf("explicit name not preserved: want %q, got %q", tc.req.Name, sess.Name)
 				}
-				if !pathExists(filepath.Join(dataDir, "sessions", sess.ID)) {
-					t.Errorf("workspace dir not created")
-				}
 			} else if sess != nil {
 				t.Errorf("expected nil session on failure, got %+v", sess)
-			}
-
-			// Rollback test must leave no workspace orphans.
-			if tc.wantRows == 0 {
-				entries, _ := filepath.Glob(filepath.Join(dataDir, "sessions", "*"))
-				if len(entries) != 0 {
-					t.Errorf("expected empty workspace dir on failure; found %v", entries)
-				}
 			}
 		})
 	}
@@ -579,8 +569,8 @@ func TestService_Create_MotdInEntrypoint(t *testing.T) {
 	if !strings.Contains(cmd, `Welcome to deepcove session "motd-test"`) {
 		t.Errorf("MOTD should embed the session name; got: %s", cmd)
 	}
-	if !strings.Contains(cmd, "/deepcove") || !strings.Contains(cmd, "/workspace") || !strings.Contains(cmd, "/root") {
-		t.Errorf("MOTD should mention the three persistent mount targets; got: %s", cmd)
+	if !strings.Contains(cmd, "/workspace") || !strings.Contains(cmd, "/root") {
+		t.Errorf("MOTD should mention the /workspace and /root paths; got: %s", cmd)
 	}
 }
 
@@ -658,6 +648,51 @@ func TestService_Create_UsesPerAgentSharedVolume(t *testing.T) {
 	}
 }
 
+func TestService_Create_WorkdirAndNoScratch(t *testing.T) {
+	// No deepcove-managed scratch mount anymore: a no-mount session's spec carries
+	// only the agent-home volume (no bind targeting /workspace), and DEEPCOVE_WORKDIR
+	// defaults to /workspace. A session with a user mount points DEEPCOVE_WORKDIR at
+	// the first mount's target.
+	tests := []struct {
+		name                 string
+		mounts               []MountRequest
+		wantWorkdir          string
+		wantNoWorkspaceMount bool // assert the spec has no mount targeting /workspace
+	}{
+		{
+			name:                 "no mounts: workdir defaults to /workspace, no scratch bind",
+			mounts:               nil,
+			wantWorkdir:          "/workspace",
+			wantNoWorkspaceMount: true,
+		},
+		{
+			name:        "first user mount drives the workdir",
+			mounts:      []MountRequest{{HostPath: "/Users/x/code", ContainerPath: "/code"}},
+			wantWorkdir: "/code",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fake, _, _ := newTestService(t)
+			if _, err := svc.Create(context.Background(), CreateRequest{Agent: "claude", Mounts: tc.mounts}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			spec := fake.specs[len(fake.specs)-1]
+			if got := spec.Env["DEEPCOVE_WORKDIR"]; got != tc.wantWorkdir {
+				t.Errorf("DEEPCOVE_WORKDIR: want %q, got %q", tc.wantWorkdir, got)
+			}
+			if tc.wantNoWorkspaceMount {
+				for _, m := range spec.Mounts {
+					if m.Target == "/workspace" {
+						t.Errorf("expected no mount targeting /workspace; got %+v", m)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestService_EditMounts(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -674,7 +709,7 @@ func TestService_EditMounts(t *testing.T) {
 				return mustCreate(t, svc, "claude").ID
 			},
 			newMounts: []MountRequest{
-				{HostPath: "/Users/x/repo", ContainerPath: "/deepcove"},
+				{HostPath: "/Users/x/repo", ContainerPath: "/workspace"},
 			},
 			wantSandboxOps: "Stop,Destroy,Create,Start",
 			wantMountsLen:  1,
@@ -689,7 +724,7 @@ func TestService_EditMounts(t *testing.T) {
 				return sess.ID
 			},
 			newMounts: []MountRequest{
-				{HostPath: "/Users/x/repo", ContainerPath: "/deepcove"},
+				{HostPath: "/Users/x/repo", ContainerPath: "/workspace"},
 			},
 			wantSandboxOps: "Destroy,Create",
 			wantMountsLen:  1,
@@ -700,10 +735,10 @@ func TestService_EditMounts(t *testing.T) {
 				return mustCreate(t, svc, "claude").ID
 			},
 			newMounts: []MountRequest{
-				{HostPath: "/x", ContainerPath: "/workspace"}, // collides
+				{HostPath: "/x", ContainerPath: "/root"}, // reserved (agent home)
 			},
 			wantErrIs:       ErrMountInvalid,
-			wantErrContains: "scratch workspace",
+			wantErrContains: "reserved for the agent home",
 			wantSandboxOps:  "",
 			wantMountsLen:   0, // not relevant; we check err
 		},
@@ -814,20 +849,28 @@ func TestValidateMountRequests(t *testing.T) {
 			wantErrContains: "container_path is required",
 		},
 		{
-			name: "container_path = /workspace collides with scratch",
+			name: "container_path = /workspace is allowed (the conventional target)",
 			reqs: []MountRequest{
 				{HostPath: "/a", ContainerPath: "/workspace"},
 			},
-			wantErrIs:       ErrMountInvalid,
-			wantErrContains: "scratch workspace",
+			wantLen:     1,
+			wantTargets: []string{"/workspace"},
 		},
 		{
-			name: "container_path that cleans to /workspace also rejected",
+			name: "container_path = /root reserved for the agent home",
 			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/workspace/"},
+				{HostPath: "/a", ContainerPath: "/root"},
 			},
 			wantErrIs:       ErrMountInvalid,
-			wantErrContains: "scratch workspace",
+			wantErrContains: "reserved for the agent home",
+		},
+		{
+			name: "container_path that cleans to /root also rejected",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/root/"},
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "reserved for the agent home",
 		},
 		{
 			name: "container_path = / rejected",

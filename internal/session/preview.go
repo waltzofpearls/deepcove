@@ -150,7 +150,7 @@ func (s *Service) execCapture(ctx context.Context, containerID string, cmd []str
 		s.logger.Debug("preview: exec failed", "container", containerID, "cmd", cmd[0], "err", err)
 		return nil, false
 	}
-	defer proc.Close()
+	defer func() { _ = proc.Close() }()
 
 	out, err := io.ReadAll(proc.Stdout())
 	if err != nil {

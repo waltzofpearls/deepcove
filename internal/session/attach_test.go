@@ -130,7 +130,7 @@ func TestHandleAttach_PreUpgradeValidation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GET: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tc.wantStatus {
 				t.Errorf("status: got %d, want %d", resp.StatusCode, tc.wantStatus)
 			}
@@ -292,7 +292,7 @@ func TestHandleAttach_ViewSessionSetupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusInternalServerError)

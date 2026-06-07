@@ -40,20 +40,23 @@ func cmdSession(ctx context.Context, args []string) error {
 }
 
 func sessionUsage(w *os.File) {
-	fmt.Fprintln(w, "deepcove session — create, list, and attach to coding-agent sessions")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  deepcove session <agent> [--name <name>] [flags]   create + attach")
-	fmt.Fprintln(w, "  deepcove session attach <id-or-name>               attach existing")
-	fmt.Fprintln(w, "  deepcove session ps                                list sessions")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Agents: claude, codex, gemini, openclaw, ...")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Examples:")
-	fmt.Fprintln(w, "  deepcove session claude                                       # create + attach a claude session, auto-named")
-	fmt.Fprintln(w, "  deepcove session claude --name auth-redesign                  # create + attach with a name")
-	fmt.Fprintln(w, "  deepcove session claude --mount ~/code/myapp:/deepcove        # mount a host path into the sandbox (rw)")
-	fmt.Fprintln(w, "  deepcove session claude --mount ~/data:/seed:ro --mount ...   # repeat for multiple mounts; :ro for read-only")
-	fmt.Fprintln(w, "  deepcove session attach auth-redesign                         # attach by name")
-	fmt.Fprintln(w, "  deepcove session ps                                           # list sessions on this host")
+	lines := []string{
+		"deepcove session — create, list, and attach to coding-agent sessions",
+		"",
+		"Usage:",
+		"  deepcove session <agent> [--name <name>] [flags]   create + attach",
+		"  deepcove session attach <id-or-name>               attach existing",
+		"  deepcove session ps                                list sessions",
+		"",
+		"Agents: claude, codex, gemini, openclaw, ...",
+		"",
+		"Examples:",
+		"  deepcove session claude                                       # create + attach a claude session, auto-named",
+		"  deepcove session claude --name auth-redesign                  # create + attach with a name",
+		"  deepcove session claude --mount ~/code/myapp:/workspace       # mount a host path into the sandbox (rw)",
+		"  deepcove session claude --mount ~/data:/seed:ro --mount ...   # repeat for multiple mounts; :ro for read-only",
+		"  deepcove session attach auth-redesign                         # attach by name",
+		"  deepcove session ps                                           # list sessions on this host",
+	}
+	_, _ = fmt.Fprint(w, joinStringLines(lines))
 }

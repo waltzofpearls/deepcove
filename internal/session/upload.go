@@ -58,7 +58,7 @@ func (s *Service) UploadFile(ctx context.Context, id, origName string, data []by
 	if err != nil {
 		return nil, fmt.Errorf("upload: exec: %w", err)
 	}
-	defer proc.Close()
+	defer func() { _ = proc.Close() }()
 	if exit, werr := proc.Wait(ctx); werr != nil || exit != 0 {
 		return nil, fmt.Errorf("upload: write failed (exit %d): %w", exit, werr)
 	}

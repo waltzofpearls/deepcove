@@ -10,6 +10,7 @@
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
   import { api, ApiError } from '$lib/api/client';
+  import HostPathField from './HostPathField.svelte';
   import type { MountRequest, Session } from '$lib/api/types';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
@@ -40,6 +41,8 @@
   let mounts = $state<FormMount[]>([]);
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
+  // Host home dir — where the host-path picker starts; used to pre-fill new rows.
+  let homeDir = $state('');
 
   // Hydrate the form whenever the sheet opens with a session. We seed
   // on open (not on session change) so reopening after a successful
@@ -55,10 +58,19 @@
     submitError = null;
   });
 
+  // Resolve the host home dir once per open, so new rows pre-fill at $HOME/.
+  $effect(() => {
+    if (!open || homeDir) return;
+    api
+      .fsList()
+      .then((res) => (homeDir = res.path))
+      .catch(() => {});
+  });
+
   function addMount() {
     mounts = [
       ...mounts,
-      { host_path: '', container_path: '/deepcove', read_only: false },
+      { host_path: homeDir ? homeDir + '/' : '', container_path: '/workspace', read_only: false },
     ];
   }
 
@@ -109,11 +121,11 @@
     </DialogHeader>
 
     <div class="flex flex-col gap-5 overflow-y-auto px-6 pb-6 pt-4">
-      <!-- Recreate warning. Saving destroys the current container
-           and creates a new one — the agent's conversation history
-           (under /root) and the scratch /workspace survive (both
-           are persistent across recreates by design), but anything
-           the user installed in the writable layer is gone. -->
+      <!-- Recreate warning. Saving destroys the current container and
+           creates a new one. The shared /root volume (agent state, shell
+           history) survives; the writable layer does not — including a
+           no-mount /workspace's scratch contents. A mounted folder is
+           host-owned and unaffected. -->
       <div
         class="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm"
         role="alert"
@@ -122,26 +134,26 @@
         <div class="space-y-1">
           <div class="font-medium">Saving recreates the container.</div>
           <p class="text-xs text-muted-foreground">
-            <code>/root</code> (agent state, shell history) and
-            <code>/workspace</code> are preserved. Anything else inside the
-            container — installed packages, files outside those paths — will
-            be lost.
+            <code>/root</code> (agent state, shell history) and any mounted
+            folder are preserved. Everything else inside the container —
+            installed packages, and an unmounted <code>/workspace</code>'s
+            contents — will be lost.
           </p>
         </div>
       </div>
 
       <div class="space-y-2">
         <div class="flex items-center justify-between">
-          <Label>Mounts</Label>
+          <Label>Folders</Label>
           <Button size="sm" variant="ghost" onclick={addMount}>
             <Plus class="size-4" />
-            Add mount
+            Add a folder
           </Button>
         </div>
         {#if mounts.length === 0}
           <p class="text-xs text-muted-foreground">
-            No mounts. The session keeps its scratch <code>/workspace</code> and
-            agent-home <code>/root</code> regardless.
+            No folders. The agent runs in an empty <code>/workspace</code>, with the
+            shared <code>/root</code> home regardless.
           </p>
         {/if}
         {#each mounts as m, i (i)}
@@ -149,18 +161,14 @@
             <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div class="space-y-1">
                 <Label class="text-xs" for="edit-mount-host-{i}">Host path</Label>
-                <Input
-                  id="edit-mount-host-{i}"
-                  bind:value={m.host_path}
-                  placeholder="/Users/you/code/myrepo"
-                />
+                <HostPathField id="edit-mount-host-{i}" bind:value={m.host_path} />
               </div>
               <div class="space-y-1">
-                <Label class="text-xs" for="edit-mount-container-{i}">Container path</Label>
+                <Label class="text-xs" for="edit-mount-container-{i}">Mounts to</Label>
                 <Input
                   id="edit-mount-container-{i}"
                   bind:value={m.container_path}
-                  placeholder="/deepcove"
+                  placeholder="/workspace"
                 />
               </div>
             </div>
@@ -177,7 +185,7 @@
                 size="sm"
                 variant="ghost"
                 onclick={() => removeMount(i)}
-                aria-label="Remove mount"
+                aria-label="Remove folder"
               >
                 <X class="size-4" />
               </Button>
