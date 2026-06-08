@@ -15,10 +15,11 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// scratchMountTarget is the container path of the deepcove-managed
-// scratch workspace mount. User-supplied mounts can't collide with
-// this — see validateMountRequests.
-const scratchMountTarget = "/workspace"
+// workspaceDir is the conventional working directory. A user mount can target it (your
+// code lives there), and it's the default the New Session form pre-fills. When no mount
+// targets it, the entrypoint creates an empty /workspace so the agent always has a
+// landing dir. The agent cd's to DEEPCOVE_WORKDIR (the first user mount, else this).
+const workspaceDir = "/workspace"
 
 // /root is hardcoded — agent images run as root today. Non-root images would need a
 // per-image override (out of scope).
@@ -53,20 +54,17 @@ const placeholderOwner = "local"
 var ErrNotFound = errors.New("session: not found")
 
 // Service is the session lifecycle layer. It composes a
-// SessionRepository (for persistence), a sandbox.Sandbox driver (for
-// container runtime), and the host data directory so each session
-// can have its own workspace under $DataDir/sessions/<id>/.
+// SessionRepository (for persistence) and a sandbox.Sandbox driver
+// (for container runtime).
 //
 // All SQL lives in SessionRepository implementations — Service
 // methods are pure orchestration. Owner_email is threaded through
 // to the repo on every call; today every caller passes the
 // placeholder owner, but the shape is ready for identity wiring.
 type Service struct {
-	repo     SessionRepository
-	sandbox  sandbox.Sandbox
-	dataDir  string
-	sessions string // $dataDir/sessions
-	logger   *slog.Logger
+	repo    SessionRepository
+	sandbox sandbox.Sandbox
+	logger  *slog.Logger
 
 	// previewCache holds the most recent successful capture-pane
 	// snapshot per session id. We serve it back when:
@@ -78,18 +76,14 @@ type Service struct {
 	previewCache *previewCache
 }
 
-// NewService constructs a Service. dataDir is the node's data
-// directory (e.g. ~/Library/Application Support/deepcove); sessions
-// live under $dataDir/sessions/<id>/.
-func NewService(repo SessionRepository, sb sandbox.Sandbox, dataDir string, logger *slog.Logger) *Service {
+// NewService constructs a Service.
+func NewService(repo SessionRepository, sb sandbox.Sandbox, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
 	return &Service{
 		repo:         repo,
 		sandbox:      sb,
-		dataDir:      dataDir,
-		sessions:     filepath.Join(dataDir, "sessions"),
 		logger:       logger,
 		previewCache: newPreviewCache(previewCacheMaxEntries),
 	}
@@ -108,7 +102,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	}
 
 	// Validate before any sandbox work so bad input fails as a clean 400 without
-	// rollback. Owns session-layer concerns (/workspace collision, dup targets, mode);
+	// rollback. Owns session-layer concerns (reserved /root target, dup targets, mode);
 	// the sandbox layer's validator owns host-path concerns (absolute, allowed root).
 	userMounts, err := validateMountRequests(req.Mounts)
 	if err != nil {
@@ -144,25 +138,16 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		sess.Name = generateName(req.Agent)
 	}
 
-	// Workspace dir lives under $dataDir/sessions/<id>/ and gets bind-mounted into the
-	// sandbox at /workspace.
-	workspace := filepath.Join(s.sessions, sess.ID)
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		return nil, fmt.Errorf("session: mkdir workspace: %w", err)
-	}
-
-	spec := s.buildSandboxSpec(sess, agent, workspace, userMounts)
+	spec := s.buildSandboxSpec(sess, agent, userMounts)
 
 	handle, err := s.sandbox.Create(ctx, spec)
 	if err != nil {
-		_ = os.RemoveAll(workspace)
 		return nil, fmt.Errorf("session: create sandbox: %w", err)
 	}
 	sess.ContainerID = string(handle)
 
 	if err := s.sandbox.Start(ctx, handle); err != nil {
 		_ = s.sandbox.Destroy(context.Background(), handle)
-		_ = os.RemoveAll(workspace)
 		return nil, fmt.Errorf("session: start sandbox: %w", err)
 	}
 	sess.Status = StatusRunning
@@ -170,7 +155,6 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	if err := s.repo.Insert(ctx, sess); err != nil {
 		_ = s.sandbox.Stop(context.Background(), handle)
 		_ = s.sandbox.Destroy(context.Background(), handle)
-		_ = os.RemoveAll(workspace)
 		return nil, fmt.Errorf("session: insert row: %w", err)
 	}
 
@@ -279,8 +263,11 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 	return nil
 }
 
-// Destroy stops the sandbox (if running), removes it, deletes the
-// workspace directory, the agent-home volume, and removes the row.
+// Destroy stops the sandbox (if running), removes it, and removes the
+// row. The agent-home volume is shared, so it's left intact; the
+// container's own /workspace (and writable layer) goes with the
+// container. Any user-mounted folder is the user's own host dir and
+// is never touched.
 func (s *Service) Destroy(ctx context.Context, id string) error {
 	sess, err := s.Get(ctx, id)
 	if err != nil {
@@ -288,15 +275,11 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	}
 	handle := sandbox.Handle(sess.ContainerID)
 	// Best-effort sandbox teardown — if the daemon already lost the
-	// container, we still want to clear our row + workspace + volume.
+	// container, we still want to clear our row.
 	if err := s.sandbox.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return fmt.Errorf("session: sandbox destroy: %w", err)
 	}
 	// Don't remove the agent-home volume — it's shared (see agentHomeVolumeName).
-	workspace := filepath.Join(s.sessions, id)
-	if err := os.RemoveAll(workspace); err != nil {
-		return fmt.Errorf("session: remove workspace: %w", err)
-	}
 	if err := s.repo.Delete(ctx, placeholderOwner, id); err != nil {
 		return fmt.Errorf("session: delete row: %w", err)
 	}
@@ -305,8 +288,10 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 }
 
 // Docker can't change bind mounts on a live container; this destroys + recreates.
-// Session id and the persistent storage (/root volume + /workspace bind) survive;
-// anything in the writable layer (apt-installed packages, /etc edits) does not.
+// The session id and the shared /root agent-home volume survive. Everything in the
+// writable layer (apt-installed packages, /etc edits, and a no-mount /workspace's
+// scratch contents) does NOT survive the recreate. A user-mounted /workspace folder
+// is host-owned, so its contents are unaffected. Accepts 0..n mounts.
 func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRequest) (*Session, error) {
 	sess, err := s.Get(ctx, id)
 	if err != nil {
@@ -334,8 +319,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 		return nil, fmt.Errorf("session: %w", err)
 	}
 
-	workspace := filepath.Join(s.sessions, sess.ID)
-	spec := s.buildSandboxSpec(sess, agent, workspace, userMounts)
+	spec := s.buildSandboxSpec(sess, agent, userMounts)
 
 	newHandle, err := s.sandbox.Create(ctx, spec)
 	if err != nil {
@@ -366,31 +350,20 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	return updated, nil
 }
 
-// WorkspaceRoot is the host directory whose subdirectories the
-// sandbox driver may bind-mount. Callers pass this to the driver
-// constructor so SPEC §3 (sessions never cross host boundaries) is
-// enforced by the mount-source validator.
-func (s *Service) WorkspaceRoot() string {
-	return s.sessions
-}
-
 // Shared by Create + EditMounts so the entrypoint, mount layout, and network mode
-// stay identical between initial and recreated containers. Mount order — workspace
-// bind, agent-home volume, then user mounts — keeps the validator-blocked
-// /workspace+/root targets unshadowable even if the validator misses something.
-// User env wins on key conflicts with agent.Env.
+// stay identical between initial and recreated containers. Mounts: the shared
+// agent-home volume at /root, then user mounts. /root is mounted first so a stray
+// user mount can't shadow it (the validator also rejects /root); /workspace is
+// intentionally user-mountable, so it's not protected. No deepcove-managed scratch
+// mount — a no-mount session just gets an empty in-container /workspace (created by
+// the entrypoint). User env wins on key conflicts with agent.Env; DEEPCOVE_WORKDIR
+// is set last so the agent always lands in the right place.
 func (s *Service) buildSandboxSpec(
 	sess *Session,
 	agent AgentInfo,
-	workspace string,
 	userMounts []sandbox.Mount,
 ) sandbox.SandboxSpec {
 	mounts := []sandbox.Mount{
-		{
-			Source: workspace,
-			Target: scratchMountTarget,
-			Type:   sandbox.MountBind,
-		},
 		{
 			Source: agentHomeVolumeName(agent.Name),
 			Target: agentHomeMountTarget,
@@ -404,13 +377,16 @@ func (s *Service) buildSandboxSpec(
 		effectiveSetup = agent.DefaultSetup
 	}
 
-	mergedEnv := make(map[string]string, len(agent.Env)+len(sess.Env))
+	mergedEnv := make(map[string]string, len(agent.Env)+len(sess.Env)+1)
 	for k, v := range agent.Env {
 		mergedEnv[k] = v
 	}
 	for k, v := range sess.Env {
 		mergedEnv[k] = v
 	}
+	// The agent cd's here at launch — the first user mount (your code), else the
+	// empty /workspace the entrypoint creates.
+	mergedEnv["DEEPCOVE_WORKDIR"] = workdirFor(userMounts)
 
 	return sandbox.SandboxSpec{
 		Image:  sess.Image,
@@ -428,7 +404,7 @@ func (s *Service) buildSandboxSpec(
 // use the single-quoted `<<'TERM'` form so user-supplied session names can't inject
 // shell metacharacters into the MOTD.
 func buildEntrypoint(sessName, setupScript, launchCmd string) []string {
-	body := fmt.Sprintf(`mkdir -p /etc /usr/local/bin /var/log
+	body := fmt.Sprintf(`mkdir -p /etc /usr/local/bin /var/log /workspace
 
 # deepcove preamble: drop the SSH-mode MOTD. Refreshed every boot so name/path
 # changes propagate; not in user setup because it's not theirs to edit.
@@ -436,8 +412,7 @@ cat > /etc/deepcove-motd <<'DEEPCOVE_MOTD_END'
 
 Welcome to deepcove session "%s".
 
-  /deepcove   ← your mounted code (if you added a mount at create time)
-  /workspace  ← scratch space (persists across container restarts)
+  /workspace  ← your working folder (your mounted code, or empty scratch)
   /root       ← your home dir (persists across container recreates)
 
 Type 'claude' to start the coding agent. Switch to Agent mode to attach
@@ -483,6 +458,15 @@ exec sleep infinity
 	return []string{"sh", "-c", body}
 }
 
+// workdirFor returns the directory the agent should start in: the first user mount's
+// target (your code), or the default /workspace when nothing is mounted there.
+func workdirFor(userMounts []sandbox.Mount) string {
+	if len(userMounts) > 0 {
+		return userMounts[0].Target
+	}
+	return workspaceDir
+}
+
 // Errors wrap ErrMountInvalid with a [N] index so the UI can point at the bad row.
 // Host-path checks (absolute, cleaned, under an allowed root) live in the sandbox
 // layer's validator.
@@ -500,8 +484,11 @@ func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
 			return nil, fmt.Errorf("%w: mounts[%d]: container_path is required", ErrMountInvalid, i)
 		}
 		target := filepath.Clean(m.ContainerPath)
-		if target == scratchMountTarget {
-			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q collides with the reserved scratch workspace",
+		// /root is the shared agent-home volume — a user mount there would shadow the
+		// agent's binary + credentials. /workspace is intentionally NOT reserved: it's
+		// the conventional place to mount your code.
+		if target == agentHomeMountTarget {
+			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q is reserved for the agent home",
 				ErrMountInvalid, i, m.ContainerPath)
 		}
 		// Sub-paths of system dirs are deliberately allowed; only the root itself

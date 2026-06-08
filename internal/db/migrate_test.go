@@ -83,7 +83,7 @@ func TestMigrate(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			db := openMemDB(t)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			if tc.priorFiles != nil {
 				if err := migrate(db, fakeMigrations(tc.priorFiles), "db/migrations"); err != nil {

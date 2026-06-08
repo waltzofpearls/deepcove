@@ -65,13 +65,13 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("dial attach ws: %w (is `deepcove start` running?)", err)
 	}
-	defer ws.CloseNow()
+	defer func() { _ = ws.CloseNow() }()
 
 	old, err := term.MakeRaw(fd)
 	if err != nil {
 		return fmt.Errorf("set raw mode: %w", err)
 	}
-	defer term.Restore(fd, old)
+	defer func() { _ = term.Restore(fd, old) }()
 
 	// Initial resize: send the terminal's current size so tmux fits
 	// the host window from the first frame, not just after SIGWINCH.

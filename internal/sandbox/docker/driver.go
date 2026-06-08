@@ -54,7 +54,7 @@ func WithAllowedMountRoots(roots ...string) Option {
 // (falls back to the platform default — unix:///var/run/docker.sock
 // on Unix). The client negotiates API version with the server.
 func New(opts ...Option) (*Driver, error) {
-	cli, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (d *Driver) ImagePull(ctx context.Context, ref string, onProgress func(sand
 	if err != nil {
 		return normalizeErr(err)
 	}
-	defer resp.Close()
+	defer func() { _ = resp.Close() }()
 
 	// Aggregate across layers: keep each layer's latest current/total
 	// (keyed by id) and sum. Total stays 0 until at least one layer

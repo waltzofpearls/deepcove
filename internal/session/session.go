@@ -59,10 +59,10 @@ type CreateRequest struct {
 // mapped into the sandbox at a container path. SPEC §5.7. Wire
 // format keeps snake_case field names for JSON-by-convention.
 //
-// The deepcove-managed scratch workspace ($DataDir/sessions/<id>)
-// is mounted automatically at /workspace; user mounts here are
-// stacked on top. ContainerPath collisions with /workspace and
-// duplicate container paths across the user's mounts are rejected.
+// Mounts are optional. The conventional target is /workspace (your
+// code), which the agent cd's into; mount nothing and the agent gets
+// an empty in-container /workspace instead. /root is reserved (the
+// shared agent home); duplicate container paths are rejected.
 type MountRequest struct {
 	HostPath      string `json:"host_path"`
 	ContainerPath string `json:"container_path"`

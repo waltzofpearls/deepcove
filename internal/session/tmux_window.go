@@ -220,7 +220,7 @@ func (s *Service) execTmux(ctx context.Context, containerID string, args ...stri
 	if err != nil {
 		return nil, fmt.Errorf("exec tmux %s: %w", args[0], err)
 	}
-	defer proc.Close()
+	defer func() { _ = proc.Close() }()
 
 	var (
 		stdoutBuf, stderrBuf []byte

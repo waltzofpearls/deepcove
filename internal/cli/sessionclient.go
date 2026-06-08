@@ -56,7 +56,7 @@ func (c *sessionClient) Create(ctx context.Context, req session.CreateRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode/100 != 2 {
 		return nil, readAPIError(resp)
@@ -81,7 +81,7 @@ func (c *sessionClient) List(ctx context.Context, includeAll bool) ([]*session.S
 	if err != nil {
 		return nil, fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode/100 != 2 {
 		return nil, readAPIError(resp)

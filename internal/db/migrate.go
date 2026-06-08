@@ -93,7 +93,7 @@ func loadApplied(db *sql.DB) (map[string]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("migrate: select applied: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := map[string]bool{}
 	for rows.Next() {

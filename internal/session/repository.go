@@ -144,7 +144,7 @@ func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includ
 	if err != nil {
 		return nil, fmt.Errorf("session: list query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Session
 	for rows.Next() {

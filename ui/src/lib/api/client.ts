@@ -7,6 +7,7 @@ import type {
 	BootstrapResponse,
 	CreateSessionRequest,
 	CreateTmuxWindowRequest,
+	FsListResponse,
 	MountRequest,
 	Preflight,
 	Session,
@@ -142,6 +143,14 @@ export const api = {
 		if (buf.trim()) handleLine(buf); // trailing line without newline
 	},
 
+	// fsList returns the subdirectories of a host path (scoped to $HOME on
+	// the deepcove host) for the mount host-path autocomplete + Browse modal.
+	// Omit path to start at the home directory.
+	fsList(path?: string, signal?: AbortSignal): Promise<FsListResponse> {
+		const q = path ? `?path=${encodeURIComponent(path)}` : '';
+		return request(`/fs/list${q}`, { signal });
+	},
+
 	listSessions(opts: { all?: boolean; signal?: AbortSignal } = {}): Promise<Session[]> {
 		const q = opts.all ? '?all=true' : '';
 		return request(`/sessions${q}`, { signal: opts.signal });
@@ -202,6 +211,14 @@ export const api = {
 		});
 	},
 
+	// suggestName returns a generated session name to pre-fill the New Session
+	// form's (required) Name field — same generator the server uses by default.
+	suggestName(agent: string): Promise<string> {
+		return request<{ name: string }>(
+			`/sessions/suggest-name?agent=${encodeURIComponent(agent)}`,
+		).then((r) => r.name);
+	},
+
 	createSession(req: CreateSessionRequest): Promise<Session> {
 		return request('/sessions', {
 			method: 'POST',
@@ -224,10 +241,11 @@ export const api = {
 
 	// editMounts replaces the session's user mounts. Server-side this
 	// destroys the running container and recreates it with the new
-	// spec — agent-home volume (/root) and the scratch /workspace
-	// survive, but anything in the writable layer (apt-installed
-	// packages, files outside /root and /workspace) is gone. UI is
-	// expected to warn before calling. Returns the updated Session.
+	// spec — the shared agent-home volume (/root) survives, but the
+	// writable layer (apt-installed packages, and a no-mount
+	// /workspace's scratch contents) is gone. A user-mounted folder is
+	// host-owned and unaffected. UI is expected to warn before calling.
+	// Returns the updated Session.
 	editMounts(id: string, mounts: MountRequest[]): Promise<Session> {
 		return request(`/sessions/${encodeURIComponent(id)}/mounts`, {
 			method: 'PUT',

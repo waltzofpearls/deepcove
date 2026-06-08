@@ -42,7 +42,7 @@ command -v claude >/dev/null 2>&1 || curl -fsSL https://claude.ai/install.sh | b
 [ -x /root/.local/bin/claude ] && ln -sf /root/.local/bin/claude /usr/local/bin/claude`,
 		LaunchCmd: `export PATH="$HOME/.local/bin:$PATH"
 while true; do
-  cd /deepcove 2>/dev/null || cd /workspace
+  cd "${DEEPCOVE_WORKDIR:-/workspace}"
   claude
   ec=$?
   echo ""
@@ -72,13 +72,4 @@ func resolveAgent(name string) (AgentInfo, error) {
 		return AgentInfo{}, fmt.Errorf("unknown agent %q (known: %v)", name, known)
 	}
 	return a, nil
-}
-
-// resolveImage is a back-compat shim — new code should call resolveAgent directly.
-func resolveImage(agent string) (string, error) {
-	a, err := resolveAgent(agent)
-	if err != nil {
-		return "", err
-	}
-	return a.DefaultImage, nil
 }

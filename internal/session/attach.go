@@ -131,7 +131,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// streams forever. We rely on the request context for
 	// shutdown propagation.
 	ctx := r.Context()
-	defer ws.CloseNow()
+	defer func() { _ = ws.CloseNow() }()
 
 	// `-u` forces UTF-8 client mode. Without it, tmux substitutes non-ASCII bytes with
 	// `_` when sending to clients (Alpine has no locale set, so tmux defaults to 8-bit).
@@ -151,7 +151,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close(websocket.StatusInternalError, "exec failed: "+err.Error())
 		return
 	}
-	defer proc.Close()
+	defer func() { _ = proc.Close() }()
 
 	// Record activity on attach. Idle ticker keeps last_activity_at
 	// fresh for the canvas sort; one final write on disconnect
@@ -207,7 +207,7 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 	defer cancel()
 
 	stdin := proc.Stdin()
-	defer stdin.Close()
+	defer func() { _ = stdin.Close() }()
 
 	// proc.Stdout → ws.binary
 	//

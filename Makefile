@@ -120,6 +120,29 @@ image-claude: ## Build the deepcove-claude session image locally (tagged for the
 	docker build -f deepcove-claude.Dockerfile \
 		-t $(GHCR_NAMESPACE)/deepcove-claude:$(IMAGE_TAG) .
 
+.PHONY: test
+test: test-go test-js ## Run all unit tests (Go + JS)
+
+.PHONY: test-go
+test-go: ui/build/index.html ## Run Go unit tests (CGO; uses a UI stub for the //go:embed)
+	CGO_ENABLED=1 go test ./... -v -cover -count=1
+
+.PHONY: test-js
+test-js: ## Run frontend (vitest) unit tests
+	cd ui && npm run test
+
+.PHONY: lint
+lint: lint-go lint-js ## Run all linters (Go + JS)
+
+.PHONY: lint-go
+lint-go: ui/build/index.html ## Run Go linters (go vet + golangci-lint; UI stub for the //go:embed)
+	CGO_ENABLED=1 go vet ./...
+	CGO_ENABLED=1 golangci-lint run ./...
+
+.PHONY: lint-js
+lint-js: ## Run the frontend linter (svelte-check, incl. .ts type-checking)
+	cd ui && npm run check
+
 .PHONY: clean
 clean: ## Remove built binaries
 	rm -f deepcove

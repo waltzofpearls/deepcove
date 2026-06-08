@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -61,21 +62,32 @@ func Run(args []string) int {
 		return 0
 	}
 
-	fmt.Fprintf(os.Stderr, "deepcove: unknown command %q\n\n", name)
+	_, _ = fmt.Fprintf(os.Stderr, "deepcove: unknown command %q\n\n", name)
 	usage(os.Stderr)
 	return 2
 }
 
 func usage(w *os.File) {
-	fmt.Fprintln(w, "deepcove — a self-hosted, isolated coding agent studio on your tailnet.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  deepcove <command> [flags] [args]")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Commands:")
-	for _, c := range commands {
-		fmt.Fprintf(w, "  %-10s  %s\n", c.name, c.summary)
+	lines := []string{
+		"deepcove — a self-hosted, isolated coding agent studio on your tailnet.",
+		"",
+		"Usage:",
+		"  deepcove <command> [flags] [args]",
+		"",
+		"Commands:",
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run 'deepcove <command> -h' for command-specific help.")
+	for _, c := range commands {
+		lines = append(lines, fmt.Sprintf("  %-10s  %s", c.name, c.summary))
+	}
+	lines = append(lines, "", "Run 'deepcove <command> -h' for command-specific help.")
+	_, _ = fmt.Fprint(w, joinStringLines(lines))
+}
+
+func joinStringLines(lines []string) string {
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(l)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
