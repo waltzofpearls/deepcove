@@ -12,6 +12,7 @@ import (
 
 	"github.com/waltzofpearls/deepcove/internal/api"
 	"github.com/waltzofpearls/deepcove/internal/config"
+	"github.com/waltzofpearls/deepcove/internal/connect"
 	"github.com/waltzofpearls/deepcove/internal/db"
 	dockerdrv "github.com/waltzofpearls/deepcove/internal/sandbox/docker"
 	"github.com/waltzofpearls/deepcove/internal/session"
@@ -89,9 +90,18 @@ func cmdStart(ctx context.Context, args []string) error {
 		return fmt.Errorf("api: %w", err)
 	}
 	sessionSvc.AttachRoutes(mux)
-	if err := ui.New(ui.WithConfig(cfg), ui.WithMux(mux)).AttachRoutes(); err != nil {
+	if err := ui.New(
+		ui.WithConfig(cfg),
+		ui.WithMux(mux),
+		ui.WithTransport(cfg.Transport),
+		ui.WithTarget(cfg.WasmTarget),
+	).AttachRoutes(); err != nil {
 		return fmt.Errorf("ui: %w", err)
 	}
+
+	connectMgr := connect.NewManager(ctx, cfg.DataDir, sqlDB, mux)
+	connectMgr.AttachRoutes(mux)
+	connectMgr.AutoStartIfEnabled()
 
 	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {

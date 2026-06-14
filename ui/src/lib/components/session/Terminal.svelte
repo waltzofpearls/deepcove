@@ -16,6 +16,7 @@
   import '@xterm/xterm/css/xterm.css';
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { api } from '$lib/api/client';
+  import type { DeepcoveSocket } from '$lib/api/transport';
   import type { BootstrapStatus } from '$lib/api/types';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
@@ -75,7 +76,7 @@
 
     let term: XTerm | undefined;
     let fit: any;
-    let ws: WebSocket | undefined;
+    let ws: DeepcoveSocket | undefined;
     let ro: ResizeObserver | undefined;
     let onPaste: ((e: ClipboardEvent) => void) | undefined;
     let onDragOver: ((e: DragEvent) => void) | undefined;
@@ -123,7 +124,7 @@
     function connect() {
       if (disposed) return;
       status = 'connecting';
-      ws = new WebSocket(api.attachWebSocketURL(id, win), 'deepcove.pty.v1');
+      ws = api.openAttachSocket(id, win);
       ws.binaryType = 'arraybuffer';
 
       const openedAt = Date.now();

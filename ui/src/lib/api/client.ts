@@ -1,10 +1,12 @@
-// Thin typed wrapper over fetch for the /api/* endpoints. Same-origin
-// for now (SPA served from the Go binary or proxied via vite dev);
-// the relative base path "/api" works in both cases.
+// Thin typed wrapper over the /api/* endpoints. All traffic goes through
+// `transport` (lib/api/transport.ts) — Direct (native fetch/WebSocket) today,
+// WASM later — so this file never has to know how the bytes reach the cluster.
 
+import { transport, type DeepcoveSocket } from './transport';
 import type {
 	Agent,
 	BootstrapResponse,
+	ConnectStatus,
 	CreateSessionRequest,
 	CreateTmuxWindowRequest,
 	FsListResponse,
@@ -32,7 +34,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-	const resp = await fetch(BASE + path, init);
+	const resp = await transport.fetch(BASE + path, init);
 	if (!resp.ok) {
 		// API errors come back as {"error": "...", "code": "..."} per
 		// writeError/writeErrorCode on the Go side. Fall back to the
@@ -95,7 +97,7 @@ export const api = {
 		image: string,
 		onProgress: (p: { status: string; percent: number }) => void,
 	): Promise<void> {
-		const resp = await fetch(`${BASE}/images/pull`, {
+		const resp = await transport.fetch(`${BASE}/images/pull`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ image }),
@@ -149,6 +151,23 @@ export const api = {
 	fsList(path?: string, signal?: AbortSignal): Promise<FsListResponse> {
 		const q = path ? `?path=${encodeURIComponent(path)}` : '';
 		return request(`/fs/list${q}`, { signal });
+	},
+
+	// connect starts (or returns) the Tailscale node for the "Connect" wizard;
+	// connectStatus polls its state (phase / login_url / url / tls / owner).
+	connect(): Promise<ConnectStatus> {
+		return request('/connect', { method: 'POST' });
+	},
+	connectStatus(signal?: AbortSignal): Promise<ConnectStatus> {
+		return request('/connect/status', { signal });
+	},
+	// disconnect stops + keeps tsnet state (quick reconnect); reset logs the node
+	// out of the tailnet and wipes state (fresh login next time).
+	disconnect(): Promise<ConnectStatus> {
+		return request('/connect/disconnect', { method: 'POST' });
+	},
+	resetConnect(): Promise<ConnectStatus> {
+		return request('/connect/reset', { method: 'POST' });
 	},
 
 	listSessions(opts: { all?: boolean; signal?: AbortSignal } = {}): Promise<Session[]> {
@@ -278,15 +297,17 @@ export const api = {
 		});
 	},
 
-	// attachWebSocketURL returns the WS URL for live-attaching to a
-	// session's tmux. The optional `tmuxWindow` argument targets a
-	// specific window so two simultaneous attaches with different
-	// values can each pin to their own window (per-client window
-	// focus is a tmux native feature). Omit for legacy follow-the-
-	// session's-current-window behavior.
-	attachWebSocketURL(id: string, tmuxWindow?: string): string {
-		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+	// openAttachSocket opens a live PTY stream to a session's tmux, via the
+	// transport (a native WebSocket on Direct; the tailnet WS adapter on WASM).
+	// The optional `tmuxWindow` argument targets a specific window so two
+	// simultaneous attaches can each pin to their own window (per-client window
+	// focus is a tmux native feature). Omit for legacy follow-the-session's-
+	// current-window behavior.
+	openAttachSocket(id: string, tmuxWindow?: string): DeepcoveSocket {
 		const q = tmuxWindow ? `?tmux_window=${encodeURIComponent(tmuxWindow)}` : '';
-		return `${proto}//${location.host}${BASE}/sessions/${encodeURIComponent(id)}/attach${q}`;
+		return transport.openSocket(
+			`${BASE}/sessions/${encodeURIComponent(id)}/attach${q}`,
+			'deepcove.pty.v1',
+		);
 	},
 };

@@ -17,6 +17,13 @@ type Config struct {
 	LogLevel string `env:"LOG_LEVEL"`
 	ViteURL  string `env:"VITE_URL, default=http://localhost:5173"`
 
+	// Transport forces the SPA's runtime transport ("direct" or "wasm"), and
+	// WasmTarget is the deepcove node's tailnet URL the in-browser node dials in
+	// wasm mode. Both are dev/test overrides until per-listener selection (the
+	// automatic reachability-based choice) lands; empty = direct, no target.
+	Transport  string `env:"TRANSPORT"`
+	WasmTarget string `env:"WASM_TARGET"`
+
 	// Computed values, should not read from env
 	Hostname string
 }

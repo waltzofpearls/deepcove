@@ -59,6 +59,24 @@ export interface FsListResponse {
 	entries: FsEntry[];
 }
 
+// ConnectStatus mirrors internal/connect.Status — the Tailscale "Connect" wizard
+// state. phase: stopped → starting/needs_login (login_url set) → running (url set;
+// http until https_enabled, then tls). user_id is an int64 (display only).
+export interface ConnectOwner {
+	user_id: number;
+	login_name: string;
+	display_name: string;
+}
+export interface ConnectStatus {
+	phase: 'stopped' | 'starting' | 'needs_login' | 'running';
+	login_url?: string;
+	url?: string;
+	tls: boolean;
+	magicdns_enabled: boolean;
+	https_enabled: boolean;
+	owner?: ConnectOwner;
+}
+
 // official_image is empty until a prebuilt deepcove image is published — UI uses that
 // to gate the "Official deepcove image" radio with a "coming soon" callout.
 export interface Agent {

@@ -2,6 +2,7 @@
   import { mode, setMode, userPrefersMode } from 'mode-watcher';
   import { preferences } from '$lib/stores/preferences.svelte';
   import { api } from '$lib/api/client';
+  import TailnetConnect from '$lib/components/TailnetConnect.svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 
   // Refresh-interval choices for the preview/session pollers. Kept to a
@@ -107,6 +108,9 @@
         </select>
       </div>
     </section>
+
+    <!-- Access -->
+    <TailnetConnect />
 
     <!-- About -->
     <section class="space-y-3">

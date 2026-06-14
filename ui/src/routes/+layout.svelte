@@ -1,12 +1,15 @@
 <script lang="ts">
   import '../app.css';
 
-  import { setContext } from 'svelte';
+  import { onMount, setContext } from 'svelte';
   import { page } from '$app/state';
   import { ModeWatcher } from 'mode-watcher';
   import TopBar from '$lib/components/layout/TopBar.svelte';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import NewSessionDialog from '$lib/components/session/NewSessionDialog.svelte';
+  import TailnetGate from '$lib/components/TailnetGate.svelte';
+  import { transport } from '$lib/api/transport';
+  import { ensureTailnet, tailnetAuth } from '$lib/api/wasm';
   import { Sheet, SheetContent } from '$lib/components/ui/sheet';
   import { preflight } from '$lib/stores/preflight.svelte';
   import { NEW_SESSION_CTX } from '$lib/context';
@@ -22,6 +25,14 @@
   // Let any page (e.g. the dashboard's empty-state CTA) open the New
   // Session dialog, which lives here at the layout level.
   setContext(NEW_SESSION_CTX, () => (newSessionOpen = true));
+
+  // In wasm mode the whole app rides the in-browser Tailscale node, so bring it
+  // up on boot and gate the dashboard until it's running. Direct mode never
+  // touches this — `tailnetAuth` stays idle and `gated` is false.
+  onMount(() => {
+    if (transport.mode === 'wasm') void ensureTailnet().catch(() => {});
+  });
+  let gated = $derived(transport.mode === 'wasm' && $tailnetAuth.phase !== 'running');
 
   // Environment-readiness poller; powers the Docker-down banner below
   // and the New Session dialog's gating. Lazy + ref-counted.
@@ -47,6 +58,11 @@
      + user override stored in localStorage. Defaults to system. -->
 <ModeWatcher defaultMode="system" />
 
+{#if gated}
+  <!-- Wasm mode: hold the whole app behind the connect/login gate until the
+       in-browser node is running. The dashboard never mounts before then. -->
+  <TailnetGate />
+{:else}
 <div class="flex h-screen flex-col bg-background text-foreground">
   <TopBar
     onNewSession={() => (newSessionOpen = true)}
@@ -94,3 +110,4 @@
 </Sheet>
 
 <NewSessionDialog bind:open={newSessionOpen} />
+{/if}
