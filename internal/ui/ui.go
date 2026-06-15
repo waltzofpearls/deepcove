@@ -4,6 +4,8 @@
 package ui
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -16,9 +18,21 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/config"
 )
 
+// transportDirect is the default runtime transport: the browser reaches the API
+// same-origin (rung 1 localhost, or a node whose tailnet it's on). The tailnet
+// remote path injects "wasm" instead (see lib/api/transport.ts).
+const transportDirect = "direct"
+
 type UI struct {
 	config *config.Config
 	mux    *http.ServeMux
+	// transport is stamped into the served SPA shell so the client knows how to
+	// reach the API before it makes a single request. Each listener can serve a
+	// different value; localhost/start-node listeners use the direct default.
+	transport string
+	// target is the deepcove node's tailnet URL the in-browser node dials in wasm
+	// mode (empty in direct mode, where the API is same-origin).
+	target string
 }
 
 type Option func(*UI)
@@ -35,10 +49,29 @@ func WithMux(mux *http.ServeMux) Option {
 	}
 }
 
+// WithTransport overrides the runtime transport mode injected into the SPA.
+// Defaults to direct.
+func WithTransport(mode string) Option {
+	return func(ui *UI) {
+		ui.transport = mode
+	}
+}
+
+// WithTarget sets the tailnet URL injected for wasm mode (the node the in-browser
+// client dials). Ignored in direct mode.
+func WithTarget(target string) Option {
+	return func(ui *UI) {
+		ui.target = target
+	}
+}
+
 func New(options ...Option) *UI {
-	ui := &UI{}
+	ui := &UI{transport: transportDirect}
 	for _, option := range options {
 		option(ui)
+	}
+	if ui.transport == "" {
+		ui.transport = transportDirect
 	}
 	return ui
 }
@@ -78,7 +111,7 @@ func (ui *UI) AttachRoutes() error {
 		return fmt.Errorf("embedded build dir not found: %w", err)
 	}
 	fileServer := http.FileServer(http.FS(sub))
-	ui.mux.Handle("/", spaHandler(sub, fileServer))
+	ui.mux.Handle("/", ui.spaHandler(sub, fileServer))
 	return nil
 }
 
@@ -98,7 +131,7 @@ func (ui *UI) AttachRoutes() error {
 //     cache forever.
 //   - Everything else (notably index.html) must revalidate so a new
 //     build is picked up immediately.
-func spaHandler(sub fs.FS, fileServer http.Handler) http.Handler {
+func (ui *UI) spaHandler(sub fs.FS, fileServer http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqPath := strings.TrimPrefix(r.URL.Path, "/")
 
@@ -110,14 +143,58 @@ func spaHandler(sub fs.FS, fileServer http.Handler) http.Handler {
 					return
 				}
 				// SPA fallback for client-side routes.
-				r.URL.Path = "/"
 				reqPath = ""
 			}
+		}
+
+		// The shell (index.html, and every client-side route that falls back to
+		// it) is templated per request so the server can stamp in runtime config;
+		// hashed assets are served untouched.
+		if reqPath == "" || reqPath == "index.html" {
+			ui.serveShell(w, sub)
+			return
 		}
 
 		setCacheHeaders(w, reqPath)
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// serveShell serves index.html with the runtime-config script injected, so the
+// SPA learns its transport mode (and any future server-chosen settings) before
+// the app bundle runs.
+func (ui *UI) serveShell(w http.ResponseWriter, sub fs.FS) {
+	raw, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		http.Error(w, "index.html missing from build", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(injectRuntimeConfig(raw, ui.transport, ui.target))
+}
+
+// injectRuntimeConfig inserts an inline <script> setting window.__deepcove just
+// before </head>, so it runs before SvelteKit's deferred module scripts. If the
+// document has no </head> we serve it unmodified rather than corrupt it.
+func injectRuntimeConfig(html []byte, transport, target string) []byte {
+	rc := map[string]string{"transport": transport}
+	if target != "" {
+		rc["target"] = target
+	}
+	cfg, _ := json.Marshal(rc)
+	script := []byte("<script>window.__deepcove=" + string(cfg) + ";</script>")
+
+	marker := []byte("</head>")
+	i := bytes.Index(html, marker)
+	if i < 0 {
+		return html
+	}
+	out := make([]byte, 0, len(html)+len(script))
+	out = append(out, html[:i]...)
+	out = append(out, script...)
+	out = append(out, html[i:]...)
+	return out
 }
 
 // isAssetShape returns true for request paths that look like static
