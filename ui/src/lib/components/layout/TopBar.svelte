@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
+  import Logo from './Logo.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
   import ViewToggle from './ViewToggle.svelte';
   import ProfileMenu from './ProfileMenu.svelte';
@@ -33,21 +34,20 @@
       >
         <Menu class="size-5" />
       </Button>
-      <a href="/" class="flex items-center gap-2 font-mono text-base font-semibold tracking-tight">
-        <span class="size-2.5 rounded-full bg-primary" aria-hidden="true"></span>
-        deepcove
+      <a href="/" class="flex items-center text-foreground" aria-label="deepcove home">
+        <Logo class="h-6 w-auto" />
       </a>
     </div>
 
     <div class="flex shrink-0 items-center gap-2">
-      <!-- Cards/list view toggle is a desktop convenience — on phone
-           the cards grid is the default and there's no real value in
-           switching to list. Hidden below md to claim the space. -->
-      <div class="hidden md:block">
-        <ViewToggle />
-      </div>
+      <!-- Cards/list view toggle — a single compact icon button (like
+           ThemeToggle), so it stays in the topbar on every breakpoint. -->
+      <ViewToggle />
       <ThemeToggle />
-      <Button size="sm" onclick={onNewSession} aria-label="New session">
+      <!-- Mobile-only: the sidebar is a hidden drawer on phones, so the
+           topbar keeps a "New session" button here. At md+ the sidebar
+           is always visible and owns this action (see Sidebar). -->
+      <Button size="sm" class="md:hidden" onclick={onNewSession} aria-label="New session">
         <Plus class="size-4" />
         <!-- Label hidden below sm to keep the right cluster compact
              on phones. The Plus icon + aria-label still carry intent. -->

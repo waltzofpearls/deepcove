@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- deepcove icon logo: solid pointy-top hexagon. Theme-aware via an embedded
+       prefers-color-scheme query (brand teal #009d89 light, #00aa95 dark). This is
+       the reliable way to theme an SVG favicon; it mirrors the in-app logo accent
+       in each theme. -->
+  <style>
+    .mark { fill: #009d89; }
+    @media (prefers-color-scheme: dark) { .mark { fill: #00aa95; } }
+  </style>
+  <polygon class="mark" points="50,4 89.84,27 89.84,73 50,96 10.16,73 10.16,27"/>
+</svg>

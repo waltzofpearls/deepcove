@@ -1,9 +1,19 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { page } from '$app/state';
   import { cn } from '$lib/utils';
   import { sessions } from '$lib/stores/sessions.svelte';
+  import { NEW_SESSION_CTX } from '$lib/context';
+  import { Button } from '$lib/components/ui/button';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
+  import LogoIcon from './LogoIcon.svelte';
   import LayoutGrid from '@lucide/svelte/icons/layout-grid';
+  import Plus from '@lucide/svelte/icons/plus';
+
+  // Opens the New Session dialog mounted in +layout.svelte (and closes
+  // the mobile drawer). Same primary action as the topbar — pinned to
+  // the top of the sidebar as the prominent CTA.
+  const openNewSession = getContext<() => void>(NEW_SESSION_CTX);
 
   // The sidebar is rendered as a passthrough container — the layout
   // decides whether to wrap it in a static aside (desktop) or a
@@ -39,6 +49,18 @@
 </script>
 
 <div class={cn('flex flex-col', className)}>
+  <!-- Primary CTA pinned above the nav, desktop only. The topbar drops
+       its own "New session" button at md+ (see TopBar), so the sidebar
+       is the single desktop entry point. On mobile the sidebar is a
+       drawer (a full-width button there looks oversized), so this is
+       hidden and the topbar's icon button handles it. -->
+  <div class="hidden p-3 pb-0 md:block">
+    <Button class="w-full justify-start" onclick={openNewSession}>
+      <Plus class="size-4" />
+      New session
+    </Button>
+  </div>
+
   <nav class="flex-1 p-3">
     <ul class="space-y-1">
       {#each navItems as item}
@@ -85,7 +107,8 @@
       {/each}
     </ul>
   </nav>
-  <div class="p-3 text-xs text-muted-foreground">
+  <div class="flex items-center gap-1.5 p-3 text-xs text-muted-foreground">
+    <LogoIcon class="size-3.5" />
     <span class="font-mono">deepcove v0.0.1</span>
   </div>
 </div>

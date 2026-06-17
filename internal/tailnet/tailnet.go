@@ -29,9 +29,10 @@ const (
 
 // Identity is a resolved Tailscale user (a request's, or the node owner's).
 type Identity struct {
-	UserID      tailcfg.UserID `json:"user_id"`
-	LoginName   string         `json:"login_name"`
-	DisplayName string         `json:"display_name"`
+	UserID        tailcfg.UserID `json:"user_id"`
+	LoginName     string         `json:"login_name"`
+	DisplayName   string         `json:"display_name"`
+	ProfilePicURL string         `json:"profile_pic_url,omitempty"`
 }
 
 // State is the bus-driven connection state. The reachable URL is NOT here — it
@@ -140,6 +141,7 @@ func (n *Node) onRunning() {
 		if up, ok := st.User[st.Self.UserID]; ok {
 			owner.LoginName = up.LoginName
 			owner.DisplayName = up.DisplayName
+			owner.ProfilePicURL = up.ProfilePicURL
 		}
 		n.state.Owner = owner
 		n.stableNodeID = string(st.Self.ID)
@@ -211,9 +213,10 @@ func (n *Node) WhoIs(ctx context.Context, remoteAddr string) (*Identity, error) 
 		return nil, fmt.Errorf("tailnet: no user profile for %q", remoteAddr)
 	}
 	return &Identity{
-		UserID:      who.UserProfile.ID,
-		LoginName:   who.UserProfile.LoginName,
-		DisplayName: who.UserProfile.DisplayName,
+		UserID:        who.UserProfile.ID,
+		LoginName:     who.UserProfile.LoginName,
+		DisplayName:   who.UserProfile.DisplayName,
+		ProfilePicURL: who.UserProfile.ProfilePicURL,
 	}, nil
 }
 

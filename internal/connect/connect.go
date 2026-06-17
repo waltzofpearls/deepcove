@@ -43,11 +43,11 @@ type Manager struct {
 	tsNode    *tailnet.Node
 	serveOnce bool
 
-	serveMu    sync.Mutex
+	serveMu    sync.Mutex // guards serving80 + serving443 (which listeners are up)
 	serving80  bool
 	serving443 bool
 
-	ownerMu        sync.RWMutex
+	ownerMu        sync.RWMutex      // guards persistedOwner + ownerSaved (the node owner)
 	persistedOwner *tailnet.Identity // node owner from the DuckDB node table
 	ownerSaved     bool
 }

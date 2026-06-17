@@ -4,6 +4,7 @@
   // session lands on the login view without flashing the app. The layout only
   // renders this while `transport.mode === 'wasm' && phase !== 'running'`.
   import { ensureTailnet, tailnetAuth } from '$lib/api/wasm';
+  import Logo from './layout/Logo.svelte';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import ExternalLink from '@lucide/svelte/icons/external-link';
@@ -18,9 +19,12 @@
 <div
   class="flex h-screen flex-col items-center justify-center gap-6 bg-background px-6 text-foreground"
 >
+  <!-- Brand anchor for the whole gate — shown in every state (login,
+       error, connecting) so the pre-dashboard screen reads as deepcove. -->
+  <Logo class="h-8 w-auto" />
+
   {#if auth.phase === 'needs_login'}
     <div class="flex w-full max-w-sm flex-col items-center gap-4 text-center">
-      <h1 class="text-2xl font-semibold tracking-tight">deepcove</h1>
       <p class="text-sm text-muted-foreground">
         This deepcove runs on your tailnet. Sign in to continue.
       </p>

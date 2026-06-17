@@ -22,9 +22,14 @@
   // the sidebar as a permanent left aside and ignores this.
   let sidebarOpen = $state(false);
 
-  // Let any page (e.g. the dashboard's empty-state CTA) open the New
-  // Session dialog, which lives here at the layout level.
-  setContext(NEW_SESSION_CTX, () => (newSessionOpen = true));
+  // Let any page (e.g. the dashboard's empty-state CTA) or the sidebar
+  // open the New Session dialog, which lives here at the layout level.
+  // Also dismiss the mobile sidebar drawer so the dialog isn't stacked
+  // behind it when triggered from the sidebar's "New session" button.
+  setContext(NEW_SESSION_CTX, () => {
+    newSessionOpen = true;
+    sidebarOpen = false;
+  });
 
   // In wasm mode the whole app rides the in-browser Tailscale node, so bring it
   // up on boot and gate the dashboard until it's running. Direct mode never

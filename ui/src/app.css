@@ -58,7 +58,7 @@
 	--card-foreground: oklch(0.205 0.005 95);
 	--popover: oklch(1 0 0);
 	--popover-foreground: oklch(0.205 0.005 95);
-	--primary: oklch(0.62 0.12 180); /* teal-600-ish */
+	--primary: oklch(0.62 0.12 180); /* deepcove brand teal — light theme (#009d89) */
 	--primary-foreground: oklch(0.985 0.001 95);
 	--secondary: oklch(0.95 0.002 95);
 	--secondary-foreground: oklch(0.205 0.005 95);
@@ -90,8 +90,8 @@
 	--card-foreground: oklch(0.985 0.001 95);
 	--popover: oklch(0.19 0.003 264);
 	--popover-foreground: oklch(0.985 0.001 95);
-	--primary: oklch(0.78 0.15 180); /* teal-400-ish */
-	--primary-foreground: oklch(0.16 0.003 264);
+	--primary: oklch(0.66 0.12 180); /* deepcove brand teal — dark theme (#00aa95) */
+	--primary-foreground: oklch(0.16 0.003 264); /* dark text reads better on #00aa95 (6.6:1) */
 	--secondary: oklch(0.24 0.004 264);
 	--secondary-foreground: oklch(0.985 0.001 95);
 	--muted: oklch(0.24 0.004 264);
@@ -104,7 +104,7 @@
 	--warning: oklch(0.82 0.16 80);
 	--border: oklch(0.28 0.004 264);
 	--input: oklch(0.28 0.004 264);
-	--ring: oklch(0.78 0.15 180);
+	--ring: oklch(0.66 0.12 180); /* match dark --primary */
 
 	--term-bg: #0b0d10;
 	--term-fg: #e6e6e6;
