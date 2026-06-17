@@ -66,6 +66,7 @@ export interface ConnectOwner {
 	user_id: number;
 	login_name: string;
 	display_name: string;
+	profile_pic_url?: string;
 }
 export interface ConnectStatus {
 	phase: 'stopped' | 'starting' | 'needs_login' | 'running';

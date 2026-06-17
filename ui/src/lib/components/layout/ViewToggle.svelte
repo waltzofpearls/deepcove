@@ -4,44 +4,30 @@
   import { preferences } from '$lib/stores/preferences.svelte';
   import LayoutGrid from '@lucide/svelte/icons/layout-grid';
   import List from '@lucide/svelte/icons/list';
+
+  // Single-button toggle, mirroring ThemeToggle: the icon shows the
+  // *current* view (grid when on cards, list when on list); clicking
+  // flips to the other.
+  function toggle() {
+    preferences.viewMode = preferences.viewMode === 'cards' ? 'list' : 'cards';
+  }
+
+  let label = $derived(preferences.viewMode === 'cards' ? 'Card view' : 'List view');
 </script>
 
-<div class="inline-flex items-center rounded-md border border-border p-0.5">
-  <TooltipProvider>
-    <Tooltip>
-      <TooltipTrigger>
-        {#snippet child({ props })}
-          <Button
-            {...props}
-            variant={preferences.viewMode === 'cards' ? 'secondary' : 'ghost'}
-            size="icon"
-            class="size-7"
-            onclick={() => (preferences.viewMode = 'cards')}
-            aria-label="Card view"
-          >
+<TooltipProvider>
+  <Tooltip>
+    <TooltipTrigger>
+      {#snippet child({ props })}
+        <Button {...props} variant="ghost" size="icon" onclick={toggle} aria-label={label}>
+          {#if preferences.viewMode === 'cards'}
             <LayoutGrid class="size-4" />
-          </Button>
-        {/snippet}
-      </TooltipTrigger>
-      <TooltipContent>Card view</TooltipContent>
-    </Tooltip>
-
-    <Tooltip>
-      <TooltipTrigger>
-        {#snippet child({ props })}
-          <Button
-            {...props}
-            variant={preferences.viewMode === 'list' ? 'secondary' : 'ghost'}
-            size="icon"
-            class="size-7"
-            onclick={() => (preferences.viewMode = 'list')}
-            aria-label="List view"
-          >
+          {:else}
             <List class="size-4" />
-          </Button>
-        {/snippet}
-      </TooltipTrigger>
-      <TooltipContent>List view</TooltipContent>
-    </Tooltip>
-  </TooltipProvider>
-</div>
+          {/if}
+        </Button>
+      {/snippet}
+    </TooltipTrigger>
+    <TooltipContent>{label}</TooltipContent>
+  </Tooltip>
+</TooltipProvider>
