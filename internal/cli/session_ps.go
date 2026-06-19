@@ -12,9 +12,8 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/config"
 )
 
-// cmdSessionPs handles `deepcove session ps`. Lists sessions on the
-// local background service, Docker-style. Output columns: ID, NAME,
-// AGENT, STATUS, AGE.
+// cmdSessionPs handles `deepcove session ps`. Lists sessions on the local background service,
+// Docker-style. Output columns: ID, NAME, AGENT, STATUS, AGE.
 func cmdSessionPs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("session ps", flag.ContinueOnError)
 	all := fs.Bool("a", false, "show all sessions (default: only running)")
@@ -44,9 +43,8 @@ func cmdSessionPs(ctx context.Context, args []string) error {
 	return nil
 }
 
-// ageOf formats a timestamp as a coarse "5m" / "2h" / "3d" string
-// suitable for table output. Doesn't try to be precise; the unit
-// reflects the largest non-zero bucket.
+// ageOf formats a timestamp as a coarse "5m" / "2h" / "3d" string suitable for table output. Doesn't
+// try to be precise; the unit reflects the largest non-zero bucket.
 func ageOf(t time.Time) string {
 	d := time.Since(t)
 	switch {

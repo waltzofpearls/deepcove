@@ -5,7 +5,7 @@ import (
 	"sort"
 )
 
-// AgentInfo is the public shape returned by GET /api/agents — the SPA's "new session"
+// AgentInfo is the public shape returned by GET /api/agents: the SPA's "new session"
 // form reads it for the agent dropdown and to pre-populate the setup-script textarea.
 // v1 returns Claude only; codex/gemini/opencode are deferred until each is verified
 // end-to-end (see project_agent_works_deferred.md).
@@ -28,7 +28,7 @@ func Agents() []AgentInfo {
 	return out
 }
 
-// DefaultSetup must be idempotent (`command -v <bin>` before installing) — runs every
+// DefaultSetup must be idempotent (`command -v <bin>` before installing); runs every
 // container boot. LaunchCmd runs in tmux window `main` and auto-restarts on agent exit;
 // SSH mode is the shell escape hatch.
 var agents = map[string]AgentInfo{

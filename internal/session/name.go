@@ -16,12 +16,12 @@ func generateName(agent string) string {
 
 // pickFrom returns a cryptographically-random element of the slice.
 // Using crypto/rand keeps name generation deterministic-only in the
-// "fully predictable" sense — no shared math/rand seed footgun.
+// "fully predictable" sense; no shared math/rand seed footgun.
 func pickFrom(words []string) string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		// crypto/rand failing on a working system is fatal. Panic
-		// here is acceptable — this is name generation, not a hot
+		// here is acceptable; this is name generation, not a hot
 		// path that needs graceful degradation.
 		panic(fmt.Sprintf("session: rand.Read: %v", err))
 	}
@@ -29,9 +29,8 @@ func pickFrom(words []string) string {
 	return words[n%uint64(len(words))]
 }
 
-// Wordlists kept small on purpose — collision probability with ~30 ×
-// ~30 = 900 combinations is tolerable for a personal-scale node and
-// uniqueness is enforced by the DB anyway.
+// Wordlists kept small on purpose; collision probability with ~30 × ~30 = 900 combinations is
+// tolerable for a personal-scale node and uniqueness is enforced by the DB anyway.
 
 var adjectives = []string{
 	"witty", "bold", "calm", "eager", "fierce", "gentle", "happy",

@@ -12,21 +12,18 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// previewCacheMaxEntries bounds the in-memory preview cache. A
-// reasonable single-node deepcove has tens of sessions at most; 256
-// is generous headroom. Beyond this, the least-recently-used entry
-// is evicted on Set — preventing unbounded growth if session rows
-// are removed out of band (manual SQL, future migrations) without
-// going through Destroy.
+// previewCacheMaxEntries bounds the in-memory preview cache. A reasonable single-node deepcove has
+// tens of sessions at most; 256 is generous headroom. Beyond this, the least-recently-used entry is
+// evicted on Set, preventing unbounded growth if session rows are removed out of band (manual SQL,
+// future migrations) without going through Destroy.
 const previewCacheMaxEntries = 256
 
 // PreviewResponse is the JSON shape returned by GET /api/sessions/{id}/preview.
 //
-// We return the raw `tmux capture-pane -e` byte stream and let the
-// client decide how to render it. Today the client feeds it into an
-// unmounted xterm.js Terminal + SerializeAddon, which derives its
-// own dimensions from the bytes — so we don't need to send cols/rows
-// over the wire (saves a tmux exec per poll, simplifies the schema).
+// We return the raw `tmux capture-pane -e` byte stream and let the client decide how to render it.
+// Today the client feeds it into an unmounted xterm.js Terminal + SerializeAddon, which derives its
+// own dimensions from the bytes, so we don't need to send cols/rows over the wire (saves a tmux exec
+// per poll, simplifies the schema).
 type PreviewResponse struct {
 	Ansi string `json:"ansi"`
 }
@@ -38,9 +35,8 @@ type PreviewResponse struct {
 // Memory-only; rebuilt as live captures succeed after a service
 // restart.
 //
-// LRU bounded to previewCacheMaxEntries — recently-accessed entries
-// (Get OR Set) move to the front; cache overflow evicts the oldest.
-// Active sessions stay warm; orphans from out-of-band row removal
+// LRU bounded to previewCacheMaxEntries: recently-accessed entries (Get OR Set) move to the front;
+// cache overflow evicts the oldest. Active sessions stay warm; orphans from out-of-band row removal
 // age out.
 type previewCache struct {
 	mu    sync.Mutex

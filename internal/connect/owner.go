@@ -9,7 +9,7 @@ import (
 	"tailscale.com/tailcfg"
 )
 
-// loadOwner reads the persisted node owner (SPEC §4.2 node table), or nil if the
+// loadOwner reads the persisted node owner from the node table, or nil if the
 // node hasn't been claimed yet.
 func loadOwner(db *sql.DB) (*tailnet.Identity, error) {
 	var uid string
@@ -25,9 +25,8 @@ func loadOwner(db *sql.DB) (*tailnet.Identity, error) {
 	return &tailnet.Identity{UserID: tailcfg.UserID(n), LoginName: email.String}, nil
 }
 
-// saveOwner records the node owner on first claim. ON CONFLICT DO NOTHING gives
-// the SPEC §6.1 "read once, never changes" semantics — a later login can't
-// silently re-own the node's data.
+// saveOwner records the node owner on first claim. ON CONFLICT DO NOTHING gives "read once, never
+// changes" semantics: a later login can't silently re-own the node's data.
 func saveOwner(db *sql.DB, stableNodeID string, o *tailnet.Identity) error {
 	_, err := db.Exec(
 		`INSERT INTO node (id, stable_node_id, owner_user_id, owner_email)

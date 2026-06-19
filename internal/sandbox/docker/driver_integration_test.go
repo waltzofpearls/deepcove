@@ -106,10 +106,9 @@ func TestDriver_Lifecycle(t *testing.T) {
 	}
 }
 
-// TestProcess_Close is the regression test for the pump-goroutine
-// leak — Close must tear down the connection even when callers
-// never drain Stdout/Stderr. Cases cover the leak shape (long-
-// output command) and the trivial shape (already-exited process).
+// TestProcess_Close is the regression test for the pump-goroutine leak: Close must tear down the
+// connection even when callers never drain Stdout/Stderr. Cases cover the leak shape (long-output
+// command) and the trivial shape (already-exited process).
 func TestProcess_Close(t *testing.T) {
 	tests := []struct {
 		name    string

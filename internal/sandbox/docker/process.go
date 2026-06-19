@@ -21,13 +21,11 @@ import (
 // matches the exec's TTY flag.
 //
 // Lifecycle:
-//   - newProcess starts the pump goroutine (and, if ExecSpec.Stdin
-//     was non-nil, a stdin-copy goroutine).
-//   - Close (or successful Wait, which Closes internally) tears down
-//     the attach connection — which unblocks the pump's read — and
-//     waits for goroutines to drain.
-//   - Calling neither leaks the connection. The interface contract
-//     makes Close mandatory.
+//   - newProcess starts the pump goroutine (and, if ExecSpec.Stdin was non-nil, a stdin-copy
+//     goroutine).
+//   - Close (or successful Wait, which Closes internally) tears down the attach connection, which
+//     unblocks the pump's read, and waits for goroutines to drain.
+//   - Calling neither leaks the connection. The interface contract makes Close mandatory.
 type process struct {
 	cli    *client.Client
 	execID string
@@ -112,8 +110,8 @@ func (p *process) Stderr() io.ReadCloser { return p.stderrR }
 // Stdin().Close() half-closes the input stream (the inside-container
 // process sees EOF on its stdin) without affecting Stdout/Stderr.
 //
-// If the caller already provided ExecSpec.Stdin at create time, the
-// returned writer races with the spawned copier — don't use both.
+// If the caller already provided ExecSpec.Stdin at create time, the returned writer races with the
+// spawned copier; don't use both.
 func (p *process) Stdin() io.WriteCloser {
 	return &stdinWriter{p: p}
 }

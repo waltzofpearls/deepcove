@@ -1,8 +1,7 @@
-// Package api implements deepcove's HTTP API surface. The same handler set
-// is mounted on whichever listeners the running mode provides:
+// Package api implements deepcove's HTTP API surface. The same handler set is mounted on whichever
+// listeners the running mode provides:
 //   - `deepcove start`: local TCP + Unix socket + tsnet TLS (eventually)
-//   - `deepcove dashboard` (no-service): not mounted; dashboard mode is
-//     SPA-only by spec (§4.1.2)
+//   - `deepcove dashboard` (no-service): not mounted; dashboard mode is SPA-only.
 //
 // Handlers live in sibling files (health.go, ...). New handlers register
 // themselves in AttachRoutes.
@@ -44,9 +43,9 @@ func New(options ...Option) *Server {
 	return s
 }
 
-// AttachRoutes registers all API routes on the configured mux. Go 1.22+
-// pattern matching handles specificity, so the order of registration vs.
-// the UI's catch-all `/` doesn't matter — `/api/health` always wins.
+// AttachRoutes registers all API routes on the configured mux. Go 1.22+ pattern matching handles
+// specificity, so the order of registration vs. the UI's catch-all `/` doesn't matter; `/api/health`
+// always wins.
 func (s *Server) AttachRoutes() error {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	return nil

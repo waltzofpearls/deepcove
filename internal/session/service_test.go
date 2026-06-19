@@ -47,7 +47,7 @@ func openTestDB(t *testing.T) *sql.DB {
 // newTestService spins up a Service backed by an in-memory DuckDB
 // session repo and a fake sandbox. Returns the *sql.DB too so tests
 // that need to inspect the underlying table (e.g. rowCount) can do
-// so directly — that's a test-only escape hatch, not a public API.
+// so directly; that's a test-only escape hatch, not a public API.
 func newTestService(t *testing.T) (*Service, *fakeSandbox, string, *sql.DB) {
 	t.Helper()
 	db := openTestDB(t)
@@ -70,7 +70,7 @@ func mustCreate(t *testing.T, svc *Service, agent string) *Session {
 }
 
 // assertSessionErr is the local equivalent of the repository test
-// helper — kept per-package because each package has slightly
+// helper, kept per-package because each package has slightly
 // different error sentinels.
 func assertSessionErr(t *testing.T, got, wantIs error, wantContains string) {
 	t.Helper()
@@ -90,7 +90,7 @@ func assertSessionErr(t *testing.T, got, wantIs error, wantContains string) {
 	}
 }
 
-// rowCount counts rows in the sessions table — used by several tables
+// rowCount counts rows in the sessions table; used by several tables
 // to verify create/rollback effects on persistence.
 func rowCount(t *testing.T, db *sql.DB) int {
 	t.Helper()
@@ -165,7 +165,7 @@ func TestService_Create(t *testing.T) {
 			wantRows:         0,
 		},
 		{
-			// Mount validation rejects before any sandbox call — the
+			// Mount validation rejects before any sandbox call; the
 			// empty callSequence assertion below confirms we don't
 			// spin up the workspace dir for a request we already
 			// know is bad.
@@ -205,7 +205,7 @@ func TestService_Create(t *testing.T) {
 			}
 
 			// On success the session should be running and named (auto or explicit).
-			// There's no host-side scratch dir anymore — /workspace lives inside the
+			// There's no host-side scratch dir anymore; /workspace lives inside the
 			// container (or is a user mount), so there's nothing on disk to assert.
 			if tc.wantRows > 0 && sess != nil {
 				if sess.Status != tc.wantStatus {
@@ -247,7 +247,7 @@ func TestService_List(t *testing.T) {
 			name: "default filter returns only running",
 			setup: func(t *testing.T, svc *Service) {
 				// Two claude sessions with explicit names so the UNIQUE constraint on
-				// `name` doesn't bite — in v1 the registry only has one agent, so we
+				// `name` doesn't bite; in v1 the registry only has one agent, so we
 				// can't differentiate by agent name like the test used to.
 				_, _ = svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "list-running"})
 				stopped, _ := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "list-stopped"})
@@ -484,7 +484,7 @@ func TestService_Create_WithCustomImage(t *testing.T) {
 		t.Errorf("Image: want override to flow through, got %q", sess.Image)
 	}
 
-	// Round-trip through the DB — Get should return the same image.
+	// Round-trip through the DB; Get should return the same image.
 	got, err := svc.Get(context.Background(), sess.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -508,7 +508,7 @@ func TestService_Create_WithCustomSetupScript(t *testing.T) {
 	}
 
 	// The fake sandbox records the spec it received on Create. Verify the entrypoint
-	// includes the custom setup script — drift here would mean user-supplied setup
+	// includes the custom setup script; drift here would mean user-supplied setup
 	// silently gets ignored.
 	if len(fake.specs) == 0 {
 		t.Fatal("fake didn't record any Create specs")
@@ -605,7 +605,7 @@ func TestService_Create_PersistsMounts(t *testing.T) {
 }
 
 func TestService_Destroy_DoesNotRemoveSharedAgentVolume(t *testing.T) {
-	// The agent-home volume is shared across all sessions of the same agent — it holds
+	// The agent-home volume is shared across all sessions of the same agent; it holds
 	// the user's login credentials and the installed agent binary. Destroying one
 	// claude session must not clobber the volume; another claude session created later
 	// expects to still be logged in.
@@ -942,7 +942,7 @@ func TestValidateMountRequests(t *testing.T) {
 func TestAgents(t *testing.T) {
 	got := Agents()
 
-	// Whole-list invariants — checked once, not per case.
+	// Whole-list invariants, checked once, not per case.
 	if len(got) == 0 {
 		t.Fatal("Agents() returned empty list")
 	}
@@ -952,9 +952,9 @@ func TestAgents(t *testing.T) {
 		}
 	}
 
-	// v1: Claude only. Other agents (codex, gemini, opencode) are deferred and must NOT
-	// appear in the public registry — see project_agent_works_deferred.md. If you're
-	// adding a new agent, append it here AND verify the install/launch end-to-end first.
+	// v1: Claude only. Other agents (codex, gemini, opencode) are deferred and must NOT appear in the
+	// public registry. If you're adding a new agent, append it here AND verify the install/launch
+	// end-to-end first.
 	tests := []struct {
 		agent string
 	}{

@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-// cmdSession is the router for `deepcove session ...`. See SPEC.md §8.
+// cmdSession is the router for `deepcove session ...`.
 //
 // Shape:
 //
@@ -16,9 +16,8 @@ import (
 //	deepcove session ps                                # list sessions
 //	deepcove session help                              # subcommand usage
 //
-// Reserved verbs (`attach`, `ps`, `help`, `-h`, `--help`) are intercepted
-// here; anything else is treated as the agent name positional and
-// dispatched to cmdSessionCreate.
+// Reserved verbs (`attach`, `ps`, `help`, `-h`, `--help`) are intercepted here; anything else is
+// treated as the agent name positional and dispatched to cmdSessionCreate.
 func cmdSession(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		sessionUsage(os.Stderr)

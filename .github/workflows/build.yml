@@ -1,0 +1,81 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ui/package.json
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - working-directory: ui
+        run: npm ci
+      - run: make ui-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-build
+          path: ui/build
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: ui
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: darwin-arm64
+            runner: macos-latest
+            make: build-darwin-arm64
+            artifact: dist/darwin-arm64/deepcove
+            needs_go: true
+          - name: darwin-amd64
+            runner: macos-latest
+            make: build-darwin-amd64
+            artifact: dist/darwin-amd64/deepcove
+            needs_go: true
+          - name: windows-amd64
+            runner: macos-latest
+            make: build-windows-amd64
+            artifact: dist/windows-amd64/deepcove.exe
+            needs_go: true
+            mingw: true
+          - name: linux-amd64
+            runner: ubuntu-latest
+            make: build-linux-amd64
+            artifact: dist/linux-amd64/deepcove
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            make: build-linux-arm64
+            artifact: dist/linux-arm64/deepcove
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-build
+          path: ui/build
+      - if: matrix.needs_go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - if: matrix.mingw
+        run: brew list mingw-w64 >/dev/null 2>&1 || brew install mingw-w64
+      - run: make ${{ matrix.make }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deepcove-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          retention-days: 7

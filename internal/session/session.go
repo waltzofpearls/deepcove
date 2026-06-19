@@ -1,15 +1,12 @@
-// Package session manages the lifecycle of coding-agent sessions
-// hosted on this node — the layer between the API surface and the
-// sandbox driver.
+// Package session manages the lifecycle of coding-agent sessions hosted on this node: the layer
+// between the API surface and the sandbox driver.
 //
-// A Session is a row in the sessions table plus a live sandbox handle.
-// The Service handles create/list/get/stop/destroy with the sandbox
-// driver, persisting state in DuckDB so it survives a service restart.
+// A Session is a row in the sessions table plus a live sandbox handle. The Service handles
+// create/list/get/stop/destroy with the sandbox driver, persisting state in DuckDB so it survives a
+// service restart.
 //
-// SPEC §5.7 (creation + mounts) and §8 (CLI surface) are the relevant
-// design references. Owner identity and authorization (§6) are not
-// wired in this slice — Service uses a placeholder owner; the real
-// identity layer plugs in via request context once tsnet/WhoIs lands.
+// Owner identity and authorization are not wired in this slice: Service uses a placeholder owner;
+// the real identity layer plugs in via request context once tsnet/WhoIs lands.
 package session
 
 import "time"
@@ -55,9 +52,8 @@ type CreateRequest struct {
 	SetupScript string            `json:"setup_script,omitempty"`
 }
 
-// MountRequest is one entry in CreateRequest.Mounts — a host path
-// mapped into the sandbox at a container path. SPEC §5.7. Wire
-// format keeps snake_case field names for JSON-by-convention.
+// MountRequest is one entry in CreateRequest.Mounts: a host path mapped into the sandbox at a
+// container path. Wire format keeps snake_case field names for JSON-by-convention.
 //
 // Mounts are optional. The conventional target is /workspace (your
 // code), which the agent cd's into; mount nothing and the agent gets
@@ -71,9 +67,8 @@ type MountRequest struct {
 	Mode string `json:"mode,omitempty"`
 }
 
-// ListFilter narrows GET /api/sessions. Today only the "all" toggle
-// matters — by default we hide stopped/errored sessions so `session
-// ps` matches the Docker convention (only running unless -a).
+// ListFilter narrows GET /api/sessions. Today only the "all" toggle matters: by default we hide
+// stopped/errored sessions so `session ps` matches the Docker convention (only running unless -a).
 type ListFilter struct {
 	IncludeAll bool
 }

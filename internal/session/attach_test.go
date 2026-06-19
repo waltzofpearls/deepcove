@@ -12,10 +12,9 @@ import (
 	"github.com/coder/websocket"
 )
 
-// TestValidateTmuxWindowNameSyntax pins the difference between the
-// strict and syntax-only validators: attach uses the syntax-only one
-// because "main" is the agent window — a perfectly valid attach
-// target — even though it's reserved for *creating* windows.
+// TestValidateTmuxWindowNameSyntax pins the difference between the strict and syntax-only validators:
+// attach uses the syntax-only one because "main" is the agent window (a perfectly valid attach
+// target) even though it's reserved for *creating* windows.
 func TestValidateTmuxWindowNameSyntax(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -76,11 +75,9 @@ func wsURL(t *testing.T, baseURL, path string) string {
 	return "ws://" + strings.TrimPrefix(baseURL, "http://") + path
 }
 
-// TestHandleAttach_PreUpgradeValidation covers the three reject paths
-// that happen BEFORE the WebSocket upgrade — these are the cheap
-// "fail with a clean HTTP error" cases. After upgrade, errors are
-// awkward close frames, so we want to keep these before-upgrade
-// branches well-tested.
+// TestHandleAttach_PreUpgradeValidation covers the three reject paths that happen BEFORE the
+// WebSocket upgrade; these are the cheap "fail with a clean HTTP error" cases. After upgrade, errors
+// are awkward close frames, so we want to keep these before-upgrade branches well-tested.
 func TestHandleAttach_PreUpgradeValidation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -138,15 +135,15 @@ func TestHandleAttach_PreUpgradeValidation(t *testing.T) {
 	}
 }
 
-// TestHandleAttach_ViewSessionLifecycle exercises the per-attach view
-// session — the substrate for Split mode (per-client window views)
-// and the fix for tmux clients piling up after each toggle. Asserts:
+// TestHandleAttach_ViewSessionLifecycle exercises the per-attach view session: the substrate for
+// Split mode (per-client window views) and the fix for tmux clients piling up after each toggle.
+// Asserts:
 //
 //  1. A `view-<uuid>` session is created as a member of main's group.
 //  2. The attach exec targets that view session.
 //  3. When tmux_window is supplied, the chained `select-window` only
 //     focuses the new view (per-client focus, not main's).
-//  4. On disconnect the view session is killed — the cleanup defer
+//  4. On disconnect the view session is killed; the cleanup defer
 //     fires regardless of how the bridge tears down.
 func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 	tests := []struct {
@@ -181,7 +178,7 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 
 			// Three scripted Exec responses, in call order:
 			//   1. new-session (setup)
-			//   2. attach      (the bridge — empty stdout EOFs fast, tearing the bridge down)
+			//   2. attach      (the bridge: empty stdout EOFs fast, tearing the bridge down)
 			//   3. kill-session (deferred cleanup)
 			fake.execResponses = []execResponse{
 				{exit: 0},
@@ -245,7 +242,7 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 			if len(gotAttach) != tc.wantAttachLen {
 				t.Errorf("attach cmd length: got %d, want %d (%v)", len(gotAttach), tc.wantAttachLen, gotAttach)
 			}
-			// The -u between tmux and attach forces UTF-8 client mode — fixes the
+			// The -u between tmux and attach forces UTF-8 client mode; fixes the
 			// `_` substitution of high-bit chars (❯ ← •) on Alpine where no locale
 			// is set. Drift here without test catching it would re-break the TUI.
 			wantAttachHead := []string{"tmux", "-u", "attach", "-t", viewName}
@@ -301,7 +298,7 @@ func TestHandleAttach_ViewSessionSetupFailure(t *testing.T) {
 		t.Errorf("expected exactly 1 exec call (the failed new-session); got %d: %v",
 			len(fake.execCalls), fake.execCalls)
 	}
-	// No attach exec, no kill — the failed new-session means there's
+	// No attach exec, no kill; the failed new-session means there's
 	// nothing to clean up. If a future change accidentally schedules
 	// cleanup before the success check, this guards against the
 	// spurious kill-session.

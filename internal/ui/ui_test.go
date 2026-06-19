@@ -11,11 +11,11 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/config"
 )
 
-// TestServeShellInjectsTransportOverHTTP drives the real serving path end to
-// end: a live httptest server backed by the actual embedded SvelteKit build.
-// It proves the browser receives window.__deepcove in the page, and that the
-// value tracks the per-listener transport setting (direct by default, wasm when
-// overridden) — i.e. the injection is real and configurable, not hardcoded.
+// TestServeShellInjectsTransportOverHTTP drives the real serving path end to end: a live httptest
+// server backed by the actual embedded SvelteKit build. It proves the browser receives
+// window.__deepcove in the page, and that the value tracks the per-listener transport setting
+// (direct by default, wasm when overridden); i.e. the injection is real and configurable, not
+// hardcoded.
 func TestServeShellInjectsTransportOverHTTP(t *testing.T) {
 	cases := []struct {
 		name      string

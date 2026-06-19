@@ -13,28 +13,30 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// sessionClient is a thin HTTP client the CLI uses to talk to the
-// running deepcove service over its local TCP listener. It exists in
-// this file so each session_*.go command stays small and focused.
-//
-// Once the Unix socket listener lands (SPEC §4.1.1), the dial address
-// switches there — until then, talking to 127.0.0.1:8080 works for
-// the single-machine case the CLI cares about.
+// sessionClient is a thin HTTP client the CLI uses to talk to the running deepcove service. It prefers
+// the local control Unix socket (filesystem-permission scoped, and not subject to the local TCP
+// listener's token gate), falling back to the TCP address when the socket is absent (older server,
+// or dev). It exists in this file so each session_*.go command stays small and focused.
 type sessionClient struct {
 	baseURL string
 	http    *http.Client
 }
 
 func newSessionClient(cfg *config.Config) *sessionClient {
+	if sock := socketPath(); socketAvailable(sock) {
+		return &sessionClient{
+			baseURL: "http://unix", // host is ignored; the transport dials the socket
+			http:    socketHTTPClient(sock),
+		}
+	}
 	return &sessionClient{
 		baseURL: "http://" + cfg.Addr,
 		http:    http.DefaultClient,
 	}
 }
 
-// errAPI is what an /api/sessions response with a non-2xx status
-// becomes on the client side. Wrapping keeps the daemon's error
-// message visible while letting callers reason about retry/etc later.
+// errAPI is what an /api/sessions response with a non-2xx status becomes on the client side. Wrapping
+// keeps the daemon's error message visible while letting callers reason about retry/etc later.
 type errAPI struct {
 	Status int
 	Body   string
@@ -95,8 +97,7 @@ func (c *sessionClient) List(ctx context.Context, includeAll bool) ([]*session.S
 
 func readAPIError(resp *http.Response) error {
 	b, _ := io.ReadAll(resp.Body)
-	// Try to decode the structured {"error": "..."} response; fall
-	// back to the raw body if it's not JSON.
+	// Try to decode the structured {"error": "..."} response; fall back to the raw body if it's not JSON.
 	var asJSON map[string]string
 	if json.Unmarshal(b, &asJSON) == nil {
 		if msg, ok := asJSON["error"]; ok {

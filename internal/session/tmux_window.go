@@ -14,10 +14,9 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// AgentTmuxWindowName is the tmux window where the coding agent runs.
-// It's created by the sandbox entrypoint Cmd (see service.go) and is
-// **not deletable via the tmux-windows API** — killing the agent's
-// window would end the tmux session and tear down the container.
+// AgentTmuxWindowName is the tmux window where the coding agent runs. It's created by the sandbox
+// entrypoint Cmd (see service.go) and is **not deletable via the tmux-windows API**: killing the
+// agent's window would end the tmux session and tear down the container.
 const AgentTmuxWindowName = "main"
 
 // Window-name validation:
@@ -69,7 +68,7 @@ func (s *Service) ListTmuxWindows(ctx context.Context, id string) (*TmuxWindowsR
 	// Space-separated format. Tab would be slightly safer (window
 	// names with spaces would parse correctly), BUT tmux 3.4 on
 	// Alpine 3.20 doesn't honor literal tab bytes in -F format
-	// strings — it silently replaces them with underscores. Space
+	// strings; it silently replaces them with underscores. Space
 	// is portable across tmux versions; our tmux-windows API rejects
 	// names with spaces anyway (validated as [a-z0-9-]+), so the
 	// only window we can't fully control is the agent's "main",
@@ -128,7 +127,7 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 	}
 
 	// -d: don't switch focus. -P -F: print the new window's index. The trailing colon
-	// on -t "main:" targets the SESSION (not the window of the same name) — without
+	// on -t "main:" targets the SESSION (not the window of the same name); without
 	// it tmux tries to insert at the existing main window's index 0 and fails.
 	args := []string{
 		"new-window", "-d", "-t", AgentTmuxWindowName + ":", "-n", name,
@@ -197,7 +196,7 @@ func (s *Service) DeleteTmuxWindow(ctx context.Context, id, name string) error {
 
 // execTmux runs `tmux <args...>` inside the session's container and
 // returns stdout. Non-zero exit codes surface as errors with stderr
-// content included for diagnostic context — callers can match on the
+// content included for diagnostic context; callers can match on the
 // error message via isTmuxWindowNotFound for the common "no such
 // window" case.
 //
@@ -206,7 +205,7 @@ func (s *Service) DeleteTmuxWindow(ctx context.Context, id, name string) error {
 // sandbox driver demuxes them into two io.Pipes. If only stdout
 // is being read, a stderr-heavy program (like tmux on errors)
 // blocks the demuxer pump trying to write to the unbuffered
-// stderr pipe — Wait then never returns and the whole call hangs.
+// stderr pipe; Wait then never returns and the whole call hangs.
 // Concurrent drain is the standard fix.
 func (s *Service) execTmux(ctx context.Context, containerID string, args ...string) ([]byte, error) {
 	execCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -270,7 +269,7 @@ func isTmuxWindowNotFound(err error) bool {
 // each line is "INDEX NAME ACTIVE" (ACTIVE is "1" or "0"). Fields
 // are space-separated; we use strings.Fields so any whitespace count
 // works. Window names are validated to [a-z0-9-]+ on the way in, so
-// none contain whitespace — and the agent's "main" window doesn't
+// none contain whitespace, and the agent's "main" window doesn't
 // either. (See the -F format note in ListTmuxWindows for why we
 // don't use tab.)
 func parseTmuxWindowsList(out string) *TmuxWindowsResponse {
@@ -294,7 +293,7 @@ func parseTmuxWindowsList(out string) *TmuxWindowsResponse {
 
 // validateTmuxWindowNameSyntax checks only character class + length
 // constraints. Used by *attach*, where "main" (the agent window) is
-// a perfectly valid target — we just don't want to spawn a shell IN
+// a perfectly valid target; we just don't want to spawn a shell IN
 // it (that's what the create-flow guard is for).
 func validateTmuxWindowNameSyntax(name string) error {
 	if name == "" || len(name) > maxTmuxWindowNameLength {
@@ -307,7 +306,7 @@ func validateTmuxWindowNameSyntax(name string) error {
 }
 
 // validateTmuxWindowName is the stricter form used by create/select/
-// delete — adds the reserved-name check on top of the syntax check.
+// delete; adds the reserved-name check on top of the syntax check.
 // Refusing "main" here keeps the agent's window safe from accidental
 // recreation or deletion via the API.
 func validateTmuxWindowName(name string) error {

@@ -39,13 +39,11 @@ type AttachControlMessage struct {
 // frames are bytes flowing both ways (terminal I/O); text frames
 // are JSON control messages (resize today).
 //
-// Optional ?tmux_window= query param attaches the client to a
-// specific tmux window. tmux tracks "current window" per-client,
-// so two simultaneous attaches with different ?tmux_window= values
-// each see their own window — the substrate the upcoming Split
-// mode (one session, two side-by-side terminals on different
-// windows) is built on. Absent or empty → legacy behavior (follow
-// the session's globally-current window).
+// Optional ?tmux_window= query param attaches the client to a specific tmux window. tmux tracks
+// "current window" per-client, so two simultaneous attaches with different ?tmux_window= values each
+// see their own window: the substrate the upcoming Split mode (one session, two side-by-side
+// terminals on different windows) is built on. Absent or empty means legacy behavior (follow the
+// session's globally-current window).
 func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, err := s.Get(r.Context(), id)
@@ -62,13 +60,11 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse + validate optional window targeting BEFORE upgrading
-	// the WS so an invalid name fails as a clean 400 instead of an
-	// awkward post-upgrade close. Uses the SYNTAX-only validator —
-	// the stricter validateTmuxWindowName forbids "main" because no
-	// caller should *create* a window with that name (it'd collide
-	// with the agent's window), but here we WANT to allow attaching
-	// to "main" since that's the agent's window itself.
+	// Parse + validate optional window targeting BEFORE upgrading the WS so an invalid name fails as
+	// a clean 400 instead of an awkward post-upgrade close. Uses the SYNTAX-only validator; the
+	// stricter validateTmuxWindowName forbids "main" because no caller should *create* a window with
+	// that name (it'd collide with the agent's window), but here we WANT to allow attaching to "main"
+	// since that's the agent's window itself.
 	tmuxWindow := r.URL.Query().Get("tmux_window")
 	if tmuxWindow != "" {
 		if err := validateTmuxWindowNameSyntax(tmuxWindow); err != nil {
@@ -77,19 +73,15 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Each attach runs in its own per-connection tmux session,
-	// created as a member of the "main" session group. Why: tmux's
-	// `select-window` operates on the SESSION's active-window
-	// state, not per-client — so two simultaneous attaches with
-	// different ?tmux_window= values would clobber each other,
-	// and Split mode (two attaches in parallel) would show the
-	// same window on both sides.
+	// Each attach runs in its own per-connection tmux session, created as a member of the "main"
+	// session group. Why: tmux's `select-window` operates on the SESSION's active-window state, not
+	// per-client, so two simultaneous attaches with different ?tmux_window= values would clobber each
+	// other, and Split mode (two attaches in parallel) would show the same window on both sides.
 	//
-	// Session-group members share the linked window list (so the
-	// windows API still operates on "main" canonically), but each
-	// member has its own current-window — true per-client window
-	// views. Killing the view session on disconnect (deferred
-	// below) also tears down the attached tmux client process,
+	// Session-group members share the linked window list (so the windows API still operates on "main"
+	// canonically), but each member has its own current-window: true per-client window views. Killing
+	// the view session on disconnect (deferred below) also tears down the attached tmux client
+	// process,
 	// fixing the separate bug where Docker exec doesn't reliably
 	// SIGHUP the child on connection close (left tmux client
 	// processes piling up inside the container after each toggle).
@@ -118,7 +110,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{AttachSubprotocol},
-		// We deliberately do not check Origin here — this listener
+		// We deliberately do not check Origin here; this listener
 		// is local TCP, not exposed to the network. Once tsnet
 		// listener lands the policy gets stricter.
 		InsecureSkipVerify: true,
@@ -142,7 +134,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	proc, err := s.sandbox.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
 		Cmd: cmd,
 		Tty: true,
-		// TERM is required for tmux to function — without it tmux
+		// TERM is required for tmux to function; without it tmux
 		// can run but doesn't recognise the terminal type and
 		// some inputs/escape sequences misbehave.
 		Env: map[string]string{"TERM": "xterm-256color"},
@@ -156,7 +148,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// Record activity on attach. Idle ticker keeps last_activity_at
 	// fresh for the canvas sort; one final write on disconnect
 	// captures the exact moment the user walked away. All three
-	// writes are best-effort — a DB hiccup shouldn't kill the
+	// writes are best-effort; a DB hiccup shouldn't kill the
 	// terminal session.
 	logger := s.logger.With("session_id", id)
 	if rerr := s.RecordActivity(ctx, id); rerr != nil {
@@ -215,7 +207,7 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 	// frame. A slow / paused client lets the OS socket buffer fill,
 	// which then back-pressures into the PTY read (the next Read
 	// blocks because the kernel-side pipe is full). That's the
-	// behavior we want — the PTY pauses output rather than us
+	// behavior we want: the PTY pauses output rather than us
 	// buffering unbounded in user space. If we ever want to drop
 	// frames instead of pausing the PTY, this is the spot to add a
 	// SetWriteDeadline equivalent.

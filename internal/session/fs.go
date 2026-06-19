@@ -14,7 +14,7 @@ type FsEntry struct {
 	Path string `json:"path"`
 }
 
-// FsListResponse is the GET /api/fs/list payload — the directories the host-path
+// FsListResponse is the GET /api/fs/list payload: the directories the host-path
 // picker/autocomplete shows. Parent is "" when Path is the home root (no "up").
 type FsListResponse struct {
 	Path    string    `json:"path"`
@@ -25,7 +25,7 @@ type FsListResponse struct {
 // handleFsList lists the subdirectories of a host path so the New Session form can
 // offer host-path autocomplete + a Browse modal. GET /api/fs/list?path=/abs/path
 //
-// Scope: the user's home directory subtree only — this mirrors the sandbox mount-source
+// Scope: the user's home directory subtree only. This mirrors the sandbox mount-source
 // allowed root ($HOME) wired in start.go, so the picker can only reach folders that are
 // actually mountable. Paths are cleaned (so "../" can't walk out at the string level)
 // and prefix-checked against home before any read. Owner-only, local-trust model; a

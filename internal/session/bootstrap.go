@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Sessions created before this slice landed have no status file in the container — they
+// Sessions created before this slice landed have no status file in the container; they
 // fall through to BootstrapReady so the loading overlay doesn't get stuck on them.
 type BootstrapStatus string
 

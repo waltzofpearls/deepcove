@@ -1,11 +1,9 @@
-// Package db owns deepcove's local DuckDB store. Every node keeps
-// its own database under cfg.DataDir/deepcove.duckdb — there is no
-// cross-node replication (SPEC.md §5: per-session sharing only).
+// Package db owns deepcove's local DuckDB store. Every node keeps its own database under
+// cfg.DataDir/deepcove.duckdb; there is no cross-node replication (per-session sharing only).
 //
-// Scope is intentionally narrow: connection lifecycle + migrations.
-// Domain CRUD lives in a `repository.go` inside each owning package
-// (e.g. internal/session/repository.go) — Go-idiomatic cohesion by
-// bounded context, no separate "data access layer" package.
+// Scope is intentionally narrow: connection lifecycle + migrations. Domain CRUD lives in a
+// `repository.go` inside each owning package (e.g. internal/session/repository.go), Go-idiomatic
+// cohesion by bounded context, no separate "data access layer" package.
 package db
 
 import (
@@ -36,13 +34,10 @@ func Open(dataDir string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("repository: open %s: %w", path, err)
 	}
-	// We deliberately do not call SetMaxOpenConns(1). DuckDB's
-	// embedded driver serialises writes itself, so capping the pool
-	// only forces concurrent reads to queue up behind each other —
-	// which would serialise unrelated HTTP requests once the API
-	// layer starts touching the DB. Default pool behaviour is the
-	// right one for our access pattern (many short reads, occasional
-	// short writes).
+	// We deliberately do not call SetMaxOpenConns(1). DuckDB's embedded driver serialises writes
+	// itself, so capping the pool only forces concurrent reads to queue up behind each other, which
+	// would serialise unrelated HTTP requests once the API layer starts touching the DB. Default pool
+	// behaviour is the right one for our access pattern (many short reads, occasional short writes).
 
 	if err := db.Ping(); err != nil {
 		_ = db.Close()

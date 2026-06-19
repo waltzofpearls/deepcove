@@ -17,15 +17,13 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/ui"
 )
 
-// cmdDashboard opens the deepcove dashboard. It never starts the
-// background service. See SPEC.md §4.1.2.
+// cmdDashboard opens the deepcove dashboard. It never starts the background service.
 //
 // Two cases:
-//   - If a local service is already running on cfg.Addr (probed via
-//     /api/health), just open that URL in the default browser and exit.
-//   - Otherwise spin up a minimal HTTP server on cfg.Addr that serves
-//     only the SPA bundle, then open the browser. No tsnet, no Unix
-//     socket, no DuckDB, no Docker.
+//   - If a local service is already running on cfg.Addr (probed via /api/health), just open that
+//     URL in the default browser and exit.
+//   - Otherwise spin up a minimal HTTP server on cfg.Addr that serves only the SPA bundle, then
+//     open the browser. No tsnet, no Unix socket, no DuckDB, no Docker.
 func cmdDashboard(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -41,9 +39,8 @@ func cmdDashboard(ctx context.Context, args []string) error {
 
 	url := "http://" + cfg.Addr + "/"
 
-	// If a background service is already running, defer to it: open
-	// the browser and return. We probe /api/health (which only the
-	// running service exposes — dashboard mode does not).
+	// If a background service is already running, defer to it: open the browser and return.
+	// We probe /api/health (which only the running service exposes; dashboard mode does not).
 	if serviceRunning(ctx, cfg.Addr) {
 		logger.Info("detected running deepcove service; opening browser", "url", url)
 		if err := openBrowser(url); err != nil {
@@ -55,7 +52,7 @@ func cmdDashboard(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	// Thin-client mode: serve only the SPA bundle.
+	// Thin client mode: serve only the SPA bundle.
 	mux := http.NewServeMux()
 	if err := ui.New(ui.WithConfig(cfg), ui.WithMux(mux)).AttachRoutes(); err != nil {
 		return fmt.Errorf("ui: %w", err)
@@ -66,8 +63,7 @@ func cmdDashboard(ctx context.Context, args []string) error {
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
 
-	// Same timeout posture as cmdStart — local listener or not,
-	// no-timeout net/http is a foot-gun.
+	// Same timeout posture as cmdStart; local listener or not, no-timeout net/http is a foot-gun.
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -76,8 +72,8 @@ func cmdDashboard(ctx context.Context, args []string) error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	// Print the URL prominently so users can copy/paste it if the
-	// browser fails to auto-open (or they're on a remote shell etc.).
+	// Print the URL prominently so users can copy/paste it if the browser fails to auto-open
+	// (or they're on a remote shell etc.).
 	fmt.Println()
 	fmt.Printf("  deepcove dashboard:  %s\n", url)
 	fmt.Println()
@@ -111,9 +107,8 @@ func cmdDashboard(ctx context.Context, args []string) error {
 	}
 }
 
-// serviceRunning probes /api/health on addr with a short timeout.
-// True means a background deepcove service is up and ready; false
-// means we should start the thin-client.
+// serviceRunning probes /api/health on addr with a short timeout. True means a background deepcove
+// service is up and ready; false means we should start the thin-client.
 func serviceRunning(ctx context.Context, addr string) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()

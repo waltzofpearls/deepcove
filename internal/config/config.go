@@ -42,11 +42,9 @@ func Load(ctx context.Context) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		// No leading dot — os.UserConfigDir already returns a
-		// hidden/conventional location per platform (~/.config on
-		// Linux, ~/Library/Application Support on macOS,
-		// %AppData% on Windows), and dotfiles inside those are
-		// either redundant or anomalous.
+		// No leading dot. os.UserConfigDir already returns a hidden/conventional location per
+		// platform (~/.config on Linux, ~/Library/Application Support on macOS, %AppData% on
+		// Windows), and dotfiles inside those are either redundant or anomalous.
 		c.DataDir = filepath.Join(configDir, "deepcove")
 	}
 	if c.NodeName == "" {

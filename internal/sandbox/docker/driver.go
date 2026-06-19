@@ -4,14 +4,12 @@
 // the legacy github.com/docker/docker/client; same daemon, same API,
 // new Go package layout as of moby v28).
 //
-// One Driver holds one *client.Client and is safe for concurrent use.
-// Beyond the client handle the driver is stateless — Handles are
-// container IDs, looked up on the daemon as needed.
+// One Driver holds one *client.Client and is safe for concurrent use. Beyond the client handle the
+// driver is stateless; Handles are container IDs, looked up on the daemon as needed.
 //
-// v1 scope (SPEC §7.2): lifecycle + exec. Logs/CopyIn/CopyOut are
-// stubbed and return sandbox.ErrNotSupported so callers can fall back
-// portably. Snapshot/Restore also return ErrNotSupported — Docker
-// has no equivalent of microVM snapshots.
+// v1 scope: lifecycle + exec. Logs/CopyIn/CopyOut are stubbed and return sandbox.ErrNotSupported so
+// callers can fall back portably. Snapshot/Restore also return ErrNotSupported; Docker has no
+// equivalent of microVM snapshots.
 package docker
 
 import (
@@ -39,20 +37,17 @@ type Driver struct {
 // Option configures a Driver at construction time.
 type Option func(*Driver)
 
-// WithAllowedMountRoots sets the host directories whose contents may
-// be mounted into sandboxes. Mount sources outside these roots are
-// rejected by sandbox.ValidateSpec before reaching the Docker daemon
-// — this is how we enforce SPEC §3 (sessions never cross host
-// boundaries) at the driver level.
+// WithAllowedMountRoots sets the host directories whose contents may be mounted into sandboxes.
+// Mount sources outside these roots are rejected by sandbox.ValidateSpec before reaching the Docker
+// daemon; this is how we enforce "sessions never cross host boundaries" at the driver level.
 //
 // An empty list means no mounts are allowed.
 func WithAllowedMountRoots(roots ...string) Option {
 	return func(d *Driver) { d.allowedRoots = roots }
 }
 
-// New connects to the Docker daemon using DOCKER_HOST env config
-// (falls back to the platform default — unix:///var/run/docker.sock
-// on Unix). The client negotiates API version with the server.
+// New connects to the Docker daemon using DOCKER_HOST env config (falls back to the platform
+// default, unix:///var/run/docker.sock on Unix). The client negotiates API version with the server.
 func New(opts ...Option) (*Driver, error) {
 	cli, err := client.New(client.FromEnv)
 	if err != nil {
@@ -147,10 +142,9 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 	}
 
 	// Surface a missing image as a distinct, actionable error up front
-	// rather than letting ContainerCreate bury it under the daemon's
-	// generic "No such image" string — the session layer turns this
-	// into a 422 so the UI can offer to download it. This also
-	// normalizes a down daemon to ErrUnavailable here.
+	// rather than letting ContainerCreate bury it under the daemon's generic "No such image" string;
+	// the session layer turns this into a 422 so the UI can offer to download it. This also normalizes
+	// a down daemon to ErrUnavailable here.
 	if exists, err := d.ImageExists(ctx, spec.Image); err != nil {
 		return "", err
 	} else if !exists {
@@ -215,8 +209,8 @@ func (d *Driver) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpe
 	// input: explicitly via ExecSpec.Stdin (one-shot input ready at
 	// create time) OR interactively when a TTY is requested
 	// (caller writes via Process.Stdin() after exec starts). Without
-	// AttachStdin true, the daemon doesn't connect the exec's stdin
-	// to our hijacked stream — writes go to /dev/null.
+	// AttachStdin true, the daemon doesn't connect the exec's stdin to our hijacked stream; writes go
+	// to /dev/null.
 	createResp, err := d.cli.ExecCreate(ctx, string(h), client.ExecCreateOptions{
 		Cmd:          cmd.Cmd,
 		Env:          envList(cmd.Env),
@@ -240,8 +234,8 @@ func (d *Driver) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpe
 	return newProcess(d.cli, createResp.ID, attachResp.HijackedResponse, cmd.Stdin, cmd.Tty), nil
 }
 
-// Logs, CopyIn, CopyOut — stubs for the next pass. Return
-// ErrNotSupported so callers can detect with errors.Is and fall back.
+// Logs, CopyIn, CopyOut: stubs for the next pass. Return ErrNotSupported so callers can detect with
+// errors.Is and fall back.
 
 func (d *Driver) Logs(ctx context.Context, h sandbox.Handle, opts sandbox.LogOpts) (io.ReadCloser, error) {
 	return nil, sandbox.ErrNotSupported
@@ -255,8 +249,8 @@ func (d *Driver) CopyOut(ctx context.Context, h sandbox.Handle, src, dst string)
 	return sandbox.ErrNotSupported
 }
 
-// Snapshot / Restore: Docker has no microVM-snapshot equivalent. The
-// session layer degrades to a fresh sandbox per SPEC §7.1.
+// Snapshot / Restore: Docker has no microVM-snapshot equivalent. The session layer degrades to a
+// fresh sandbox.
 
 func (d *Driver) Snapshot(ctx context.Context, h sandbox.Handle) (sandbox.SnapshotID, error) {
 	return "", sandbox.ErrNotSupported
@@ -267,10 +261,9 @@ func (d *Driver) Restore(ctx context.Context, h sandbox.Handle, id sandbox.Snaps
 }
 
 // RemoveStorage deletes a named Docker volume. Force=true so a
-// volume still attached to a (stopped) container is removed without
-// requiring a separate detach step — the session layer always
-// removes the container first, so the attach window should be
-// closed, but Force keeps us robust against races.
+// volume still attached to a (stopped) container is removed without requiring a separate detach
+// step. The session layer always removes the container first, so the attach window should be closed,
+// but Force keeps us robust against races.
 func (d *Driver) RemoveStorage(ctx context.Context, name string) error {
 	_, err := d.cli.VolumeRemove(ctx, name, client.VolumeRemoveOptions{Force: true})
 	return normalizeErr(err)
@@ -296,8 +289,8 @@ func normalizeErr(err error) error {
 	return err
 }
 
-// envList flattens map[string]string to Docker's KEY=VALUE slice.
-// Order is unspecified — Docker doesn't care.
+// envList flattens map[string]string to Docker's KEY=VALUE slice. Order is unspecified; Docker
+// doesn't care.
 func envList(m map[string]string) []string {
 	if len(m) == 0 {
 		return nil
@@ -337,18 +330,16 @@ func toMounts(ms []sandbox.Mount) []mount.Mount {
 			})
 		default:
 			// MountCopyIn is a sandbox-layer concept that doesn't map
-			// to a single Docker primitive (it would need a
-			// copy-on-create flow). Silently drop — the validator
-			// catches misuse via SandboxSpec validation.
+			// to a single Docker primitive (it would need a copy-on-create flow). Silently drop; the
+			// validator catches misuse via SandboxSpec validation.
 		}
 	}
 	return out
 }
 
-// toResources converts sandbox.Resources to Docker's per-container
-// resource caps. Zero values pass through unchanged — Docker reads
-// zero as "no explicit limit". Resources.Disk is ignored: Docker disk
-// quotas aren't portable across storage drivers.
+// toResources converts sandbox.Resources to Docker's per-container resource caps. Zero values pass
+// through unchanged; Docker reads zero as "no explicit limit". Resources.Disk is ignored: Docker
+// disk quotas aren't portable across storage drivers.
 func toResources(r sandbox.Resources) container.Resources {
 	var out container.Resources
 	if r.CPU > 0 {

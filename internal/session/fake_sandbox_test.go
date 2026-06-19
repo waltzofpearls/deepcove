@@ -52,7 +52,7 @@ type fakeSandbox struct {
 	// reaching into the service's internals.
 	specs []sandbox.SandboxSpec
 
-	// Optional Pinger capability — preflight tests set pingErr to
+	// Optional Pinger capability: preflight tests set pingErr to
 	// simulate a down daemon; pingVersion is returned when reachable.
 	pingErr     error
 	pingVersion string
@@ -167,9 +167,8 @@ func (f *fakeSandbox) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.Ex
 	return newScriptedProcess(resp.stdout, resp.stderr, resp.exit), nil
 }
 
-// scriptedProcess is a sandbox.Process driven by canned stdout /
-// stderr / exit code — used by windows_test.go to drive the tmux
-// exec helpers without a real container.
+// scriptedProcess is a sandbox.Process driven by canned stdout / stderr / exit code; used by
+// windows_test.go to drive the tmux exec helpers without a real container.
 type scriptedProcess struct {
 	stdout *strings.Reader
 	stderr *strings.Reader
