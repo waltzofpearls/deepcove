@@ -71,7 +71,7 @@ func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Ha
 }
 
 // persistOwnerOnce records the node owner in DuckDB the first time the node is
-// Running (SPEC §6.1, read-once). Idempotent.
+// Running (read-once). Idempotent.
 func (m *Manager) persistOwnerOnce(tsNode *tailnet.Node) {
 	m.ownerMu.Lock()
 	defer m.ownerMu.Unlock()
@@ -91,8 +91,7 @@ func (m *Manager) persistOwnerOnce(tsNode *tailnet.Node) {
 	m.ownerSaved = true
 }
 
-// owner is the authoritative node owner — the persisted record if claimed, else
-// the live status.
+// owner is the authoritative node owner: the persisted record if claimed, else the live status.
 func (m *Manager) owner(tsNode *tailnet.Node) *tailnet.Identity {
 	m.ownerMu.RLock()
 	o := m.persistedOwner
@@ -205,11 +204,10 @@ func (m *Manager) AutoStartIfEnabled() {
 	}
 }
 
-// serveLoop brings up :80 once Running and upgrades to :443 the moment HTTPS
-// becomes available — no restart. It polls every 2s (the Status() call is
-// in-process and cheap): the cert domains that gate :443 lag the Running state
-// by a few seconds after a (re)connect, so a tight poll keeps the window where
-// :443 isn't listening yet small enough that clients don't trip over it.
+// serveLoop brings up :80 once Running and upgrades to :443 the moment HTTPS becomes available,
+// with no restart. It polls every 2s (the Status() call is in-process and cheap): the cert domains
+// that gate :443 lag the Running state by a few seconds after a (re)connect, so a tight poll keeps
+// the window where :443 isn't listening yet small enough that clients don't trip over it.
 func (m *Manager) serveLoop() {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
@@ -312,7 +310,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // defaultHostname builds the node's MagicDNS hostname with the deepcove-
-// discovery prefix (SPEC §5.2): "deepcove-<sanitized OS hostname>".
+// discovery prefix: "deepcove-<sanitized OS hostname>".
 func defaultHostname() string {
 	h, _ := os.Hostname()
 	var b strings.Builder

@@ -15,17 +15,16 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// uploadsDir is the in-container directory pasted files land in. Files
-// are streamed in via `docker exec` (NOT a host bind mount), so nothing
-// touches the host filesystem — agent content stays off the host per
-// the user's threat model. See the paste security note in the roadmap.
+// uploadsDir is the in-container directory pasted files land in. Files are streamed in via
+// `docker exec` (NOT a host bind mount), so nothing touches the host filesystem; agent content stays
+// off the host per the user's threat model. See the paste security note in the roadmap.
 const uploadsDir = "/tmp/.uploads"
 
 // maxUploadBytes caps a single pasted file.
 const maxUploadBytes = 25 << 20 // 25 MiB
 
-// UploadResponse is the PUT /api/sessions/{id}/uploads payload — the
-// in-container path the SPA injects into the agent's prompt.
+// UploadResponse is the PUT /api/sessions/{id}/uploads payload: the in-container path the SPA
+// injects into the agent's prompt.
 type UploadResponse struct {
 	Path string `json:"path"`
 	Name string `json:"name"`

@@ -1,5 +1,3 @@
-//go:build !windows
-
 package cli
 
 import (
@@ -8,8 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/coder/websocket"
 	"golang.org/x/term"
@@ -18,14 +14,10 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// cmdSessionAttach handles `deepcove session attach <id-or-name>`.
-// It dials the local service's WebSocket attach endpoint, puts the
-// terminal into raw mode, and bridges stdin/stdout with the tmux
-// session inside the container. SIGWINCH propagates as a JSON
-// resize control frame.
-//
-// Unix-only for now (uses syscall.SIGWINCH). The Windows path will
-// land alongside the Unix-socket / named-pipe migration.
+// cmdSessionAttach handles `deepcove session attach <id-or-name>`. It dials the local service's
+// WebSocket attach endpoint (preferring the Unix socket), puts the terminal into raw mode, and
+// bridges stdin/stdout with the tmux session inside the container. Terminal-size changes propagate
+// as JSON resize control frames via resizeNotify: SIGWINCH on Unix, polling on Windows (no SIGWINCH).
 func cmdSessionAttach(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("session attach", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -58,10 +50,15 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 		return fmt.Errorf("`session attach` requires a terminal on stdin")
 	}
 
+	// Prefer the local control socket, falling back to TCP. The "unix" host is a placeholder,
+	// socketHTTPClient dials the socket regardless of the URL host.
+	dialOpts := &websocket.DialOptions{Subprotocols: []string{session.AttachSubprotocol}}
 	wsURL := "ws://" + cfg.Addr + "/api/sessions/" + sess.ID + "/attach"
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		Subprotocols: []string{session.AttachSubprotocol},
-	})
+	if sock := socketPath(); socketAvailable(sock) {
+		wsURL = "ws://unix/api/sessions/" + sess.ID + "/attach"
+		dialOpts.HTTPClient = socketHTTPClient(sock)
+	}
+	ws, _, err := websocket.Dial(ctx, wsURL, dialOpts)
 	if err != nil {
 		return fmt.Errorf("dial attach ws: %w (is `deepcove start` running?)", err)
 	}
@@ -73,33 +70,19 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = term.Restore(fd, old) }()
 
-	// Initial resize: send the terminal's current size so tmux fits
-	// the host window from the first frame, not just after SIGWINCH.
+	// Initial resize: send the terminal's current size so tmux fits the host window from the
+	// first frame, not just after the first resize event.
 	if cols, rows, err := term.GetSize(fd); err == nil {
 		_ = sendResize(ctx, ws, uint16(cols), uint16(rows))
 	}
 
-	// SIGWINCH → JSON resize frame.
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
-
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go func() {
-		for {
-			select {
-			case <-bridgeCtx.Done():
-				return
-			case <-winch:
-				cols, rows, err := term.GetSize(fd)
-				if err == nil {
-					_ = sendResize(bridgeCtx, ws, uint16(cols), uint16(rows))
-				}
-			}
-		}
-	}()
+	// Terminal-size changes become JSON resize frames (OS-specific source).
+	go resizeNotify(bridgeCtx, fd, func(cols, rows uint16) {
+		_ = sendResize(bridgeCtx, ws, cols, rows)
+	})
 
 	// stdin → ws binary
 	go func() {
@@ -131,8 +114,7 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 					return
 				}
 			}
-			// Text frames are server-to-client control messages —
-			// none defined today, but reserve.
+			// Text frames are server-to-client control messages; none defined today, but reserve.
 		}
 	}()
 
@@ -140,9 +122,8 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 	return nil
 }
 
-// resolveSession looks up a session by id prefix or name. We list
-// all sessions and match — fine for personal-scale node counts, and
-// avoids needing a dedicated lookup endpoint.
+// resolveSession looks up a session by id prefix or name. We list all sessions and match; fine for
+// personal-scale node counts, and avoids needing a dedicated lookup endpoint.
 func resolveSession(ctx context.Context, client *sessionClient, target string) (*session.Session, error) {
 	all, err := client.List(ctx, true /* includeAll */)
 	if err != nil {

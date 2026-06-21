@@ -35,8 +35,8 @@ type Identity struct {
 	ProfilePicURL string         `json:"profile_pic_url,omitempty"`
 }
 
-// State is the bus-driven connection state. The reachable URL is NOT here — it
-// depends on live tailnet settings (MagicDNS/HTTPS), see Reachability.
+// State is the bus-driven connection state. The reachable URL is NOT here; it depends on live
+// tailnet settings (MagicDNS/HTTPS). See Reachability.
 type State struct {
 	Phase    Phase     `json:"phase"`
 	LoginURL string    `json:"login_url,omitempty"`
@@ -53,7 +53,7 @@ type Reachability struct {
 }
 
 // Node wraps a tsnet.Server. hostname must already carry the deepcove- discovery
-// prefix (SPEC §5.2); New does not enforce it.
+// prefix; New does not enforce it.
 type Node struct {
 	srv *tsnet.Server
 	lc  *local.Client
@@ -71,9 +71,8 @@ func New(stateDir, hostname string) *Node {
 	}
 }
 
-// Start brings up the node; with no auth key it triggers interactive login. It
-// returns immediately — the login URL and running state arrive via the IPN bus
-// and surface through State.
+// Start brings up the node; with no auth key it triggers interactive login. It returns immediately;
+// the login URL and running state arrive via the IPN bus and surface through State.
 func (n *Node) Start(ctx context.Context) error {
 	n.ctx = ctx
 	n.setPhase(PhaseStarting)
@@ -92,12 +91,11 @@ func (n *Node) Start(ctx context.Context) error {
 
 // configureLocalClient prepares the tsnet in-process LocalClient for use.
 //
-// OmitAuth is load-bearing: the in-process localapi is an in-memory pipe the
-// handler serves with PermitRead/Write, so it needs no auth token. Without
-// OmitAuth, every WhoIs/Status call runs safesocket.LocalTCPPortAndToken, which
-// on macOS forks an external subprocess to read the host-tailscaled same-user
-// proof — so the owner gate would fork once per tailnet request and peg a core
-// under polling. tsnet builds its client with Dial set but forgets OmitAuth.
+// OmitAuth is load-bearing: the in-process localapi is an in-memory pipe the handler serves with
+// PermitRead/Write, so it needs no auth token. Without OmitAuth, every WhoIs/Status call runs
+// safesocket.LocalTCPPortAndToken, which on macOS forks an external subprocess to read the
+// host-tailscaled same-user proof, so the owner gate would fork once per tailnet request and peg a
+// core under polling. tsnet builds its client with Dial set but forgets OmitAuth.
 func configureLocalClient(lc *local.Client) {
 	lc.OmitAuth = true
 }

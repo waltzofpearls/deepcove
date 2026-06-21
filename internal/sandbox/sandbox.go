@@ -1,25 +1,19 @@
-// Package sandbox abstracts the runtime layer that hosts coding-agent
-// sessions. Drivers live in sibling subpackages (e.g. sandbox/docker)
-// so the heavy SDK dependencies of each backend don't leak into
-// callers that only need the interface — same pattern as
-// database/sql vs. database/sql/driver/*.
+// Package sandbox abstracts the runtime layer that hosts coding-agent sessions. Drivers live in
+// sibling subpackages (e.g. sandbox/docker) so the heavy SDK dependencies of each backend don't leak
+// into callers that only need the interface, the same pattern as database/sql vs. database/sql/driver.
 //
-// SPEC §7 is the source of truth for the design. Highlights:
-//   - Every session runs inside a sandbox. There is no "no-sandbox"
-//     fast path.
-//   - The interface accommodates per-session microVMs (Firecracker,
-//     Apple Virtualization.framework) as well as containers (Docker).
-//     Snapshot/Restore are optional and return ErrNotSupported on
+// Design highlights:
+//   - Every session runs inside a sandbox. There is no "no-sandbox" fast path.
+//   - The interface accommodates per-session microVMs (Firecracker, Apple Virtualization.framework)
+//     as well as containers (Docker). Snapshot/Restore are optional and return ErrNotSupported on
 //     backends that lack them.
-//   - SandboxSpec.Mounts only ever points at host paths this node
-//     owns. Sessions never cross host boundaries (§3 non-negotiable).
-//     ValidateSpec enforces this for every driver.
-//   - Tailscale membership (tsnet) is the node's, not the sandbox's.
-//     Network here is just the sandbox's own netns / port mapping.
+//   - SandboxSpec.Mounts only ever points at host paths this node owns. Sessions never cross host
+//     boundaries. ValidateSpec enforces this for every driver.
+//   - Tailscale membership (tsnet) is the node's, not the sandbox's. Network here is just the
+//     sandbox's own netns / port mapping.
 //
-// v1 ships with the Docker driver only. The interface is locked down
-// from day one so the session layer doesn't grow Docker-specific
-// assumptions that would have to be unwound when a second driver
+// v1 ships with the Docker driver only. The interface is locked down from day one so the session
+// layer doesn't grow Docker-specific assumptions that would have to be unwound when a second driver
 // lands.
 package sandbox
 
@@ -49,11 +43,10 @@ var (
 	ErrNotFound     = errors.New("sandbox: handle not found")
 	ErrConflict     = errors.New("sandbox: lifecycle conflict")
 
-	// ErrUnavailable means the backend itself is unreachable — the
-	// Docker daemon isn't running, the socket is gone, etc. Distinct
-	// from ErrNotFound (the daemon is up but the handle/image is
-	// absent). The session layer maps this to a 503 + actionable
-	// "start Docker" guidance instead of a raw socket error.
+	// ErrUnavailable means the backend itself is unreachable: the Docker daemon isn't running, the
+	// socket is gone, etc. Distinct from ErrNotFound (the daemon is up but the handle/image is
+	// absent). The session layer maps this to a 503 + actionable "start Docker" guidance instead of
+	// a raw socket error.
 	ErrUnavailable = errors.New("sandbox: backend unavailable")
 
 	// ErrImageNotFound means the requested image isn't present on the
@@ -100,15 +93,13 @@ type PullProgress struct {
 	Total   int64
 }
 
-// Handle is an opaque, driver-owned reference to a created sandbox.
-// Treat it as a token to pass back into the same driver — do not
-// interpret its contents. Drivers may store side state keyed off the
+// Handle is an opaque, driver-owned reference to a created sandbox. Treat it as a token to pass back
+// into the same driver; do not interpret its contents. Drivers may store side state keyed off the
 // handle internally.
 type Handle string
 
-// Sandbox is the surface every driver implements. The minimal set
-// covering Docker, Firecracker, and Apple Virtualization.framework
-// per SPEC §7.1.
+// Sandbox is the surface every driver implements. The minimal set covering Docker, Firecracker, and
+// Apple Virtualization.framework.
 type Sandbox interface {
 	// Lifecycle.
 	Create(ctx context.Context, spec SandboxSpec) (Handle, error)
@@ -116,9 +107,8 @@ type Sandbox interface {
 	Stop(ctx context.Context, h Handle) error
 	Destroy(ctx context.Context, h Handle) error
 
-	// Exec runs a command inside an already-Started sandbox. The
-	// returned Process is owned by the caller — call Close on it (or
-	// Wait, which closes on completion) to release the underlying
+	// Exec runs a command inside an already-Started sandbox. The returned Process is owned by the
+	// caller; call Close on it (or Wait, which closes on completion) to release the underlying
 	// connection.
 	Exec(ctx context.Context, h Handle, cmd ExecSpec) (Process, error)
 
@@ -138,14 +128,11 @@ type Sandbox interface {
 	Snapshot(ctx context.Context, h Handle) (SnapshotID, error)
 	Restore(ctx context.Context, h Handle, id SnapshotID) error
 
-	// RemoveStorage deletes a named persistent storage primitive
-	// (e.g. a Docker volume, a microVM volume image) by name.
-	// Used by the session layer to clean up the agent-home volume
-	// when a session is destroyed — named volumes survive
-	// container removal by design, so destroy needs a separate
-	// step to release them. Drivers without named storage return
-	// ErrNotSupported; the session layer treats that as a no-op.
-	// ErrNotFound is returned if the name doesn't exist.
+	// RemoveStorage deletes a named persistent storage primitive (e.g. a Docker volume, a microVM
+	// volume image) by name. Used by the session layer to clean up the agent-home volume when a
+	// session is destroyed; named volumes survive container removal by design, so destroy needs a
+	// separate step to release them. Drivers without named storage return ErrNotSupported; the
+	// session layer treats that as a no-op. ErrNotFound is returned if the name doesn't exist.
 	RemoveStorage(ctx context.Context, name string) error
 }
 
@@ -162,9 +149,8 @@ type SandboxSpec struct {
 	// equivalent). Nil/empty = use the image default.
 	Cmd []string
 
-	// Mounts are host paths shared with the sandbox. Source paths
-	// must be owned by this node — sessions never cross host
-	// boundaries (SPEC §3). ValidateSpec enforces this.
+	// Mounts are host paths shared with the sandbox. Source paths must be owned by this node;
+	// sessions never cross host boundaries. ValidateSpec enforces this.
 	Mounts []Mount
 
 	// Env is the process environment seen by the sandbox's entry
@@ -177,9 +163,8 @@ type SandboxSpec struct {
 	// aren't portable across storage drivers).
 	Resources Resources
 
-	// Network configures the sandbox's networking. tsnet membership
-	// is not represented here — it lives on the node, and proxies
-	// reach into the sandbox via Network.Ports.
+	// Network configures the sandbox's networking. tsnet membership is not represented here; it lives
+	// on the node, and proxies reach into the sandbox via Network.Ports.
 	Network NetworkConfig
 }
 
@@ -209,14 +194,11 @@ const (
 	// can't (or don't want to) share live.
 	MountCopyIn
 
-	// MountVolume is a driver-managed persistent storage primitive.
-	// For Docker: a named volume (`docker volume`). For microVM
-	// backends: a per-volume filesystem image. Survives container
-	// recreate by design — used by the session layer to persist
-	// agent state (`/root` and friends) across the destroy+recreate
-	// cycle of an edit-mounts operation. Source is the volume name,
-	// not a host path, so the allowed-roots check is skipped in
-	// validateMount.
+	// MountVolume is a driver-managed persistent storage primitive. For Docker: a named volume
+	// (`docker volume`). For microVM backends: a per-volume filesystem image. Survives container
+	// recreate by design; used by the session layer to persist agent state (`/root` and friends)
+	// across the destroy+recreate cycle of an edit-mounts operation. Source is the volume name, not a
+	// host path, so the allowed-roots check is skipped in validateMount.
 	MountVolume
 )
 
@@ -240,10 +222,9 @@ type NetworkConfig struct {
 	Ports []PortMapping
 }
 
-// NetworkMode selects the sandbox's networking primitive. The zero
-// value is NetIsolated — a sandbox with no Network field set has no
-// network access, which is the safe default for an agent that
-// hasn't been configured to need it.
+// NetworkMode selects the sandbox's networking primitive. The zero value is NetIsolated: a sandbox
+// with no Network field set has no network access, which is the safe default for an agent that hasn't
+// been configured to need it.
 type NetworkMode int
 
 const (
@@ -277,11 +258,10 @@ type ExecSpec struct {
 	Stdin      io.Reader         // nil = no stdin
 }
 
-// Process is a handle to a running command inside a sandbox. It owns
-// underlying resources (typically a hijacked connection to the
-// runtime daemon) — the caller MUST either Wait it to completion
-// (which closes on return) or call Close to abandon it. Forgetting
-// both leaks goroutines and file descriptors.
+// Process is a handle to a running command inside a sandbox. It owns underlying resources (typically
+// a hijacked connection to the runtime daemon); the caller MUST either Wait it to completion (which
+// closes on return) or call Close to abandon it. Forgetting both leaks goroutines and file
+// descriptors.
 type Process interface {
 	io.Closer
 
@@ -291,11 +271,9 @@ type Process interface {
 	Stdout() io.ReadCloser
 	Stderr() io.ReadCloser
 
-	// Stdin returns a writer that forwards into the process's
-	// stdin. Only meaningful if ExecSpec.Stdin was nil at create
-	// time AND ExecSpec.Tty was true — interactive callers need to
-	// keep writing input after the exec started. Drivers that can't
-	// expose a writer return ErrNotSupported.
+	// Stdin returns a writer that forwards into the process's stdin. Only meaningful if ExecSpec.Stdin
+	// was nil at create time AND ExecSpec.Tty was true; interactive callers need to keep writing input
+	// after the exec started. Drivers that can't expose a writer return ErrNotSupported.
 	Stdin() io.WriteCloser
 
 	// Wait blocks until the process exits, ctx is cancelled, or
@@ -325,14 +303,12 @@ type LogOpts struct {
 // SnapshotID names a stored snapshot. The format is driver-defined.
 type SnapshotID string
 
-// ValidateSpec applies the cross-driver invariants from SPEC §3:
-// mount sources must be absolute, cleaned, and confined under one of
-// allowedRoots. Drivers should call this before invoking their daemon
-// so the same policy is enforced regardless of backend.
+// ValidateSpec applies the cross-driver mount invariants: mount sources must be absolute, cleaned,
+// and confined under one of allowedRoots. Drivers should call this before invoking their daemon so
+// the same policy is enforced regardless of backend.
 //
-// allowedRoots is the list of host directories the node has decided
-// it is willing to share with sandboxes (typically just the data
-// directory's sessions subtree). An empty allowedRoots means no
+// allowedRoots is the list of host directories the node has decided it is willing to share with
+// sandboxes (typically just the data directory's sessions subtree). An empty allowedRoots means no
 // mounts are allowed at all.
 func ValidateSpec(s SandboxSpec, allowedRoots []string) error {
 	if s.Image == "" {
@@ -353,12 +329,10 @@ func validateMount(m Mount, allowedRoots []string) error {
 	if !filepath.IsAbs(m.Target) {
 		return fmt.Errorf("mount target %q is not absolute", m.Target)
 	}
-	// Volume mounts use Source as a driver-managed volume name, not a
-	// host path. They don't go through the allowed-roots gate because
-	// the storage lives outside the host filesystem from the user's
-	// POV (Docker volumes are stored under the daemon's data dir, not
-	// $HOME). Only the host-path checks below are skipped — empty and
-	// non-absolute target still get caught above.
+	// Volume mounts use Source as a driver-managed volume name, not a host path. They don't go through
+	// the allowed-roots gate because the storage lives outside the host filesystem from the user's POV
+	// (Docker volumes are stored under the daemon's data dir, not $HOME). Only the host-path checks
+	// below are skipped; empty and non-absolute target still get caught above.
 	if m.Type == MountVolume {
 		return nil
 	}

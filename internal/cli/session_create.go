@@ -10,16 +10,15 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// cmdSessionCreate handles `deepcove session <agent>` with optional --name and
-// repeatable --mount flags. Creates a session on the local background service
-// via the API, printing the id + name. Attach is a separate command (TODO).
+// cmdSessionCreate handles `deepcove session <agent>` with optional --name and repeatable --mount
+// flags. Creates a session on the local background service via the API, printing the id + name.
+// Attach is a separate command (TODO).
 //
-// If --name is omitted, the service auto-generates one in the form
-// "<agent>-<adjective>_<scientist>" (Docker-style).
+// If --name is omitted, the service auto-generates one in the form "<agent>-<adjective>_<scientist>"
+// (Docker-style).
 //
-// --mount may be repeated. Mode defaults to rw; append :ro for
-// read-only. Container_path collisions with /workspace (the
-// scratch dir) are rejected server-side.
+// --mount may be repeated. Mode defaults to rw; append :ro for read-only. Container_path collisions
+// with /workspace (the scratch dir) are rejected server-side.
 func cmdSessionCreate(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("agent name required (e.g. `deepcove session claude`)")
@@ -57,12 +56,11 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 	return nil
 }
 
-// mountFlag implements flag.Value for the repeatable --mount flag.
-// Format: HOST:CONTAINER[:ro]. We accept rw as an explicit third
-// segment too so users can be defensive, but it's the default.
+// mountFlag implements flag.Value for the repeatable --mount flag. Format: HOST:CONTAINER[:ro].
+// We accept rw as an explicit third segment too so users can be defensive, but it's the default.
 //
-// Splitting on ':' is unambiguous because absolute paths can't
-// contain a colon on macOS/Linux — the only OSes deepcove targets.
+// Splitting on ':' is unambiguous because absolute paths can't contain a colon on macOS/Linux,
+// the only OSes deepcove targets.
 type mountFlag struct {
 	values []session.MountRequest
 }
@@ -82,8 +80,7 @@ func (m *mountFlag) Set(s string) error {
 	return nil
 }
 
-// short trims a UUID to the leading 12 characters, Docker-style, for
-// terminal-friendly output.
+// short trims a UUID to the leading 12 characters, Docker-style, for terminal friendly output.
 func short(id string) string {
 	if len(id) > 12 {
 		return id[:12]

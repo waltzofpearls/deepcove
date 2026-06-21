@@ -4,16 +4,32 @@ package cli
 
 import (
 	"context"
-	"errors"
+	"time"
+
+	"golang.org/x/term"
 )
 
-// cmdSessionAttach is unimplemented on Windows for now. The raw-mode
-// terminal handling on Windows differs enough from Unix (no
-// SIGWINCH, ConPTY console APIs instead of POSIX termios) that it
-// gets its own implementation later, alongside the named-pipe
-// transport for the local CLI listener.
-func cmdSessionAttach(ctx context.Context, args []string) error {
-	_ = ctx
-	_ = args
-	return errors.New("`deepcove session attach` is not yet implemented on Windows")
+// resizeNotify polls the terminal size and calls onResize on change, until ctx is done. Windows
+// has no SIGWINCH; the console WINDOW_BUFFER_SIZE_EVENT path would need to drain the same input
+// buffer we read as raw stdin, so polling is simpler and correct. The initial size is sent by
+// the caller, so we seed the last seen size to avoid a redundant first event.
+func resizeNotify(ctx context.Context, fd int, onResize func(cols, rows uint16)) {
+	lastCols, lastRows, _ := term.GetSize(fd)
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cols, rows, err := term.GetSize(fd)
+			if err != nil {
+				continue
+			}
+			if cols != lastCols || rows != lastRows {
+				lastCols, lastRows = cols, rows
+				onResize(uint16(cols), uint16(rows))
+			}
+		}
+	}
 }

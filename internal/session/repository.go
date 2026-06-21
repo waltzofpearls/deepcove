@@ -10,17 +10,16 @@ import (
 	"time"
 )
 
-// SessionRepository owns persistence for Session entities. The
-// interface is owner-scoped — every read/mutation takes an owner
-// email so each call is correct in isolation, even without a prior
-// authorization check (today every caller passes the placeholder
-// owner; the identity slice threads the real value through).
+// SessionRepository owns persistence for Session entities. The interface is owner-scoped: every
+// read/mutation takes an owner email so each call is correct in isolation, even without a prior
+// authorization check (today every caller passes the placeholder owner; the identity slice threads
+// the real value through).
 //
 // Implementations must return ErrNotFound for a missing row in Get,
 // MarkRunning, MarkStopped, UpdateActivity, and Delete.
 type SessionRepository interface {
 	// Insert persists a new session. Caller fills CreatedAt /
-	// UpdatedAt / LastActivityAt — the repo doesn't touch them.
+	// UpdatedAt / LastActivityAt; the repo doesn't touch them.
 	Insert(ctx context.Context, sess *Session) error
 
 	// Get fetches a session by id within an owner's scope. Returns
@@ -73,7 +72,7 @@ func NewDuckDBSessionRepository(database *sql.DB) SessionRepository {
 }
 
 func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) error {
-	// Marshal nil maps as "{}" not "null" — the env column is JSON
+	// Marshal nil maps as "{}" not "null"; the env column is JSON
 	// NOT NULL, and DuckDB's JSON type round-trips the bare token
 	// "null" as SQL NULL on read, which crashes Scan into a string.
 	env := sess.Env
@@ -291,7 +290,7 @@ func scanRow(r rowScanner) (*Session, error) {
 	}
 	// Mounts: same null-token defense as env. Empty array on disk
 	// unmarshals to a nil slice, which the JSON encoder serializes as
-	// `null` on the wire — that's fine because the API consumer just
+	// `null` on the wire; that's fine because the API consumer just
 	// reads it as "no user mounts".
 	if mountsJSON.Valid && strings.TrimSpace(mountsJSON.String) != "" && mountsJSON.String != "null" {
 		if err := json.Unmarshal([]byte(mountsJSON.String), &sess.Mounts); err != nil {

@@ -21,7 +21,7 @@ import (
 // landing dir. The agent cd's to DEEPCOVE_WORKDIR (the first user mount, else this).
 const workspaceDir = "/workspace"
 
-// /root is hardcoded — agent images run as root today. Non-root images would need a
+// /root is hardcoded; agent images run as root today. Non-root images would need a
 // per-image override (out of scope).
 const agentHomeMountTarget = "/root"
 
@@ -57,9 +57,8 @@ var ErrNotFound = errors.New("session: not found")
 // SessionRepository (for persistence) and a sandbox.Sandbox driver
 // (for container runtime).
 //
-// All SQL lives in SessionRepository implementations — Service
-// methods are pure orchestration. Owner_email is threaded through
-// to the repo on every call; today every caller passes the
+// All SQL lives in SessionRepository implementations; Service methods are pure orchestration.
+// Owner_email is threaded through to the repo on every call; today every caller passes the
 // placeholder owner, but the shape is ready for identity wiring.
 type Service struct {
 	repo    SessionRepository
@@ -166,11 +165,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 // placeholder owner). filter.IncludeAll=true returns stopped/errored
 // sessions too; default is running only.
 //
-// Ordering is by last_activity_at DESC (defined by the repo) — the
-// canvas needs "what was I just doing?" as the top card, not "what
-// did I most recently spawn?" The activity column is bumped on every
-// attach connect / 30s tick / disconnect, so it tracks user
-// engagement, not creation order.
+// Ordering is by last_activity_at DESC (defined by the repo): the canvas needs "what was I just
+// doing?" as the top card, not "what did I most recently spawn?" The activity column is bumped on
+// every attach connect / 30s tick / disconnect, so it tracks user engagement, not creation order.
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Session, error) {
 	return s.repo.List(ctx, placeholderOwner, filter.IncludeAll)
 }
@@ -202,20 +199,17 @@ func (s *Service) Rename(ctx context.Context, id, name string) (*Session, error)
 }
 
 // RecordActivity bumps last_activity_at to NOW for a session. Called
-// by the attach handler on connect, periodic 30s ticker while
-// attached, and on disconnect. Cheap (single indexed UPDATE) and
-// safe to call frequently. Errors are returned but never fatal —
-// callers may log-and-ignore.
+// by the attach handler on connect, periodic 30s ticker while attached, and on disconnect. Cheap
+// (single indexed UPDATE) and safe to call frequently. Errors are returned but never fatal; callers
+// may log-and-ignore.
 func (s *Service) RecordActivity(ctx context.Context, id string) error {
 	return s.repo.UpdateActivity(ctx, placeholderOwner, id, time.Now().UTC())
 }
 
-// Start brings a stopped session back to running. The underlying
-// container is reused (Docker preserves its filesystem on stop),
-// so the agent's workspace and any in-container state survive — but
-// the original entrypoint Cmd runs again, which means tmux gets a
-// fresh session named "main". In-container ephemeral state (running
-// processes, scrollback) does NOT survive a stop/start cycle.
+// Start brings a stopped session back to running. The underlying container is reused (Docker
+// preserves its filesystem on stop), so the agent's workspace and any in-container state survive,
+// but the original entrypoint Cmd runs again, which means tmux gets a fresh session named "main".
+// In-container ephemeral state (running processes, scrollback) does NOT survive a stop/start cycle.
 //
 // Idempotent on already-running sessions (no-op).
 func (s *Service) Start(ctx context.Context, id string) error {
@@ -274,12 +268,12 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 		return err
 	}
 	handle := sandbox.Handle(sess.ContainerID)
-	// Best-effort sandbox teardown — if the daemon already lost the
-	// container, we still want to clear our row.
+	// Best-effort sandbox teardown: if the daemon already lost the container, we still want to clear
+	// our row.
 	if err := s.sandbox.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return fmt.Errorf("session: sandbox destroy: %w", err)
 	}
-	// Don't remove the agent-home volume — it's shared (see agentHomeVolumeName).
+	// Don't remove the agent-home volume; it's shared (see agentHomeVolumeName).
 	if err := s.repo.Delete(ctx, placeholderOwner, id); err != nil {
 		return fmt.Errorf("session: delete row: %w", err)
 	}
@@ -355,7 +349,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 // agent-home volume at /root, then user mounts. /root is mounted first so a stray
 // user mount can't shadow it (the validator also rejects /root); /workspace is
 // intentionally user-mountable, so it's not protected. No deepcove-managed scratch
-// mount — a no-mount session just gets an empty in-container /workspace (created by
+// mount; a no-mount session just gets an empty in-container /workspace (created by
 // the entrypoint). User env wins on key conflicts with agent.Env; DEEPCOVE_WORKDIR
 // is set last so the agent always lands in the right place.
 func (s *Service) buildSandboxSpec(
@@ -384,7 +378,7 @@ func (s *Service) buildSandboxSpec(
 	for k, v := range sess.Env {
 		mergedEnv[k] = v
 	}
-	// The agent cd's here at launch — the first user mount (your code), else the
+	// The agent cd's here at launch: the first user mount (your code), else the
 	// empty /workspace the entrypoint creates.
 	mergedEnv["DEEPCOVE_WORKDIR"] = workdirFor(userMounts)
 
@@ -399,7 +393,7 @@ func (s *Service) buildSandboxSpec(
 	}
 }
 
-// LaunchCmd is written to a file rather than passed inline to tmux — quoting a
+// LaunchCmd is written to a file rather than passed inline to tmux; quoting a
 // multi-line shell script as a tmux new-window argument is nightmare-tier. Heredocs
 // use the single-quoted `<<'TERM'` form so user-supplied session names can't inject
 // shell metacharacters into the MOTD.
@@ -484,7 +478,7 @@ func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
 			return nil, fmt.Errorf("%w: mounts[%d]: container_path is required", ErrMountInvalid, i)
 		}
 		target := filepath.Clean(m.ContainerPath)
-		// /root is the shared agent-home volume — a user mount there would shadow the
+		// /root is the shared agent-home volume; a user mount there would shadow the
 		// agent's binary + credentials. /workspace is intentionally NOT reserved: it's
 		// the conventional place to mount your code.
 		if target == agentHomeMountTarget {

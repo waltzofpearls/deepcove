@@ -59,10 +59,16 @@ build-darwin-amd64: ui/build/index.html ## Build a darwin/amd64 binary (cross-co
 # duckdb-go-bindings/windows-amd64 ships precompiled .a files, so no
 # source rebuild needed.
 #
-# We intentionally don't ship a windows/arm64 binary: upstream
-# duckdb-go-bindings doesn't support it, and Windows ARM64 ships with
-# Prism (x86_64 emulation, analogous to Rosetta) so amd64 binaries run
-# natively on Snapdragon X / Surface Pro X without user action.
+# No windows/arm64 binary yet — and this is NOT a DuckDB limitation.
+# DuckDB core HAS windows-arm64 (the libduckdb-windows-arm64 build; beta
+# in 1.4.3 LTS). The gap is the Go wrapper: duckdb-go-bindings hasn't
+# packaged a windows-arm64 prebuilt static lib (we're on v0.1.21), so a
+# build-windows-arm64 target would fail to link today. A future bindings
+# bump should add it — track upstream:
+#   https://github.com/duckdb/duckdb-go-bindings/issues/18
+# Meanwhile Windows ARM64 ships with Prism (x86_64 emulation, analogous to
+# Rosetta), so the amd64 binary runs natively on Snapdragon X / Surface
+# Pro X without user action.
 .PHONY: build-windows
 build-windows: build-windows-amd64 ## Build windows binary for amd64
 
@@ -99,6 +105,9 @@ build-linux-arm64: ## Build a linux/arm64 binary (glibc, dynamic)
 		-f build/linux.Dockerfile \
 		--build-arg VERSION=$(VERSION) \
 		--output=type=local,dest=./dist/linux-arm64 .
+
+.PHONY: build-all
+build-all: build-darwin build-windows build-linux ## Build release binaries for every supported OS/arch into dist/
 
 .PHONY: bootstrap
 bootstrap: ## Install ui/node_modules from a Linux container (run before first `make dev`, or after package.json changes)

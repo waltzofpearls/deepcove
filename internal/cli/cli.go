@@ -1,5 +1,4 @@
-// Package cli is deepcove's command dispatcher: stdlib flag only,
-// file-per-command pattern. See SPEC.md §3.
+// Package cli is deepcove's command dispatcher: stdlib flag only, file-per-command pattern.
 package cli
 
 import (
@@ -13,8 +12,8 @@ import (
 	"syscall"
 )
 
-// command is one top-level subcommand. Each lives in its own file
-// (start.go, status.go, session.go, ...) and registers itself here.
+// command is one top-level subcommand. Each lives in its own file (start.go, status.go, session.go, ...)
+// and registers itself here.
 type command struct {
 	name    string
 	summary string
@@ -28,8 +27,7 @@ var commands = []command{
 	{"version", "print version", cmdVersion},
 }
 
-// Run dispatches to a subcommand and returns an exit code. Intended
-// to be called from cmd/deepcove/main.go as:
+// Run dispatches to a subcommand and returns an exit code. Intended to be called from cmd/deepcove/main.go as:
 //
 //	os.Exit(cli.Run(os.Args[1:]))
 func Run(args []string) int {

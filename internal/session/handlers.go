@@ -142,9 +142,8 @@ func (s *Service) handleStop(w http.ResponseWriter, r *http.Request) {
 }
 
 // EditMountsRequest is the body shape of PUT /api/sessions/{id}/mounts.
-// We accept the whole new mount list (not a diff) so the wire format
-// matches what the UI's edit panel renders — fewer round-trips to
-// keep in sync, simpler conflict semantics.
+// We accept the whole new mount list (not a diff) so the wire format matches what the UI's edit
+// panel renders: fewer round-trips to keep in sync, simpler conflict semantics.
 type EditMountsRequest struct {
 	Mounts []MountRequest `json:"mounts"`
 }
@@ -267,8 +266,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // Error codes carried in the {error, code} envelope. The SPA maps these
-// to friendly copy + actions; unknown/absent codes fall back to the raw
-// message. Stable strings — don't rename without updating the client.
+// to friendly copy + actions; unknown/absent codes fall back to the raw message. Stable strings;
+// don't rename without updating the client.
 const (
 	codeInvalidInput      = "invalid_input"
 	codeDockerUnreachable = "docker_unreachable"
@@ -281,11 +280,9 @@ func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg, "code": code})
 }
 
-// writeSandboxError maps sandbox sentinels to an HTTP status + stable
-// code so the SPA never sees a raw daemon string for the cases it can
-// act on. Non-sentinel errors (validation, unknown agent, and — today —
-// internal failures) default to 400, matching the prior create-handler
-// behavior.
+// writeSandboxError maps sandbox sentinels to an HTTP status + stable code so the SPA never sees a
+// raw daemon string for the cases it can act on. Non-sentinel errors (validation, unknown agent,
+// and, today, internal failures) default to 400, matching the prior create-handler behavior.
 func writeSandboxError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, sandbox.ErrUnavailable):

@@ -9,9 +9,8 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// PreflightResponse is the GET /api/preflight payload — the
-// environment-readiness snapshot the dashboard reads on load (and the
-// New Session form reads before it lets you create). Today it covers
+// PreflightResponse is the GET /api/preflight payload: the environment-readiness snapshot the
+// dashboard reads on load (and the New Session form reads before it lets you create). Today it covers
 // the container backend's reachability; per-image readiness is
 // discovered at create time (a missing image comes back as a 422 with
 // code "image_not_found", which the UI turns into a download action).
@@ -39,7 +38,7 @@ func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 func (s *Service) dockerStatus(ctx context.Context) DockerStatus {
 	pinger, ok := s.sandbox.(sandbox.Pinger)
 	if !ok {
-		// The backend can't report liveness — don't block on a signal
+		// The backend can't report liveness; don't block on a signal
 		// we can't read; assume reachable.
 		return DockerStatus{Reachable: true}
 	}
@@ -70,7 +69,7 @@ func (s *Service) handleImageExists(w http.ResponseWriter, r *http.Request) {
 	}
 	mgr, ok := s.sandbox.(sandbox.ImageManager)
 	if !ok {
-		// Backend can't report image presence — say "present" so the UI
+		// Backend can't report image presence; say "present" so the UI
 		// doesn't offer a download it can't do.
 		writeJSON(w, http.StatusOK, ImageExistsResponse{Present: true})
 		return

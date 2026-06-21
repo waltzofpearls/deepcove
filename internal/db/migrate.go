@@ -22,9 +22,8 @@ const migrationsDir = "db/migrations"
 // resolve it.
 var ErrOutOfOrderMigration = errors.New("migrate: out-of-order migration detected")
 
-// Migrate applies any embedded migrations that haven't been recorded
-// in the schema_migrations table. Migrations run in lexical order of
-// their filenames — the 4-digit prefix (0001_, 0002_, ...) keeps
+// Migrate applies any embedded migrations that haven't been recorded in the schema_migrations table.
+// Migrations run in lexical order of their filenames; the 4-digit prefix (0001_, 0002_, ...) keeps
 // ordering stable. Each file runs in its own transaction.
 //
 // We refuse to apply migrations out of order: if a new file would
@@ -127,12 +126,10 @@ func applyOne(db *sql.DB, name, body string) error {
 	if err != nil {
 		return fmt.Errorf("migrate: begin %s: %w", name, err)
 	}
-	// Each migration file may contain multiple SQL statements
-	// separated by semicolons. We rely on go-duckdb's Exec accepting
-	// a multi-statement string and running them sequentially within
-	// the same transaction. This is driver behaviour, not a
-	// standard database/sql guarantee — if we ever switch drivers
-	// we will need a SQL-aware splitter here.
+	// Each migration file may contain multiple SQL statements separated by semicolons. We rely on
+	// go-duckdb's Exec accepting a multi-statement string and running them sequentially within the
+	// same transaction. This is driver behaviour, not a standard database/sql guarantee; if we ever
+	// switch drivers we will need a SQL-aware splitter here.
 	if _, err := tx.Exec(body); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("migrate: exec %s: %w", name, err)
