@@ -11,7 +11,7 @@
   import { Label } from '$lib/components/ui/label';
   import { api, ApiError } from '$lib/api/client';
   import HostPathField from './HostPathField.svelte';
-  import type { MountRequest, Session } from '$lib/api/types';
+  import type { MountRequest, Session, SessionHost } from '$lib/api/types';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
@@ -19,17 +19,21 @@
   // Controlled-from-parent via bind:open. session is the current
   // session (passed in so we can seed the mount rows from
   // session.mounts) and bind:session lets us push the updated row
-  // back after a successful PUT — keeps the parent's UI in sync
+  // back after a successful PUT, keeping the parent's UI in sync
   // without an extra fetch.
+  // host (optional) is the node owning the session, set for peer-hosted sessions so the mount edit and
+  // its filesystem browsing target that node over WASM. Omit for a local session.
   let {
     open = $bindable(false),
     session = $bindable<Session | null>(null),
+    host,
   }: {
     open?: boolean;
     session?: Session | null;
+    host?: SessionHost;
   } = $props();
 
-  // FormMount mirrors NewSessionDialog's local shape — boolean for
+  // FormMount mirrors NewSessionDialog's local shape, a boolean for
   // RO so checkbox binding is straightforward. Converted to
   // MountRequest at submit time.
   type FormMount = {
@@ -41,7 +45,7 @@
   let mounts = $state<FormMount[]>([]);
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
-  // Host home dir — where the host-path picker starts; used to pre-fill new rows.
+  // Host home dir, where the host-path picker starts; used to pre-fill new rows.
   let homeDir = $state('');
 
   // Hydrate the form whenever the sheet opens with a session. We seed
@@ -62,7 +66,7 @@
   $effect(() => {
     if (!open || homeDir) return;
     api
-      .fsList()
+      .fsList(undefined, host)
       .then((res) => (homeDir = res.path))
       .catch(() => {});
   });
@@ -84,7 +88,7 @@
     submitError = null;
 
     const payload: MountRequest[] = mounts
-      // Drop incomplete rows — same rule as NewSessionDialog.
+      // Drop incomplete rows, same rule as NewSessionDialog.
       .filter((m) => m.host_path && m.container_path)
       .map((m) => ({
         host_path: m.host_path,
@@ -93,7 +97,7 @@
       }));
 
     try {
-      const updated = await api.editMounts(session.id, payload);
+      const updated = await api.editMounts(session.id, payload, host);
       // Push the updated session back to the parent; their preview
       // / status row / tabs reflect the new container_id immediately.
       session = updated;
@@ -123,7 +127,7 @@
     <div class="flex flex-col gap-5 overflow-y-auto px-6 pb-6 pt-4">
       <!-- Recreate warning. Saving destroys the current container and
            creates a new one. The shared /root volume (agent state, shell
-           history) survives; the writable layer does not — including a
+           history) survives; the writable layer does not, including a
            no-mount /workspace's scratch contents. A mounted folder is
            host-owned and unaffected. -->
       <div
@@ -135,9 +139,9 @@
           <div class="font-medium">Saving recreates the container.</div>
           <p class="text-xs text-muted-foreground">
             <code>/root</code> (agent state, shell history) and any mounted
-            folder are preserved. Everything else inside the container —
-            installed packages, and an unmounted <code>/workspace</code>'s
-            contents — will be lost.
+            folder are preserved. Everything else inside the container
+            (installed packages, and an unmounted <code>/workspace</code>'s
+            contents) will be lost.
           </p>
         </div>
       </div>
@@ -161,7 +165,7 @@
             <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div class="space-y-1">
                 <Label class="text-xs" for="edit-mount-host-{i}">Host path</Label>
-                <HostPathField id="edit-mount-host-{i}" bind:value={m.host_path} />
+                <HostPathField id="edit-mount-host-{i}" bind:value={m.host_path} {host} />
               </div>
               <div class="space-y-1">
                 <Label class="text-xs" for="edit-mount-container-{i}">Mounts to</Label>

@@ -71,7 +71,9 @@ func (c *sessionClient) Create(ctx context.Context, req session.CreateRequest) (
 }
 
 func (c *sessionClient) List(ctx context.Context, includeAll bool) ([]*session.Session, error) {
-	url := c.baseURL + "/api/sessions"
+	// The CLI is a single-machine tool, so it lists this node's sessions (a bare array). The
+	// aggregated /api/sessions (cross-node, enveloped) is the browser dashboard's endpoint.
+	url := c.baseURL + "/api/sessions/local"
 	if includeAll {
 		url += "?all=true"
 	}

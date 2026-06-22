@@ -1,12 +1,25 @@
 <script lang="ts">
   import { api } from '$lib/api/client';
   import type { ConnectStatus } from '$lib/api/types';
+  import {
+    AlertDialog,
+    AlertDialogContent,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogCancel,
+  } from '$lib/components/ui/alert-dialog';
   import { Button } from '$lib/components/ui/button';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import Globe from '@lucide/svelte/icons/globe';
+
+  // onconnected fires once when the node finishes connecting (phase → running). Lets a host (e.g. the
+  // Nodes empty state) react, flipping from the connect CTA to the node list, without polling itself.
+  let { onconnected }: { onconnected?: () => void } = $props();
 
   let status = $state<ConnectStatus | null>(null);
   let starting = $state(false);
@@ -60,13 +73,8 @@
     }
   }
 
+  let forgetOpen = $state(false);
   async function forget() {
-    if (
-      !confirm(
-        'Forget this node? It’s removed from your tailnet and you’ll sign in again to reconnect.',
-      )
-    )
-      return;
     busy = true;
     error = null;
     try {
@@ -75,6 +83,7 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
+      forgetOpen = false;
     }
   }
 
@@ -97,6 +106,14 @@
     const t = setInterval(refresh, 2500);
     return () => clearInterval(t);
   });
+
+  let firedConnected = false;
+  $effect(() => {
+    if (status?.phase === 'running' && !firedConnected) {
+      firedConnected = true;
+      onconnected?.();
+    }
+  });
 </script>
 
 <section class="space-y-3">
@@ -105,7 +122,7 @@
   {#if !status || status.phase === 'stopped'}
     <p class="text-xs text-muted-foreground">
       Connect this machine to your tailnet to reach deepcove from your phone, work laptop, or
-      other devices — over Tailscale, identified as you.
+      other devices, over Tailscale, identified as you.
     </p>
     <Button size="sm" onclick={connect} disabled={starting}>
       {#if starting}<Loader2 class="size-4 animate-spin" />{/if}
@@ -134,7 +151,11 @@
       <div class="flex items-center gap-2 text-sm font-medium text-[var(--color-success)]">
         <Globe class="size-4" /> Connected{ownerName ? ` as ${ownerName}` : ''}
       </div>
-      <p class="text-xs text-muted-foreground">Reachable from any device on your tailnet at:</p>
+      <p class="text-xs text-muted-foreground">
+        Reachable at this address from any device signed in to{status.tailnet_name
+          ? ` the ${status.tailnet_name}`
+          : ' this'} tailnet. The device you open it on must have Tailscale connected here.
+      </p>
       <div
         class="flex items-center gap-2 rounded-md border border-border bg-secondary p-2 font-mono text-xs"
       >
@@ -159,14 +180,14 @@
             rel="noopener"
             class="text-primary hover:underline">Tailscale admin</a
           >
-          to upgrade to https automatically — no restart.
+          to upgrade to https automatically, no restart needed.
         </p>
       {/if}
       <div class="flex items-center gap-3 pt-1">
         <Button size="sm" variant="outline" onclick={disconnect} disabled={busy}>Disconnect</Button>
         <button
           type="button"
-          onclick={forget}
+          onclick={() => (forgetOpen = true)}
           disabled={busy}
           class="text-xs text-muted-foreground transition-colors hover:text-destructive disabled:opacity-50"
         >
@@ -180,3 +201,25 @@
     <p class="text-xs text-destructive">{error}</p>
   {/if}
 </section>
+
+<AlertDialog bind:open={forgetOpen}>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>Forget this node?</AlertDialogTitle>
+      <AlertDialogDescription>
+        It is removed from your tailnet, and you sign in again to reconnect.
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    {#if busy}
+      <p class="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 class="size-4 animate-spin" /> Forgetting node…
+      </p>
+    {/if}
+    <AlertDialogFooter>
+      <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+      <!-- Controlled Button (not AlertDialogAction, which auto-closes) so the dialog stays open and
+           shows the busy state while the async forget runs; forget() closes it when done. -->
+      <Button variant="destructive" onclick={forget} disabled={busy}>Forget</Button>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>

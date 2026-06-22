@@ -11,12 +11,15 @@
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
   import { api } from '$lib/api/client';
+  import { discoveryRequired } from '$lib/api/transport';
+  import { discovery } from '$lib/stores/discovery.svelte';
   import { friendlyError, type FriendlyError } from '$lib/api/errors';
   import { sessions } from '$lib/stores/sessions.svelte';
   import { preflight } from '$lib/stores/preflight.svelte';
+  import { onlineHostNodes, defaultNodeId, nodeHost } from '$lib/api/sessions';
   import HostPathField from './HostPathField.svelte';
   import { shellQuote } from '$lib/util/shell';
-  import type { Agent, MountRequest } from '$lib/api/types';
+  import type { Agent, DockerStatus, MountRequest, NodeInfo } from '$lib/api/types';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
   import Plus from '@lucide/svelte/icons/plus';
@@ -33,13 +36,29 @@
   let agentsError = $state<string | null>(null);
   let agent = $state('claude');
   let name = $state('');
+
+  // Compute selection (multinode): which of your machines hosts the session. The selector only
+  // shows when you have more than one online node; otherwise the session is created here.
+  let nodes = $state<NodeInfo[]>([]);
+  let nodeId = $state('');
+  const hostNodes = $derived(onlineHostNodes(nodes));
+  // The REMOTE node a new session will be created on, used to scope create-time calls (filesystem
+  // browsing, preflight, image checks) to that machine over WASM. Undefined when the target is this
+  // node. Self is reached directly via the boot transport, NOT over WASM (routing self over WASM would
+  // dial a tailnet node that isn't signed in here and hang). Also undefined with a single node.
+  const selectedHost = $derived.by(() => {
+    if (hostNodes.length <= 1) return undefined;
+    const node = hostNodes.find((n) => n.stable_node_id === nodeId);
+    if (!node || node.self) return undefined;
+    return nodeHost(node);
+  });
   // The last auto-suggested name, so the prefill effect can refresh it on agent
   // change without clobbering a name the user has typed.
   let suggestedName = $state('');
   // Prefer-setting: start with one folder row ready to fill (the conventional
   // /workspace). The user can opt out ("Run without a folder") to clear it.
   let mounts = $state<FormMount[]>([{ host_path: '', container_path: '/workspace', read_only: false }]);
-  // The deepcove host's home dir — where the host-path picker/autocomplete starts.
+  // The deepcove host's home dir, where the host-path picker/autocomplete starts.
   // Fetched on open so we can pre-fill the host-path field (with a trailing slash
   // so suggestions appear immediately) instead of leaving it blank.
   let homeDir = $state('');
@@ -77,12 +96,60 @@
       .catch((e) => (agentsError = String(e)));
   });
 
+  // Load the user's nodes on open and default the target to this machine. Connected mode reads them
+  // from the server; dashboard mode reads the in-browser node's discovery. Best-effort: a failure just
+  // hides the selector and creates here.
+  $effect(() => {
+    if (!open || nodes.length > 0) return;
+    if (discoveryRequired()) {
+      nodes = discovery.nodes;
+      nodeId = defaultNodeId(discovery.nodes);
+      return;
+    }
+    api
+      .nodes()
+      .then((list) => {
+        nodes = list;
+        nodeId = defaultNodeId(list);
+      })
+      .catch(() => {});
+  });
+
+  // Docker readiness of the *selected* create target. When a specific node is chosen (multi-node), we
+  // gate on that node's Docker, not the primary's. Otherwise we'd let you create on a node whose
+  // Docker is down, or block you on the primary's when the target is fine. Null until fetched / when
+  // there's no distinct selection, in which case we fall back to the global preflight store below.
+  let nodeDocker = $state<DockerStatus | null>(null);
+  $effect(() => {
+    const host = selectedHost;
+    nodeDocker = null;
+    if (!open || !host) return;
+    let cancelled = false;
+    const ac = new AbortController();
+    api
+      .preflight(host, ac.signal)
+      .then((p) => {
+        if (!cancelled) nodeDocker = p.docker;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+  });
+
+  // Effective Docker readiness the form gates on: the selected node's when known, else the global
+  // (primary/local) preflight store.
+  const dockerReachable = $derived(nodeDocker ? nodeDocker.reachable : preflight.dockerReachable);
+  const dockerLoaded = $derived(nodeDocker !== null || preflight.loaded);
+  const dockerMessage = $derived(nodeDocker ? nodeDocker.message : preflight.docker.message);
+
   // Resolve the host's home dir once, then seed the default folder row's host
   // path so it opens pre-filled at $HOME/ rather than blank.
   $effect(() => {
     if (!open || homeDir) return;
     api
-      .fsList()
+      .fsList(undefined, selectedHost)
       .then((res) => {
         homeDir = res.path;
         if (mounts.length > 0 && !mounts[0].host_path) {
@@ -93,7 +160,7 @@
   });
 
   // Pre-fill the Name field with a generated suggestion on open and when the agent
-  // changes — but never clobber a name the user has typed (only overwrite when the
+  // changes, but never clobber a name the user has typed (only overwrite when the
   // field is empty or still shows the previous suggestion).
   $effect(() => {
     if (!open) return;
@@ -129,7 +196,7 @@
       parts.push('--image', shellQuote(customImage));
       if (customSetup) parts.push('--setup-script', shellQuote(customSetup));
     } else if (imageStrategy === 'install') {
-      // Only emit overrides — keeps the CLI line short in the common case.
+      // Only emit overrides, which keeps the CLI line short in the common case.
       if (selectedAgent && baseImage !== selectedAgent.default_image) {
         parts.push('--image', shellQuote(baseImage));
       }
@@ -199,11 +266,14 @@
       mounts: MountRequest[];
       image?: string;
       setup_script?: string;
+      node_id?: string;
     } = {
       agent,
       name: name.trim() || undefined,
+      // Only send a target when there's a real choice; on a single node the backend creates here.
+      node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
       mounts: mounts
-        // Drop incomplete rows — server would 400 anyway.
+        // Drop incomplete rows; server would 400 anyway.
         .filter((m) => m.host_path && m.container_path)
         .map<MountRequest>((m) => ({
           host_path: m.host_path,
@@ -217,7 +287,7 @@
       payload.image = customImage.trim();
       if (customSetup.trim()) payload.setup_script = customSetup;
     } else {
-      // install — only emit overrides so registry updates flow into sessions on recreate.
+      // install: only emit overrides so registry updates flow into sessions on recreate.
       if (selectedAgent && baseImage !== selectedAgent.default_image) {
         payload.image = baseImage;
       }
@@ -237,21 +307,21 @@
   }
 
   // Proactively check whether the selected image is downloaded so we can
-  // show a "will download" hint before the user commits. Debounced — the
+  // show a "will download" hint before the user commits. Debounced because the
   // custom-image field changes per keystroke. Reads the image-strategy
   // inputs so Svelte re-runs this when any of them change.
   $effect(() => {
     const img = effectiveImage();
-    const reachable = preflight.dockerReachable;
+    const reachable = dockerReachable;
     imagePresent = null;
     if (!img || !reachable) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const present = await api.imageExists(img);
+        const present = await api.imageExists(img, selectedHost);
         if (!cancelled) imagePresent = present;
       } catch {
-        // Don't block create on a flaky check — leave it unknown; the
+        // Don't block create on a flaky check; leave it unknown. The
         // create path still pulls on demand via the 422 fallback.
         if (!cancelled) imagePresent = null;
       }
@@ -268,10 +338,14 @@
     pullPercent = -1;
     pullStatus = '';
     try {
-      await api.pullImageStream(effectiveImage(), (p) => {
-        pullPercent = p.percent;
-        pullStatus = p.status;
-      });
+      await api.pullImageStream(
+        effectiveImage(),
+        (p) => {
+          pullPercent = p.percent;
+          pullStatus = p.status;
+        },
+        selectedHost
+      );
       imagePresent = true;
     } finally {
       pulling = false;
@@ -296,6 +370,10 @@
       // fast and we can show a real progress bar.
       if (imagePresent === false) await pullCurrentImage();
 
+      // Create via the boot transport with node_id in the payload: the receiving node routes it (creates
+      // locally if it's the target, else proxies to the target over its own tailnet). This works in both
+      // connected and dashboard mode without depending on the in-browser WASM node being signed in,
+      // unlike host-routing the create, which would hang when WASM isn't up (connected mode).
       const created = await api.createSession(buildPayload());
       sessions.add(created);
       open = false;
@@ -330,7 +408,7 @@
       <DialogTitle>New session</DialogTitle>
       <DialogDescription>
         Spin up a coding-agent sandbox on this node. Pick the folder the agent should
-        work in — or run without one.
+        work in, or run without one.
       </DialogDescription>
     </DialogHeader>
 
@@ -371,6 +449,26 @@
         </div>
       </div>
 
+      {#if hostNodes.length > 1}
+        <div class="space-y-2">
+          <Label for="node">Run on</Label>
+          <select
+            id="node"
+            bind:value={nodeId}
+            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {#each hostNodes as node (node.stable_node_id)}
+              <option value={node.stable_node_id}>
+                {node.hostname}{node.self ? ' (this machine)' : ''}
+              </option>
+            {/each}
+          </select>
+          <p class="text-xs text-muted-foreground">
+            The session and its container live on the machine you pick.
+          </p>
+        </div>
+      {/if}
+
       <div class="space-y-2">
         <Label>Image</Label>
         <div class="space-y-2 rounded-md border border-border p-3">
@@ -391,7 +489,7 @@
               <div class="font-medium">Default deepcove image</div>
               <div class="text-xs text-muted-foreground">
                 {#if selectedAgent?.official_image}
-                  Prebuilt and ready — fastest boot. <code>{selectedAgent.official_image}</code>
+                  Prebuilt and ready, the fastest boot. <code>{selectedAgent.official_image}</code>
                 {:else}
                   Not yet published for this agent. Use "Run install script at startup" for now.
                 {/if}
@@ -446,7 +544,7 @@
                 class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
               ></textarea>
               <p class="text-xs text-muted-foreground">
-                Runs once on container start. Make it idempotent — checking
+                Runs once on container start. Make it idempotent. Checking
                 <code>command -v &lt;bin&gt;</code> before installing is the convention.
               </p>
             </div>
@@ -503,7 +601,7 @@
         </div>
         {#if !useFolder}
           <p class="text-xs text-muted-foreground">
-            No folder — the agent starts in an empty <code>/workspace</code>. Turn on
+            No folder. The agent starts in an empty <code>/workspace</code>. Turn on
             "Use a folder" to mount your code.
           </p>
         {:else}
@@ -515,7 +613,7 @@
               <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div class="min-w-0 space-y-1 sm:col-span-2">
                   <Label class="text-xs" for="mount-host-{i}">Host path</Label>
-                  <HostPathField id="mount-host-{i}" bind:value={m.host_path} />
+                  <HostPathField id="mount-host-{i}" bind:value={m.host_path} host={selectedHost} />
                 </div>
                 <div class="min-w-0 space-y-1">
                   <Label class="text-xs" for="mount-container-{i}">Mounts to</Label>
@@ -567,9 +665,9 @@
         </div>
       {/if}
 
-      {#if preflight.loaded && !preflight.dockerReachable}
+      {#if dockerLoaded && !dockerReachable}
         <div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground">
-          {preflight.docker.message || "Docker isn't running."} Start it to create a session.
+          {dockerMessage || "Docker isn't running."} Start it to create a session.
         </div>
       {:else if pulling}
         <!-- Live download progress. Determinate once the daemon reports
@@ -617,7 +715,7 @@
           disabled={submitting
             || pulling
             || !name.trim()
-            || !preflight.dockerReachable
+            || !dockerReachable
             || (imageStrategy === 'official' && !selectedAgent?.official_image)
             || (imageStrategy === 'custom' && !customImage.trim())}
         >

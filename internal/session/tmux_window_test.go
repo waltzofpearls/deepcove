@@ -109,7 +109,7 @@ func TestPickNextShellName(t *testing.T) {
 		{name: "empty", existing: nil, want: "shell"},
 		{name: "shell taken", existing: []string{"shell"}, want: "shell-2"},
 		{name: "shell and 2 taken", existing: []string{"shell", "shell-2"}, want: "shell-3"},
-		{name: "only shell-2 taken — bare 'shell' wins", existing: []string{"shell-2"}, want: "shell"},
+		{name: "only shell-2 taken, bare 'shell' wins", existing: []string{"shell-2"}, want: "shell"},
 		{name: "fills gap when shell + shell-2 + shell-4", existing: []string{"shell", "shell-2", "shell-4"}, want: "shell-3"},
 		{name: "ignores unrelated names", existing: []string{"main", "agent", "custom"}, want: "shell"},
 	}
@@ -152,7 +152,7 @@ func TestService_ListTmuxWindows(t *testing.T) {
 		wantActive  string
 	}{
 		{
-			name: "happy path — agent + shell",
+			name: "happy path: agent + shell",
 			setupExecs: []execResponse{
 				{stdout: "0 main 1\n1 shell 0\n", exit: 0},
 			},
@@ -224,7 +224,7 @@ func TestService_CreateTmuxWindow(t *testing.T) {
 		wantCmdCount int // expected number of Exec calls
 	}{
 		{
-			name: "auto-name when blank — picks 'shell'",
+			name: "auto-name when blank picks 'shell'",
 			req:  CreateTmuxWindowRequest{},
 			setupExecs: []execResponse{
 				{stdout: "0 main 1\n", exit: 0}, // ListTmuxWindows
@@ -374,7 +374,7 @@ func TestService_DeleteTmuxWindow(t *testing.T) {
 			wantCmdCount: 1,
 		},
 		{
-			name:         "refuses to delete 'main' — short-circuits before exec",
+			name:         "refuses to delete 'main', short-circuits before exec",
 			windowName:   "main",
 			setupExec:    nil,
 			wantErrIs:    ErrTmuxWindowNameReserved,

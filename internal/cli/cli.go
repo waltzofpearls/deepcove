@@ -12,8 +12,8 @@ import (
 	"syscall"
 )
 
-// command is one top-level subcommand. Each lives in its own file (start.go, status.go, session.go, ...)
-// and registers itself here.
+// command is one top-level subcommand. Each lives in its own file (start.go, status.go, session.go,
+// and so on) and registers itself here.
 type command struct {
 	name    string
 	summary string
@@ -67,7 +67,7 @@ func Run(args []string) int {
 
 func usage(w *os.File) {
 	lines := []string{
-		"deepcove — a self-hosted, isolated coding agent studio on your tailnet.",
+		"deepcove: a self-hosted, isolated coding agent studio on your tailnet.",
 		"",
 		"Usage:",
 		"  deepcove <command> [flags] [args]",

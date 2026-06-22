@@ -1,5 +1,5 @@
 <script lang="ts">
-  // deepcove icon logo — the solid brand-teal hexagon, no text (same mark as
+  // deepcove icon logo, the solid brand-teal hexagon, no text (same mark as
   // the favicon). Fill uses the brand-teal token var(--primary), so it tracks
   // the theme (#009d89 light / #00aa95 dark) and matches the UI accent.
   // Decorative, so aria-hidden where it sits next to a text label. For the full

@@ -14,10 +14,11 @@
   // so the user can decide.
 
   import '@xterm/xterm/css/xterm.css';
+  import { untrack } from 'svelte';
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { api } from '$lib/api/client';
   import type { DeepcoveSocket } from '$lib/api/transport';
-  import type { BootstrapStatus } from '$lib/api/types';
+  import type { BootstrapStatus, SessionHost } from '$lib/api/types';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Check from '@lucide/svelte/icons/check';
@@ -27,7 +28,23 @@
   // (legacy behavior). Used by the upcoming Agent/SSH mode toggle
   // and Split mode to pin each attached terminal to its own
   // window without affecting other clients.
-  let { sessionId, tmuxWindow }: { sessionId: string; tmuxWindow?: string } = $props();
+  //
+  // host is the node that owns the session, set for sessions living on a remote node. The PTY stream
+  // (and the bootstrap poll) then route to that node directly over WASM, keeping the dashboard node out
+  // of the stream path. Omit/undefined for a local session.
+  let {
+    sessionId,
+    tmuxWindow,
+    host,
+  }: { sessionId: string; tmuxWindow?: string; host?: SessionHost } = $props();
+
+  // The host's MagicDNS name as a memoized derived. The attach effect depends on THIS, not on `host`
+  // directly: in dashboard mode the sessions poll hands us a fresh `host` object every few seconds
+  // (same dns_name, new reference), and an effect that read `host` would re-run on every poll,
+  // tearing down and recreating the WS + xterm, which is the periodic flicker. A $derived only
+  // propagates when its value actually changes (===), so the effect stays put unless the session
+  // genuinely moves nodes.
+  const hostDns = $derived(host?.dns_name);
 
   let container: HTMLDivElement;
   let status = $state<'connecting' | 'open' | 'closed' | 'error'>('connecting');
@@ -46,7 +63,7 @@
     clearTimeout(uploadNoteTimer);
     uploadNoteTimer = setTimeout(() => (uploadNote = ''), ok ? 1500 : 3500);
   }
-  // While bootstrap is "installing" we don't open the WS — opening before tmux is up
+  // While bootstrap is "installing" we don't open the WS; opening before tmux is up
   // errors in a tight retry loop.
   let bootstrap = $state<BootstrapStatus>('installing');
   let bootstrapLog = $state('');
@@ -65,7 +82,7 @@
     // Synchronous reads of reactive props so Svelte tracks them as
     // dependencies of this effect. The actual WS URL is built from
     // them inside connect(), which runs async after the xterm
-    // dynamic import — async reads aren't tracked, so without these
+    // dynamic import, and async reads aren't tracked, so without these
     // lines the effect would never re-run on session/window switch
     // and the terminal would keep streaming the previous attach
     // while the toolbar (which uses its own reactive state) showed
@@ -73,6 +90,13 @@
     // stable values for the lifetime of this effect run.
     const id = sessionId;
     const win = tmuxWindow;
+    // Depend on the host's stable identity (its MagicDNS name), NOT the object reference. In dashboard
+    // mode the sessions poll rebuilds the host object every few seconds; depending on the object would
+    // re-run this whole effect each poll, tearing down and recreating the WS + xterm, which shows up
+    // as a periodic flicker. dns_name only changes if the session actually moves nodes, which is when we
+    // genuinely do want to re-attach. The object itself is read untracked.
+    void hostDns;
+    const node = untrack(() => host);
 
     let term: XTerm | undefined;
     let fit: any;
@@ -91,13 +115,13 @@
     // Aborts any in-flight bootstrap fetch when this effect tears down. Each
     // leaked fetch holds a keep-alive connection slot until the server
     // responds, and only takes a few to push past Firefox's per-origin
-    // connection cap — see client.ts for the full story.
+    // connection cap. See client.ts for the full story.
     const bootstrapAC = new AbortController();
 
     async function pollBootstrap(): Promise<BootstrapStatus> {
       while (!disposed) {
         try {
-          const resp = await api.sessionBootstrap(id, bootstrapAC.signal);
+          const resp = await api.sessionBootstrap(id, node, bootstrapAC.signal);
           if (disposed) return 'errored';
           bootstrap = resp.status;
           bootstrapLog = resp.log;
@@ -124,7 +148,7 @@
     function connect() {
       if (disposed) return;
       status = 'connecting';
-      ws = api.openAttachSocket(id, win);
+      ws = api.openAttachSocket(id, win, node);
       ws.binaryType = 'arraybuffer';
 
       const openedAt = Date.now();
@@ -133,7 +157,7 @@
       ws.onopen = () => {
         // If this effect run was already cleaned up (e.g. user
         // switched to another session before the WS finished its
-        // handshake), don't touch the shared status — the new run
+        // handshake), don't touch the shared status. The new run
         // owns it now. Without this guard, an in-flight old WS
         // settling AFTER the new one opens can clobber status.
         if (disposed) return;
@@ -156,8 +180,8 @@
         // "disconnected" overlay over a working terminal.
         if (disposed) return;
         const lifetime = Date.now() - openedAt;
-        // Retry if the connection died young — usually the server
-        // failed to exec `tmux attach` because the container is
+        // Retry if the connection died young, usually because the server
+        // failed to exec `tmux attach` while the container is
         // mid-startup.
         if (
           attempts < maxReconnectAttempts &&
@@ -214,7 +238,7 @@
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = '11';
       // Swallow the mouse-tracking DECSET enables so Claude's TUI can't grab
-      // the mouse — then a normal drag selects and Cmd-C copies natively.
+      // the mouse, so a normal drag selects and Cmd-C copies natively.
       // (Bracketed paste, alt screen, etc. pass through.) DECSET ?_h codes:
       //   1000 = click   1001 = highlight   1002 = drag   1003 = any-motion
       const mouseModes = new Set([1000, 1001, 1002, 1003]);
@@ -225,7 +249,7 @@
           params.length > 0 &&
           params.every((p) => mouseModes.has(typeof p === 'number' ? p : p[0])),
       );
-      // No @xterm/addon-webgl on purpose — its sprite atlas can't draw many glyphs
+      // No @xterm/addon-webgl on purpose; its sprite atlas can't draw many glyphs
       // Claude's TUI uses and falls back to underline placeholders. DOM renderer
       // delegates to browser text rendering, which handles everything correctly.
       term.open(container);
@@ -246,7 +270,7 @@
           uploadLabel = file.name || 'file';
           uploadPct = 0;
           try {
-            const { path } = await api.uploadFile(id, file, (pct) => (uploadPct = pct));
+            const { path } = await api.uploadFile(id, file, (pct) => (uploadPct = pct), node);
             term?.paste(path + ' ');
             flashNote(`Uploaded ${file.name || 'file'}`, true);
           } catch (err) {
@@ -307,7 +331,7 @@
     };
   });
 
-  // filesFrom collects File objects from a paste/drop — covers both real
+  // filesFrom collects File objects from a paste/drop, covering both real
   // files and pasted image bytes (clipboard items of kind "file").
   function filesFrom(dt: DataTransfer | null): File[] {
     if (!dt) return [];
@@ -350,12 +374,19 @@
         <Loader2 class="size-4 shrink-0 animate-spin text-primary" />
         <span class="min-w-0 truncate font-medium" title={uploadLabel}>{uploadLabel}</span>
         <div class="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-secondary">
-          <div
-            class="h-full rounded-full bg-primary transition-[width] duration-200"
-            style="width: {Math.max(uploadPct, 4)}%"
-          ></div>
+          {#if uploadPct < 0}
+            <!-- Indeterminate: a remote (WASM) upload has no byte-level progress. -->
+            <div class="h-full w-1/3 animate-pulse rounded-full bg-primary"></div>
+          {:else}
+            <div
+              class="h-full rounded-full bg-primary transition-[width] duration-200"
+              style="width: {Math.max(uploadPct, 4)}%"
+            ></div>
+          {/if}
         </div>
-        <span class="shrink-0 text-xs tabular-nums text-muted-foreground">{uploadPct}%</span>
+        <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {uploadPct < 0 ? 'Uploading…' : `${uploadPct}%`}
+        </span>
       {:else if uploadOk}
         <Check class="size-4 shrink-0 text-[var(--color-success)]" />
         <span class="min-w-0 truncate">{uploadNote}</span>

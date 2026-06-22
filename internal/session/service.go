@@ -65,6 +65,10 @@ type Service struct {
 	sandbox sandbox.Sandbox
 	logger  *slog.Logger
 
+	// federation supplies the cross-node view for ListAggregated (set via SetFederation). Nil means
+	// single-node: only this machine's sessions.
+	federation Federation
+
 	// previewCache holds the most recent successful capture-pane
 	// snapshot per session id. We serve it back when:
 	//   - the session is stopped (so the UI can show a dimmed
@@ -428,7 +432,7 @@ setup_rc=$?
 
 if [ $setup_rc -ne 0 ]; then
   echo errored > /etc/deepcove-bootstrap-status
-  echo "[deepcove] Setup failed (exit $setup_rc) — see log above" >> /var/log/deepcove-bootstrap.log
+  echo "[deepcove] Setup failed (exit $setup_rc); see log above" >> /var/log/deepcove-bootstrap.log
   # Park so the user can inspect via SSH mode.
   exec sleep infinity
 fi
@@ -443,7 +447,7 @@ chmod +x /usr/local/bin/deepcove-agent-launch
 rm -rf /tmp/tmux-* 2>/dev/null || true
 tmux new-session -d -s main -n main /usr/local/bin/deepcove-agent-launch
 
-# Flip to ready only after tmux is up — the frontend gates WS attach on this.
+# Flip to ready only after tmux is up. The frontend gates WS attach on this.
 echo ready > /etc/deepcove-bootstrap-status
 
 exec sleep infinity

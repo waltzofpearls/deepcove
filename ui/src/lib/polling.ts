@@ -1,6 +1,6 @@
 // Polling helper. Kicks off an async tick + setTimeout loop and
-// returns a cleanup function — designed to be returned from a Svelte
-// $effect so cleanup is automatic on component teardown.
+// returns a cleanup function. It's designed to be returned from a
+// Svelte $effect so cleanup is automatic on component teardown.
 //
 // Why not setInterval: setInterval queues callbacks at fixed delay
 // regardless of whether the previous one finished. A slow API call

@@ -160,7 +160,7 @@ func TestProcess_Close(t *testing.T) {
 					t.Errorf("Close: %v", err)
 				}
 			case <-time.After(5 * time.Second):
-				t.Fatal("Close did not return within 5s — pump goroutine likely leaked")
+				t.Fatal("Close did not return within 5s; pump goroutine likely leaked")
 			}
 		})
 	}

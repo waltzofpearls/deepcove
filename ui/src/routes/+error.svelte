@@ -13,7 +13,7 @@
   <div class="text-center">
     <h1 class="text-lg font-semibold">
       {page.status}
-      {page.status === 404 ? '— page not found' : '— something went wrong'}
+      {page.status === 404 ? 'page not found' : 'something went wrong'}
     </h1>
     <p class="mt-1 max-w-md text-sm text-muted-foreground">
       {page.error?.message ?? 'An unexpected error occurred.'}

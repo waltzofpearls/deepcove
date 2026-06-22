@@ -8,7 +8,7 @@
   } from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { api } from '$lib/api/client';
-  import type { FsEntry } from '$lib/api/types';
+  import type { FsEntry, SessionHost } from '$lib/api/types';
   import Folder from '@lucide/svelte/icons/folder';
   import House from '@lucide/svelte/icons/house';
   import CornerLeftUp from '@lucide/svelte/icons/corner-left-up';
@@ -16,11 +16,13 @@
   // Browse modal for picking a host directory. value (two-way) is the
   // chosen absolute path; start seeds the initial directory (falls back
   // to value, then the home dir). Listing is scoped to $HOME server-side.
+  // host (optional) browses a remote node's filesystem (a session living on a peer); omit for this one.
   let {
     open = $bindable(false),
     value = $bindable(''),
     start = '',
-  }: { open?: boolean; value?: string; start?: string } = $props();
+    host,
+  }: { open?: boolean; value?: string; start?: string; host?: SessionHost } = $props();
 
   let path = $state('');
   let parent = $state('');
@@ -33,7 +35,7 @@
     loading = true;
     error = null;
     try {
-      const res = await api.fsList(p);
+      const res = await api.fsList(p, host);
       path = res.path;
       parent = res.parent;
       entries = res.entries;

@@ -3,6 +3,7 @@
   import Logo from './Logo.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
   import ViewToggle from './ViewToggle.svelte';
+  import DeviceBar from './DeviceBar.svelte';
   import ProfileMenu from './ProfileMenu.svelte';
   import SessionTabBar from './SessionTabBar.svelte';
   import Menu from '@lucide/svelte/icons/menu';
@@ -14,7 +15,7 @@
   }: {
     onNewSession?: () => void;
     // Called when the user taps the mobile hamburger. The layout
-    // owns the sidebar-drawer open state — the topbar just signals.
+    // owns the sidebar-drawer open state, and the topbar just signals.
     onMenu?: () => void;
   } = $props();
 </script>
@@ -40,7 +41,9 @@
     </div>
 
     <div class="flex shrink-0 items-center gap-2">
-      <!-- Cards/list view toggle — a single compact icon button (like
+      <!-- Your tailnet devices (session node + web node) with status and sign-in. -->
+      <DeviceBar />
+      <!-- Cards/list view toggle, a single compact icon button (like
            ThemeToggle), so it stays in the topbar on every breakpoint. -->
       <ViewToggle />
       <ThemeToggle />

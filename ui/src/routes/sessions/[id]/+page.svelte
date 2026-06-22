@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api/client';
+  import { transport } from '$lib/api/transport';
+  import { tailnetAuth } from '$lib/api/wasm';
   import { sessions } from '$lib/stores/sessions.svelte';
-  import type { Session, SessionPreview } from '$lib/api/types';
+  import type { Session, SessionHost, SessionPreview } from '$lib/api/types';
   import { Button } from '$lib/components/ui/button';
   import {
     AlertDialog,
@@ -22,6 +25,7 @@
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
   import Terminal from '$lib/components/session/Terminal.svelte';
+  import RemoteSignInPrompt from '$lib/components/session/RemoteSignInPrompt.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
   import EditMountsDialog from '$lib/components/session/EditMountsDialog.svelte';
@@ -39,21 +43,39 @@
 
   // page.params.id is typed as string | undefined because SvelteKit
   // can't statically prove the param is present. The route is [id]
-  // so it always is at runtime — fall back to '' so downstream API
-  // signatures expecting `string` typecheck. A missing id would
+  // so it always is at runtime, and we fall back to '' so downstream
+  // API signatures expecting `string` typecheck. A missing id would
   // produce a 404 from the server, surfaced via loadError.
   const id = $derived(page.params.id ?? '');
+
+  // The session's host comes from the aggregated list, not the single-session GET (which doesn't
+  // carry it). For a remote session every per-session call must route to its owning node over WASM, so
+  // we subscribe to the store and learn the host from there. `host` is undefined for a local session
+  // (use the boot transport) and for an id not yet seen in the list. `hostKey` is the stable string we
+  // gate the loader on, so a fresh list reference each poll doesn't re-fire the fetch.
+  $effect(() => sessions.subscribe());
+  const listed = $derived(sessions.find(id));
+  const host = $derived<SessionHost | undefined>(listed ? sessions.hostFor(listed) : undefined);
+  const hostKey = $derived(host?.dns_name ?? '');
+
+  // Connected (direct) mode + a remote session = the per-session calls ride the in-browser Tailscale
+  // node (WASM), which isn't signed in here by default. Until it's running, surface an inline sign-in
+  // prompt instead of an indefinite "loading…". Dashboard (wasm) mode never hits this, since its global
+  // gate already handles the login; local sessions (no host) don't either.
+  const needsWasmSignin = $derived(
+    transport.mode === 'direct' && !!host && $tailnetAuth.phase !== 'running'
+  );
 
   let session = $state<Session | null>(null);
   // loadError is the initial-load failure (no session to show at all).
   // actionError is a transient failure of a start/stop/destroy call
-  // while the session is already loaded — surfaced as a dismissable
+  // while the session is already loaded, surfaced as a dismissable
   // banner so the user knows the action didn't take effect.
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   // Bound to the destroy AlertDialog. Lifting it to script-state
   // keeps the Trash button decoupled from the AlertDialogTrigger
-  // (it stays inside a TooltipTrigger like its siblings) — opening
+  // (it stays inside a TooltipTrigger like its siblings), so opening
   // the dialog is a plain onclick.
   let destroyOpen = $state(false);
   // Bound to the EditMountsDialog. Opens via the topbar HardDrive
@@ -81,7 +103,7 @@
     editingName = false;
     if (!name || name === session.name) return;
     try {
-      const updated = await api.renameSession(session.id, name);
+      const updated = await api.renameSession(session.id, name, host);
       session = updated;
       sessions.patch(updated.id, { name: updated.name });
     } catch (e) {
@@ -102,7 +124,7 @@
   // Mode lives in the URL (?mode=agent|ssh|split) so it's
   // shareable / refreshable. Default agent (omitted from URL).
   // effectiveMode falls back to 'agent' when the URL says 'split'
-  // but the viewport is too narrow — keeps the URL honest while
+  // but the viewport is too narrow. This keeps the URL honest while
   // refusing to render a useless side-by-side on phones. Widening
   // the window snaps back to split automatically.
   const mode = $derived<SessionMode>(
@@ -147,7 +169,7 @@
     // 409 ("already exists") response, which we treat as success.
     if (next === 'ssh' || next === 'split') {
       try {
-        await api.createTmuxWindow(session.id, { name: 'shell' });
+        await api.createTmuxWindow(session.id, { name: 'shell' }, host);
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 409)) {
           actionError = `Failed to ensure shell window: ${e instanceof Error ? e.message : String(e)}`;
@@ -168,35 +190,44 @@
       noScroll: true,
     });
   }
-  // Cached last preview — used to show a dimmed snapshot + Stopped
+  // Cached last preview, used to show a dimmed snapshot + Stopped
   // overlay when the session isn't running, instead of a bare
   // "attach is unavailable" message.
   let preview = $state<SessionPreview | null>(null);
   let previewHtml = $state('');
   // $state so the convert effect re-fires when createConverter()
-  // resolves — see SessionCard.svelte for the same reasoning.
+  // resolves. See SessionCard.svelte for the same reasoning.
   let converter = $state<Awaited<ReturnType<typeof createConverter>> | undefined>(undefined);
 
   $effect(() => {
+    // Deps: id and hostKey. Wait for the first poll to land (sessions.loading flips false) so a remote
+    // session's host is known before we fetch, because calling getSession on the local node for a
+    // session that lives on a peer would 404. A local session simply has host undefined and loads from
+    // this node.
+    void hostKey;
+    if (sessions.loading) return;
+    // host itself is read untracked: hostKey already captures changes that matter, and we don't want a
+    // new list reference each poll (same dns_name) to re-fire the fetch.
+    const h = untrack(() => host);
     // AbortController, not just a cancelled flag: a leaked /preview fetch
     // here was the root cause of the dashboard "card stuck on 'waiting for
-    // first snapshot…'" bug — navigating back left the request occupying a
+    // first snapshot…'" bug. Navigating back left the request occupying a
     // Firefox connection slot, and the dashboard SessionCard's own /preview
     // for the same id queued behind it indefinitely. See client.ts.
     const ac = new AbortController();
     api
-      .getSession(id, ac.signal)
+      .getSession(id, h, ac.signal)
       .then((s) => {
         if (!ac.signal.aborted) session = s;
       })
       .catch((e) => {
         if (!ac.signal.aborted) loadError = String(e);
       });
-    // Fetch the preview once on mount — the server's cache returns
+    // Fetch the preview once on mount. The server's cache returns
     // the last good capture even when the session is stopped, so
     // there's something to render in the not-running branch.
     api
-      .sessionPreview(id, ac.signal)
+      .sessionPreview(id, h, ac.signal)
       .then((p) => {
         if (!ac.signal.aborted) preview = p;
       })
@@ -265,8 +296,8 @@
     if (!session) return;
     actionError = null;
     try {
-      await api.startSession(session.id);
-      session = await api.getSession(session.id);
+      await api.startSession(session.id, host);
+      session = await api.getSession(session.id, host);
     } catch (e) {
       actionError = `Start failed: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -276,8 +307,8 @@
     if (!session) return;
     actionError = null;
     try {
-      await api.stopSession(session.id);
-      session = await api.getSession(session.id);
+      await api.stopSession(session.id, host);
+      session = await api.getSession(session.id, host);
     } catch (e) {
       actionError = `Stop failed: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -285,7 +316,7 @@
 
   // destroyConfirmed runs after the AlertDialog's Destroy action.
   // bits-ui closes the dialog before the click bubbles, so no manual
-  // close — we just clear the actionError and fire the API call.
+  // close is needed: we just clear the actionError and fire the API call.
   //
   // Optimistically remove the session from the shared store before
   // navigating to '/'. Without this, the dashboard mounts with the
@@ -296,7 +327,7 @@
     if (!session) return;
     actionError = null;
     try {
-      await api.destroySession(session.id);
+      await api.destroySession(session.id, host);
       sessions.remove(session.id);
       goto('/');
     } catch (e) {
@@ -344,16 +375,25 @@
               class="w-44 max-w-full rounded border border-input bg-transparent px-1.5 py-0.5 font-mono text-sm font-medium focus:outline-none focus:ring-1 focus:ring-ring"
             />
           {:else}
-            <button
-              onclick={startRename}
-              title="Rename session"
-              class="group/name flex max-w-full items-center gap-1 font-mono text-sm font-medium"
-            >
-              <span class="truncate">{session.name}</span>
-              <Pencil
-                class="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/name:opacity-100"
-              />
-            </button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger>
+                  {#snippet child({ props })}
+                    <button
+                      {...props}
+                      onclick={startRename}
+                      class="group/name flex max-w-full items-center gap-1 font-mono text-sm font-medium"
+                    >
+                      <span class="truncate">{session?.name}</span>
+                      <Pencil
+                        class="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/name:opacity-100"
+                      />
+                    </button>
+                  {/snippet}
+                </TooltipTrigger>
+                <TooltipContent>Rename session</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           {/if}
           <!-- Subtitle is cosmetic (agent kind + short id). Hidden
                below md so the name has room to breathe on phones. -->
@@ -363,6 +403,10 @@
         </div>
       {:else if loadError}
         <span class="text-sm text-destructive">{loadError}</span>
+      {:else if listed}
+        <!-- Canonical session not loaded yet (e.g. awaiting the cross-node sign-in), but the store
+             already knows it from the aggregated list, so show its name rather than a bare "loading…". -->
+        <span class="truncate font-mono text-sm font-medium">{listed.name}</span>
       {:else}
         <span class="text-sm text-muted-foreground">loading…</span>
       {/if}
@@ -474,14 +518,14 @@
   </div>
 
   <!-- Edit-mounts sheet. Bind session so the sheet can write the
-       updated row back after a successful PUT — keeps the toolbar
+       updated row back after a successful PUT, which keeps the toolbar
        and the rest of the page in sync without an extra fetch. -->
-  <EditMountsDialog bind:open={editMountsOpen} bind:session />
+  <EditMountsDialog bind:open={editMountsOpen} bind:session {host} />
 
   <!-- Destroy confirmation. State-driven open via `destroyOpen` so
        the Trash button can keep its Tooltip wrapper instead of
        nesting two triggers. AlertDialog's primitive blocks any
-       interaction outside the dialog while open — a real safety net
+       interaction outside the dialog while open, a real safety net
        compared to the bare browser confirm() it replaced. -->
   <AlertDialog bind:open={destroyOpen}>
     <AlertDialogContent>
@@ -525,18 +569,22 @@
   {/if}
 
   <!-- Terminal pane. requestFullscreen() targets this div, so the
-       toolbar above is excluded from real fullscreen — matching the
+       toolbar above is excluded from real fullscreen, matching the
        intent (the terminal alone, edge-to-edge). -->
   <div bind:this={containerEl} class="relative flex-1 overflow-hidden bg-[var(--term-bg)]">
-    {#if session?.status === 'running'}
+    {#if needsWasmSignin}
+      <!-- Remote session in connected mode: must reach the owning node over the in-browser Tailscale
+           node, which needs a sign-in. Takes precedence over the terminal/preview while we wait. -->
+      <RemoteSignInPrompt hostName={host?.hostname} />
+    {:else if session?.status === 'running'}
       {#if effectiveMode === 'split'}
         <!-- Split mode: two side-by-side terminals, each pinned to
              its own tmux window via the ?tmux_window= query param
              (per-client window state is a tmux native). Desktop
-             only — effectiveMode handles the mobile fallback. -->
+             only, since effectiveMode handles the mobile fallback. -->
         <div class="grid h-full grid-cols-2 divide-x divide-border">
-          <Terminal sessionId={session.id} tmuxWindow="main" />
-          <Terminal sessionId={session.id} tmuxWindow="shell" />
+          <Terminal sessionId={session.id} tmuxWindow="main" {host} />
+          <Terminal sessionId={session.id} tmuxWindow="shell" {host} />
         </div>
       {:else}
         <!-- Single-pane: Agent or SSH. Terminal re-attaches
@@ -544,6 +592,7 @@
         <Terminal
           sessionId={session.id}
           tmuxWindow={effectiveMode === 'ssh' ? 'shell' : 'main'}
+          {host}
         />
       {/if}
     {:else if session}

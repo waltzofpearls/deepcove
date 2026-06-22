@@ -4,12 +4,18 @@
   // session lands on the login view without flashing the app. The layout only
   // renders this while `transport.mode === 'wasm' && phase !== 'running'`.
   import { ensureTailnet, tailnetAuth } from '$lib/api/wasm';
+  import { discoveryRequired } from '$lib/api/transport';
+  import { discovery } from '$lib/stores/discovery.svelte';
   import Logo from './layout/Logo.svelte';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import ExternalLink from '@lucide/svelte/icons/external-link';
+  import Server from '@lucide/svelte/icons/server';
 
   let auth = $derived($tailnetAuth);
+  // Once signed in, dashboard discover mode has a second gated step: finding the cluster on the
+  // tailnet. We surface that here so the pre-app screen explains what it's waiting on.
+  let discovering = $derived(discoveryRequired() && auth.phase === 'running');
 
   function retry() {
     void ensureTailnet().catch(() => {});
@@ -19,7 +25,7 @@
 <div
   class="flex h-screen flex-col items-center justify-center gap-6 bg-background px-6 text-foreground"
 >
-  <!-- Brand anchor for the whole gate — shown in every state (login,
+  <!-- Brand anchor for the whole gate, shown in every state (login,
        error, connecting) so the pre-dashboard screen reads as deepcove. -->
   <Logo class="h-8 w-auto" />
 
@@ -38,7 +44,7 @@
         <ExternalLink class="size-4" />
       </a>
       <p class="text-xs text-muted-foreground">
-        A sign-in tab will open — return here once it completes.
+        A sign-in tab will open. Return here once it completes.
       </p>
     </div>
   {:else if auth.phase === 'error'}
@@ -53,6 +59,30 @@
         Try again
       </button>
     </div>
+  {:else if discovering}
+    <!-- Signed in; now finding the cluster on the tailnet (dashboard discover mode). -->
+    {#if discovery.phase === 'error'}
+      <div class="flex w-full max-w-sm flex-col items-center gap-3 text-center">
+        <TriangleAlert class="size-8 text-destructive" />
+        <p class="text-sm">Couldn't discover your deepcove nodes.</p>
+        {#if discovery.error}
+          <p class="break-words text-xs text-muted-foreground">{discovery.error}</p>
+        {/if}
+      </div>
+    {:else if discovery.phase === 'none'}
+      <div class="flex w-full max-w-sm flex-col items-center gap-3 text-center">
+        <Server class="size-8 text-muted-foreground" />
+        <p class="text-sm">No deepcove nodes found on your tailnet.</p>
+        <p class="text-xs text-muted-foreground">
+          Start deepcove on a machine that's on this tailnet, then this page will pick it up
+          automatically.
+        </p>
+        <Loader2 class="mt-1 size-4 animate-spin text-muted-foreground" />
+      </div>
+    {:else}
+      <Loader2 class="size-8 animate-spin text-muted-foreground" />
+      <p class="text-sm text-muted-foreground">Discovering your cluster…</p>
+    {/if}
   {:else}
     <!-- idle / connecting: verifying a returning session or first boot -->
     <Loader2 class="size-8 animate-spin text-muted-foreground" />

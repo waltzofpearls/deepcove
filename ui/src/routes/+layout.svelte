@@ -8,8 +8,9 @@
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import NewSessionDialog from '$lib/components/session/NewSessionDialog.svelte';
   import TailnetGate from '$lib/components/TailnetGate.svelte';
-  import { transport } from '$lib/api/transport';
-  import { ensureTailnet, tailnetAuth } from '$lib/api/wasm';
+  import { transport, discoveryRequired } from '$lib/api/transport';
+  import { ensureTailnet, tailnetAuth, hasWebNodeSignIn } from '$lib/api/wasm';
+  import { discovery } from '$lib/stores/discovery.svelte';
   import { Sheet, SheetContent } from '$lib/components/ui/sheet';
   import { preflight } from '$lib/stores/preflight.svelte';
   import { NEW_SESSION_CTX } from '$lib/context';
@@ -33,15 +34,37 @@
 
   // In wasm mode the whole app rides the in-browser Tailscale node, so bring it
   // up on boot and gate the dashboard until it's running. Direct mode never
-  // touches this — `tailnetAuth` stays idle and `gated` is false.
+  // touches this. `tailnetAuth` stays idle and `gated` is false. In dashboard
+  // discover mode there's also no server to fan out, so the in-browser node
+  // discovers the cluster itself (discovery.start brings the node up too).
   onMount(() => {
-    if (transport.mode === 'wasm') void ensureTailnet().catch(() => {});
+    if (transport.mode === 'wasm') {
+      if (discoveryRequired()) void discovery.start();
+      else void ensureTailnet().catch(() => {});
+      return;
+    }
+    // Direct mode: the web node is lazy, but if it was signed in before (saved creds present), reconnect
+    // it in the background so its chip persists across refreshes. The localStorage check is cheap and
+    // synchronous, and the reconnect is fire-and-forget, so page load is never blocked; the wasm loads
+    // and reconnects async and the UI updates reactively.
+    if (hasWebNodeSignIn()) void ensureTailnet().catch(() => {});
   });
-  let gated = $derived(transport.mode === 'wasm' && $tailnetAuth.phase !== 'running');
+  // Gate until the node is running, and in discover mode until the cluster has been discovered (a
+  // primary picked), because otherwise the boot transport has no target and the app would fire calls
+  // into the void.
+  let gated = $derived(
+    transport.mode === 'wasm' &&
+      ($tailnetAuth.phase !== 'running' ||
+        (discoveryRequired() && discovery.phase !== 'ready'))
+  );
 
   // Environment-readiness poller; powers the Docker-down banner below
-  // and the New Session dialog's gating. Lazy + ref-counted.
-  $effect(() => preflight.subscribe());
+  // and the New Session dialog's gating. Lazy and ref-counted. In discover mode it
+  // rides the boot transport's primary node, so hold it until discovery is ready.
+  $effect(() => {
+    if (discoveryRequired() && discovery.phase !== 'ready') return;
+    return preflight.subscribe();
+  });
 
   let retrying = $state(false);
   async function retryPreflight() {
@@ -63,7 +86,10 @@
      + user override stored in localStorage. Defaults to system. -->
 <ModeWatcher defaultMode="system" />
 
-{#if gated}
+{#if page.url.pathname === '/setup'}
+  <!-- The setup wizard is its own full-screen page with no topbar/sidebar chrome and no gate. -->
+  {@render children()}
+{:else if gated}
   <!-- Wasm mode: hold the whole app behind the connect/login gate until the
        in-browser node is running. The dashboard never mounts before then. -->
   <TailnetGate />
@@ -97,8 +123,8 @@
 
   <div class="flex flex-1 overflow-hidden">
     <!-- Desktop sidebar: permanent left aside at md+. Hidden on
-         mobile — the same Sidebar component renders inside a Sheet
-         below instead. -->
+         mobile, where the same Sidebar component renders inside a
+         Sheet below instead. -->
     <Sidebar class="hidden w-56 border-r border-border bg-card md:flex" />
     <main class="flex-1 overflow-auto">
       {@render children()}

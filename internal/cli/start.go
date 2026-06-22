@@ -98,6 +98,9 @@ func cmdStart(ctx context.Context, args []string) error {
 
 	connectMgr := connect.NewManager(ctx, cfg.DataDir, sqlDB, mux)
 	connectMgr.AttachRoutes(mux)
+	// The connect manager owns the tsnet node, so it's also the cross-node source for aggregated
+	// session listing (fan-out to peers over the tailnet). No-op on a single node.
+	sessionSvc.SetFederation(connectMgr)
 	connectMgr.AutoStartIfEnabled()
 
 	// Per-run token gating the local TCP front door. The SPA served on this listener receives

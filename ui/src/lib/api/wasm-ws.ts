@@ -1,6 +1,6 @@
 // A minimal WebSocket client implemented over the tailscale-web raw TCP stream
 // (dialTCP), so the terminal's PTY WebSocket works in wasm mode against the
-// node's *existing* WS endpoint — the server is unchanged.
+// node's *existing* WS endpoint, so the server is unchanged.
 //
 // We dial :80 (not :443): the WireGuard tunnel already encrypts everything, so
 // plain HTTP avoids implementing TLS in the browser. Over that stream we do the
@@ -91,7 +91,7 @@ export class FrameDecoder {
 					this.contParts = [f.payload];
 				}
 			} else {
-				// Control frame (close/ping/pong) — never fragmented, may interleave.
+				// Control frame (close/ping/pong), never fragmented, may interleave.
 				out.push({ opcode: f.opcode, payload: f.payload });
 			}
 		}
@@ -290,7 +290,7 @@ function randomKey(): string {
 
 // We accept any 101 response and don't verify Sec-WebSocket-Accept: the stream
 // is already WireGuard-encrypted to an owner-gated peer we authenticated, so the
-// accept-key check adds nothing here — and verifying it needs SHA-1 via
+// accept-key check adds nothing here, and verifying it needs SHA-1 via
 // crypto.subtle, which is unavailable on plain-http (insecure) origins.
 function isSwitchingProtocols(header: string): boolean {
 	return header.split(' ')[1] === '101';
