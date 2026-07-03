@@ -37,6 +37,33 @@ describe('transport mode selection', () => {
 	}
 });
 
+describe('transportForHost', () => {
+	it('uses the boot transport for a local session (no host)', async () => {
+		const { transport, transportForHost } = await loadTransport();
+		expect(transportForHost()).toBe(transport);
+		expect(transportForHost(null)).toBe(transport);
+		expect(transportForHost({})).toBe(transport);
+		expect(transportForHost({ dns_name: '' })).toBe(transport);
+	});
+
+	it('upgrades a remote host to a WASM transport even when the boot mode is Direct', async () => {
+		const { transport, transportForHost } = await loadTransport();
+		expect(transport.mode).toBe('direct');
+		const t = transportForHost({ dns_name: 'deepcove-peer.tailnet.ts.net' });
+		expect(t).not.toBe(transport);
+		expect(t.mode).toBe('wasm');
+	});
+
+	it('caches one transport per host, keyed by MagicDNS name', async () => {
+		const { transportForHost } = await loadTransport();
+		const a1 = transportForHost({ dns_name: 'deepcove-a.tailnet.ts.net' });
+		const a2 = transportForHost({ dns_name: 'deepcove-a.tailnet.ts.net' });
+		const b = transportForHost({ dns_name: 'deepcove-b.tailnet.ts.net' });
+		expect(a1).toBe(a2);
+		expect(a1).not.toBe(b);
+	});
+});
+
 describe('DirectTransport.openSocket', () => {
 	it('builds ws:// from an http page and passes the subprotocol', async () => {
 		vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:8080' });

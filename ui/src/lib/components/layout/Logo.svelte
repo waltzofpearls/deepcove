@@ -3,7 +3,7 @@
   // mark follows the surrounding text color (navy on light, light on dark); the hexagon o
   // uses the brand-teal token var(--primary), so it tracks the theme too (#009d89 light /
   // #00aa95 dark) and always matches the UI accent. Outlined paths from the licensed Toronto
-  // Subway Bold (Fontspring desktop license) — no font is shipped, only this static vector
+  // Subway Bold (Fontspring desktop license). No font is shipped, only this static vector
   // artwork. The matching favicon lives at static/favicon.svg.
   let { class: className = 'h-6 w-auto' }: { class?: string } = $props();
 </script>

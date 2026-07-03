@@ -15,7 +15,7 @@
 
   // Current viewer's identity. Tailnet access is owner-gated, so the node owner
   // from the connect status IS the viewer. Null when not on a tailnet (rung 1 /
-  // local, or the connect endpoint is absent) — we show a "Local user"
+  // local, or the connect endpoint is absent), so we show a "Local user"
   // placeholder then. (Per-request WhoIs via /api/me is the right source once
   // per-user sharing lands; until then owner == viewer.)
   let owner = $state<ConnectOwner | null>(null);
@@ -78,6 +78,7 @@
       </div>
     </DropdownMenuLabel>
     <DropdownMenuSeparator />
+    <DropdownMenuItem onclick={() => goto('/setup')}>Set up deepcove</DropdownMenuItem>
     <DropdownMenuItem onclick={() => goto('/settings')}>Settings</DropdownMenuItem>
   </DropdownMenuContent>
 </DropdownMenu>

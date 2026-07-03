@@ -2,7 +2,7 @@
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
   import { api } from '$lib/api/client';
-  import type { FsEntry } from '$lib/api/types';
+  import type { FsEntry, SessionHost } from '$lib/api/types';
   import { splitPath } from '$lib/util/path';
   import FolderPicker from './FolderPicker.svelte';
   import Folder from '@lucide/svelte/icons/folder';
@@ -10,14 +10,17 @@
 
   // Host-path input with directory autocomplete + a Browse modal. value is the
   // absolute host path (two-way). Listing is scoped to $HOME server-side.
+  // host (optional) browses a remote node's filesystem (editing a peer-hosted session's mounts).
   let {
     value = $bindable(''),
     id,
     placeholder = '/Users/you/code/myrepo',
-  }: { value?: string; id?: string; placeholder?: string } = $props();
+    host,
+  }: { value?: string; id?: string; placeholder?: string; host?: SessionHost } = $props();
 
-  // Render up to MAX_SUGGEST (the dropdown scrolls); moreCount + the header make
-  // it read as a filter of one directory, not the only folders you're allowed.
+  // Render up to MAX_SUGGEST (the dropdown scrolls); moreCount and the header
+  // make it read as a filter of one directory, not the only folders you're
+  // allowed.
   const MAX_SUGGEST = 50;
 
   let pickerOpen = $state(false);
@@ -28,7 +31,7 @@
   let focused = $state(false);
   let activeIndex = $state(-1);
 
-  // Debounced autocomplete — best-effort: any error just yields no suggestions.
+  // Debounced autocomplete, best-effort: any error just yields no suggestions.
   $effect(() => {
     const v = value;
     if (!focused) return;
@@ -36,7 +39,7 @@
     const timer = setTimeout(async () => {
       const { dir, prefix } = splitPath(v);
       try {
-        const res = await api.fsList(dir);
+        const res = await api.fsList(dir, host);
         if (cancelled) return;
         const p = prefix.toLowerCase();
         const filtered = res.entries.filter((e) => e.name.toLowerCase().startsWith(p));
@@ -113,7 +116,7 @@
       class="absolute z-50 mt-1 w-full overflow-hidden rounded-md border border-border bg-background shadow-md"
     >
       <div class="border-b border-border px-2 py-1.5 text-[11px] text-muted-foreground">
-        Folders in <code class="text-foreground">{listedDir || '~'}</code> — type to filter
+        Folders in <code class="text-foreground">{listedDir || '~'}</code>. Type to filter
       </div>
       <ul class="max-h-56 overflow-auto p-1">
         {#each suggestions as s, i (s.path)}
@@ -137,11 +140,11 @@
       </ul>
       {#if moreCount > 0}
         <div class="border-t border-border px-2 py-1.5 text-[11px] text-muted-foreground">
-          +{moreCount} more — keep typing to filter, or use Browse
+          +{moreCount} more. Keep typing to filter, or use Browse
         </div>
       {/if}
     </div>
   {/if}
 
-  <FolderPicker bind:open={pickerOpen} bind:value start={value} />
+  <FolderPicker bind:open={pickerOpen} bind:value start={value} {host} />
 </div>

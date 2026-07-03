@@ -52,9 +52,16 @@ func cmdDashboard(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	// Thin client mode: serve only the SPA bundle.
+	// Thin client mode: serve only the SPA bundle. It hosts no API of its own, so the SPA runs in
+	// discover mode: the in-browser Tailscale node signs in, finds the user's deepcove cluster on the
+	// tailnet, and talks to those nodes directly over WASM (no target injected here).
 	mux := http.NewServeMux()
-	if err := ui.New(ui.WithConfig(cfg), ui.WithMux(mux)).AttachRoutes(); err != nil {
+	if err := ui.New(
+		ui.WithConfig(cfg),
+		ui.WithMux(mux),
+		ui.WithTransport("wasm"),
+		ui.WithDiscover(),
+	).AttachRoutes(); err != nil {
 		return fmt.Errorf("ui: %w", err)
 	}
 

@@ -2,8 +2,8 @@
 // so consumers `import { preferences } from '$lib/stores/preferences.svelte'`
 // and read `preferences.viewMode` directly.
 //
-// We deliberately keep this small — theme lives under mode-watcher,
-// session ordering / filters land here as the canvas grows. The
+// We deliberately keep this small. Theme lives under mode-watcher,
+// and session ordering / filters land here as the canvas grows. The
 // pollIntervalMs key is forward-looking: there's no UI to change it
 // in v0, but the canvas reads it so a power user can override via
 // browser devtools or a future Settings page.

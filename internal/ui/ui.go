@@ -33,6 +33,9 @@ type UI struct {
 	// target is the deepcove node's tailnet URL the in-browser node dials in wasm
 	// mode (empty in direct mode, where the API is same-origin).
 	target string
+	// discover marks dashboard mode: the thin client hosts no API of its own, so the in-browser node
+	// must discover the cluster itself (no injected target). Only set by `deepcove dashboard`.
+	discover bool
 }
 
 type Option func(*UI)
@@ -62,6 +65,14 @@ func WithTransport(mode string) Option {
 func WithTarget(target string) Option {
 	return func(ui *UI) {
 		ui.target = target
+	}
+}
+
+// WithDiscover marks dashboard mode: the SPA is told to discover the cluster via its own in-browser
+// node rather than talk to a single injected target. Implies wasm transport.
+func WithDiscover() Option {
+	return func(ui *UI) {
+		ui.discover = true
 	}
 }
 
@@ -171,16 +182,19 @@ func (ui *UI) serveShell(w http.ResponseWriter, sub fs.FS) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(injectRuntimeConfig(raw, ui.transport, ui.target))
+	_, _ = w.Write(injectRuntimeConfig(raw, ui.transport, ui.target, ui.discover))
 }
 
 // injectRuntimeConfig inserts an inline <script> setting window.__deepcove just
 // before </head>, so it runs before SvelteKit's deferred module scripts. If the
 // document has no </head> we serve it unmodified rather than corrupt it.
-func injectRuntimeConfig(html []byte, transport, target string) []byte {
-	rc := map[string]string{"transport": transport}
+func injectRuntimeConfig(html []byte, transport, target string, discover bool) []byte {
+	rc := map[string]any{"transport": transport}
 	if target != "" {
 		rc["target"] = target
+	}
+	if discover {
+		rc["discover"] = true
 	}
 	cfg, _ := json.Marshal(rc)
 	script := []byte("<script>window.__deepcove=" + string(cfg) + ";</script>")

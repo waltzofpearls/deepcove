@@ -12,7 +12,7 @@
 
   // Mobile-only horizontal tab strip for switching between sessions
   // without opening the sidebar drawer. The same data source the
-  // desktop sidebar submenu uses — see $lib/stores/sessions.svelte.
+  // desktop sidebar submenu uses (see $lib/stores/sessions.svelte).
   //
   // Subscribing here is ref-counted; if the dashboard / sidebar are
   // also mounted, all three share one poll. When this component
@@ -73,7 +73,7 @@
 {/if}
 
 <style>
-  /* Hide scrollbar but keep scrollability — horizontal scrollbars
+  /* Hide scrollbar but keep scrollability. Horizontal scrollbars
      eat precious vertical space on mobile, and the edge-fade mask
      already communicates scrollability. Touch swipe and mouse-wheel
      scroll still work without a visible bar. */

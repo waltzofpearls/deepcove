@@ -8,15 +8,28 @@ package tailnet
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
+	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
 	"tailscale.com/client/local"
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
+
+// HostnamePrefix is the discovery marker every deepcove node's MagicDNS hostname carries. Peer
+// enumeration uses it to tell deepcove peers apart from other machines on the tailnet.
+const HostnamePrefix = "deepcove-"
+
+// wasmClientOS is the OS a tailscale-web browser node reports (it's compiled GOOS=js). The in-browser
+// WASM client carries the deepcove- hostname prefix too, but it's a CLIENT that never serves the API,
+// so it must be excluded from hosting-node discovery.
+const wasmClientOS = "js"
 
 type Phase string
 
@@ -43,21 +56,32 @@ type State struct {
 	Owner    *Identity `json:"owner,omitempty"`
 }
 
+// NodeInfo describes one of the user's deepcove nodes on the tailnet (this machine, or a peer).
+type NodeInfo struct {
+	StableNodeID string `json:"stable_node_id"`
+	Hostname     string `json:"hostname"`
+	DNSName      string `json:"dns_name"`
+	OS           string `json:"os,omitempty"`
+	Online       bool   `json:"online"`
+	Self         bool   `json:"self"`
+}
+
 // Reachability is queried live, because it can change while running (e.g. the
 // user enables HTTPS in the admin and we then upgrade to :443).
 type Reachability struct {
 	MagicDNSEnabled bool
 	HTTPSAvailable  bool // MagicDNS on AND HTTPS certs enabled -> ListenTLS works
 	Name            string
+	TailnetName     string // the tailnet this node is on (CurrentTailnet.Name), for "you must be on X"
 	IPs             []string
 }
 
 // Node wraps a tsnet.Server. hostname must already carry the deepcove- discovery
 // prefix; New does not enforce it.
 type Node struct {
-	srv *tsnet.Server
-	lc  *local.Client
-	ctx context.Context
+	srv         *tsnet.Server
+	localClient *local.Client
+	ctx         context.Context
 
 	mu           sync.Mutex
 	state        State
@@ -65,10 +89,29 @@ type Node struct {
 }
 
 func New(stateDir, hostname string) *Node {
+	srv := &tsnet.Server{Dir: stateDir, Hostname: hostname}
+	// Route tsnet's own logging through a filter. Its default Logf is log.Printf, which reprints the
+	// "To start this tsnet server, restart with TS_AUTHKEY set, or go to: <url>" reminder every few
+	// seconds for the whole time a node sits unauthenticated. We already surface the login URL and
+	// connection state through the IPN bus and the UI, so that line is pure noise; drop just it and
+	// pass everything else through. UserLogf gets the same treatment in case the line rides that channel.
+	srv.Logf = filteredLogf
+	srv.UserLogf = filteredLogf
 	return &Node{
-		srv:   &tsnet.Server{Dir: stateDir, Hostname: hostname},
+		srv:   srv,
 		state: State{Phase: PhaseStopped},
 	}
+}
+
+// authReminder is the tsnet log line we suppress (matched as a substring, since the URL varies).
+const authReminder = "To start this tsnet server"
+
+func filteredLogf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, authReminder) {
+		return
+	}
+	log.Print(msg)
 }
 
 // Start brings up the node; with no auth key it triggers interactive login. It returns immediately;
@@ -79,12 +122,12 @@ func (n *Node) Start(ctx context.Context) error {
 	if err := n.srv.Start(); err != nil {
 		return fmt.Errorf("tailnet: start: %w", err)
 	}
-	lc, err := n.srv.LocalClient()
+	localClient, err := n.srv.LocalClient()
 	if err != nil {
 		return fmt.Errorf("tailnet: local client: %w", err)
 	}
-	configureLocalClient(lc)
-	n.lc = lc
+	configureLocalClient(localClient)
+	n.localClient = localClient
 	go n.watch(ctx)
 	return nil
 }
@@ -96,12 +139,12 @@ func (n *Node) Start(ctx context.Context) error {
 // safesocket.LocalTCPPortAndToken, which on macOS forks an external subprocess to read the
 // host-tailscaled same-user proof, so the owner gate would fork once per tailnet request and peg a
 // core under polling. tsnet builds its client with Dial set but forgets OmitAuth.
-func configureLocalClient(lc *local.Client) {
-	lc.OmitAuth = true
+func configureLocalClient(localClient *local.Client) {
+	localClient.OmitAuth = true
 }
 
 func (n *Node) watch(ctx context.Context) {
-	w, err := n.lc.WatchIPNBus(ctx, ipn.NotifyInitialState)
+	w, err := n.localClient.WatchIPNBus(ctx, ipn.NotifyInitialState)
 	if err != nil {
 		return
 	}
@@ -129,20 +172,20 @@ func (n *Node) watch(ctx context.Context) {
 }
 
 func (n *Node) onRunning() {
-	st, err := n.lc.Status(n.ctx)
+	status, err := n.localClient.Status(n.ctx)
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.state.Phase = PhaseRunning
 	n.state.LoginURL = ""
-	if err == nil && st.Self != nil {
-		owner := &Identity{UserID: st.Self.UserID}
-		if up, ok := st.User[st.Self.UserID]; ok {
+	if err == nil && status.Self != nil {
+		owner := &Identity{UserID: status.Self.UserID}
+		if up, ok := status.User[status.Self.UserID]; ok {
 			owner.LoginName = up.LoginName
 			owner.DisplayName = up.DisplayName
 			owner.ProfilePicURL = up.ProfilePicURL
 		}
 		n.state.Owner = owner
-		n.stableNodeID = string(st.Self.ID)
+		n.stableNodeID = string(status.Self.ID)
 	}
 }
 
@@ -170,22 +213,112 @@ func (n *Node) Owner() *Identity {
 // Reachability queries live status: whether :443 is usable, and the host
 // name/IPs to build the URL with.
 func (n *Node) Reachability() Reachability {
-	if n.lc == nil {
+	if n.localClient == nil {
 		return Reachability{}
 	}
-	st, err := n.lc.Status(n.ctx)
-	if err != nil || st.Self == nil {
+	status, err := n.localClient.Status(n.ctx)
+	if err != nil || status.Self == nil {
 		return Reachability{}
 	}
-	r := Reachability{Name: strings.TrimSuffix(st.Self.DNSName, ".")}
-	if st.CurrentTailnet != nil {
-		r.MagicDNSEnabled = st.CurrentTailnet.MagicDNSEnabled
+	r := Reachability{Name: strings.TrimSuffix(status.Self.DNSName, ".")}
+	if status.CurrentTailnet != nil {
+		r.MagicDNSEnabled = status.CurrentTailnet.MagicDNSEnabled
+		r.TailnetName = status.CurrentTailnet.Name
 	}
-	r.HTTPSAvailable = r.MagicDNSEnabled && len(st.CertDomains) > 0
-	for _, ip := range st.TailscaleIPs {
+	r.HTTPSAvailable = r.MagicDNSEnabled && len(status.CertDomains) > 0
+	for _, ip := range status.TailscaleIPs {
 		r.IPs = append(r.IPs, ip.String())
 	}
 	return r
+}
+
+// Nodes returns the user's deepcove nodes: this machine plus every same-user tailnet peer whose
+// hostname carries the deepcove- prefix. Returns nil when status is unavailable (not yet Running).
+func (n *Node) Nodes() []NodeInfo {
+	if n.localClient == nil {
+		return nil
+	}
+	status, err := n.localClient.Status(n.ctx)
+	if err != nil {
+		return nil
+	}
+	return filterDeepcoveNodes(status)
+}
+
+// filterDeepcoveNodes is the pure core of Nodes: from a tailnet status it returns this node (Self,
+// always included and listed first) plus every peer that both belongs to the same Tailscale user and
+// carries the deepcove- hostname prefix. Peers follow Self, sorted by hostname for stable output.
+func filterDeepcoveNodes(status *ipnstate.Status) []NodeInfo {
+	if status == nil || status.Self == nil {
+		return nil
+	}
+	selfUser := status.Self.UserID
+	var peers []NodeInfo
+	for _, peer := range status.Peer {
+		if peer.UserID != selfUser || !strings.HasPrefix(peer.HostName, HostnamePrefix) {
+			continue
+		}
+		if peer.OS == wasmClientOS {
+			continue // the browser WASM client, not a hosting node
+		}
+		peers = append(peers, peerToNodeInfo(peer, false))
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].Hostname < peers[j].Hostname })
+	return append([]NodeInfo{peerToNodeInfo(status.Self, true)}, peers...)
+}
+
+func peerToNodeInfo(peer *ipnstate.PeerStatus, self bool) NodeInfo {
+	return NodeInfo{
+		StableNodeID: string(peer.ID),
+		Hostname:     peer.HostName,
+		DNSName:      strings.TrimSuffix(peer.DNSName, "."),
+		OS:           peer.OS,
+		Online:       self || peer.Online, // self is, by definition, reachable from itself
+		Self:         self,
+	}
+}
+
+// WebNodes returns the user's in-browser web nodes on the tailnet: same-user, deepcove-prefixed peers
+// that report the wasm client OS and are currently online. These host nothing, so they are deliberately
+// kept out of Nodes() (and thus out of session fan-out); they exist only to be listed on the Nodes page.
+func (n *Node) WebNodes() []NodeInfo {
+	if n.localClient == nil {
+		return nil
+	}
+	status, err := n.localClient.Status(n.ctx)
+	if err != nil {
+		return nil
+	}
+	return filterWebNodes(status)
+}
+
+// filterWebNodes is the pure core of WebNodes: same-user, deepcove-prefixed, os==js, ONLINE peers,
+// sorted by hostname. Self is never a web node (a hosting node runs a real OS), so it is excluded.
+// Web nodes are ephemeral and churn, so offline ones are dropped rather than left as stale rows.
+func filterWebNodes(status *ipnstate.Status) []NodeInfo {
+	if status == nil || status.Self == nil {
+		return nil
+	}
+	selfUser := status.Self.UserID
+	var webs []NodeInfo
+	for _, peer := range status.Peer {
+		if peer.UserID != selfUser || !strings.HasPrefix(peer.HostName, HostnamePrefix) {
+			continue
+		}
+		if peer.OS != wasmClientOS || !peer.Online {
+			continue
+		}
+		webs = append(webs, peerToNodeInfo(peer, false))
+	}
+	sort.Slice(webs, func(i, j int) bool { return webs[i].Hostname < webs[j].Hostname })
+	return webs
+}
+
+// HTTPClient returns an http.Client that dials over the tailnet, used to fan out API calls to peer
+// deepcove nodes (e.g. GET http://<peer-magicdns>/api/sessions/local). The peer authenticates the
+// caller via WhoIs; same-user requests pass its owner gate.
+func (n *Node) HTTPClient() *http.Client {
+	return n.srv.HTTPClient()
 }
 
 // Listen returns the plain-HTTP tailnet listener (:80). Tailnet traffic is
@@ -203,7 +336,7 @@ func (n *Node) ListenTLS() (net.Listener, error) {
 
 // WhoIs resolves the Tailscale user behind a request's RemoteAddr (IP or IP:port).
 func (n *Node) WhoIs(ctx context.Context, remoteAddr string) (*Identity, error) {
-	who, err := n.lc.WhoIs(ctx, remoteAddr)
+	who, err := n.localClient.WhoIs(ctx, remoteAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -221,10 +354,10 @@ func (n *Node) WhoIs(ctx context.Context, remoteAddr string) (*Identity, error) 
 // Logout deregisters the node from the tailnet (removing the device + freeing
 // the hostname), so a fresh Start requires a new interactive login.
 func (n *Node) Logout(ctx context.Context) error {
-	if n.lc == nil {
+	if n.localClient == nil {
 		return nil
 	}
-	return n.lc.Logout(ctx)
+	return n.localClient.Logout(ctx)
 }
 
 func (n *Node) Close() error {

@@ -1,5 +1,5 @@
 // Hand-typed mirror of internal/session.Session and adjacent shapes.
-// We deliberately don't generate these from Go — the surface is small
+// We deliberately don't generate these from Go, because the surface is small
 // enough that the cost of a generator (tygo etc) outweighs the drift
 // risk. Keep this file 1:1 with internal/session/session.go JSON tags.
 
@@ -15,7 +15,7 @@ export interface Session {
 	env: Record<string, string> | null;
 	// User mounts currently attached to the container. The scratch
 	// /workspace mount and the agent-home /root volume are NOT
-	// included — those are managed by deepcove, not the user.
+	// included, because those are managed by deepcove, not the user.
 	mounts: MountRequest[] | null;
 	// Empty means "use the agent registry's default".
 	setup_script: string;
@@ -23,6 +23,23 @@ export interface Session {
 	created_at: string; // ISO-8601 timestamp
 	updated_at: string;
 	last_activity_at: string; // added in Phase 4 / migration 0002
+	// Set only on the aggregated list (GET /api/sessions): the node hosting this session.
+	host?: SessionHost;
+}
+
+// SessionHost is the node a session lives on, as tagged by the aggregated list.
+export interface SessionHost {
+	stable_node_id: string;
+	hostname: string;
+	dns_name?: string;
+}
+
+// SessionListResponse is the aggregated GET /api/sessions payload: sessions across all your nodes,
+// this node's identity, and any peers whose deepcove API didn't answer in time.
+export interface SessionListResponse {
+	sessions: Session[];
+	self?: SessionHost;
+	unreachable?: SessionHost[];
 }
 
 export interface CreateSessionRequest {
@@ -33,6 +50,9 @@ export interface CreateSessionRequest {
 	// Empty falls back to agent registry defaults.
 	image?: string;
 	setup_script?: string;
+	// Which node hosts the session (a node's stable_node_id). Empty/this node = create here; another
+	// node's id proxies the create there. Only meaningful with multiple nodes.
+	node_id?: string;
 }
 
 // MountRequest mirrors internal/session.MountRequest. host_path must
@@ -46,7 +66,7 @@ export interface MountRequest {
 	mode?: 'rw' | 'ro';
 }
 
-// FsEntry / FsListResponse mirror internal/session — GET /api/fs/list
+// FsEntry / FsListResponse mirror internal/session. GET /api/fs/list
 // lists subdirectories of a host path (scoped to $HOME) for the host-path
 // autocomplete + Browse modal. parent is "" at the home root.
 export interface FsEntry {
@@ -59,7 +79,7 @@ export interface FsListResponse {
 	entries: FsEntry[];
 }
 
-// ConnectStatus mirrors internal/connect.Status — the Tailscale "Connect" wizard
+// ConnectStatus mirrors internal/connect.Status, the Tailscale "Connect" wizard
 // state. phase: stopped → starting/needs_login (login_url set) → running (url set;
 // http until https_enabled, then tls). user_id is an int64 (display only).
 export interface ConnectOwner {
@@ -68,6 +88,16 @@ export interface ConnectOwner {
 	display_name: string;
 	profile_pic_url?: string;
 }
+
+// NodeInfo is one of the user's deepcove machines from GET /api/nodes (this one or a tailnet peer).
+export interface NodeInfo {
+	stable_node_id: string;
+	hostname: string;
+	dns_name: string;
+	os?: string;
+	online: boolean;
+	self: boolean;
+}
 export interface ConnectStatus {
 	phase: 'stopped' | 'starting' | 'needs_login' | 'running';
 	login_url?: string;
@@ -75,10 +105,14 @@ export interface ConnectStatus {
 	tls: boolean;
 	magicdns_enabled: boolean;
 	https_enabled: boolean;
+	// The tailnet this node is on, so the UI can spell out which tailnet a viewer must be connected to.
+	tailnet_name?: string;
+	name?: string; // this node's MagicDNS name
+	ips?: string[]; // this node's tailnet IPs (v4, v6)
 	owner?: ConnectOwner;
 }
 
-// official_image is empty until a prebuilt deepcove image is published — UI uses that
+// official_image is empty until a prebuilt deepcove image is published. UI uses that
 // to gate the "Official deepcove image" radio with a "coming soon" callout.
 export interface Agent {
 	name: string;
@@ -105,7 +139,7 @@ export interface TmuxWindow {
 }
 
 // CreateTmuxWindowRequest mirrors internal/session.CreateTmuxWindowRequest.
-// Name is optional — server auto-generates ("shell", "shell-2", ...)
+// Name is optional, and the server auto-generates ("shell", "shell-2", ...)
 // when blank.
 export interface CreateTmuxWindowRequest {
 	name?: string;
@@ -120,7 +154,7 @@ export interface ApiError {
 }
 
 // Stable error codes mirrored from internal/session/handlers.go. Keep
-// in sync — renames here without a server change break the mapping.
+// in sync, because renames here without a server change break the mapping.
 export type ApiErrorCode =
 	| 'invalid_input'
 	| 'docker_unreachable'
@@ -128,7 +162,7 @@ export type ApiErrorCode =
 	| 'not_found'
 	| 'conflict';
 
-// GET /api/preflight — environment readiness the dashboard reads on load
+// GET /api/preflight returns environment readiness the dashboard reads on load
 // and the New Session form reads before allowing create. Mirrors
 // internal/session.PreflightResponse.
 export interface Preflight {

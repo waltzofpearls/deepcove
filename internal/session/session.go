@@ -40,6 +40,10 @@ type Session struct {
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
 	LastActivityAt time.Time         `json:"last_activity_at"`
+
+	// Host is the node this session lives on. Set only by ListAggregated (fan-out); never persisted.
+	// nil on the single-session endpoints.
+	Host *NodeRef `json:"host,omitempty"`
 }
 
 // Empty Image / SetupScript / Name fall back to agent registry defaults.
@@ -50,6 +54,10 @@ type CreateRequest struct {
 	Mounts      []MountRequest    `json:"mounts,omitempty"`
 	Image       string            `json:"image,omitempty"`
 	SetupScript string            `json:"setup_script,omitempty"`
+	// NodeID targets which node hosts the session (a node's StableNodeID). Empty, or this node's id,
+	// means create here; another node's id proxies the create to that node over the tailnet. The
+	// session lives on the node that creates it.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // MountRequest is one entry in CreateRequest.Mounts: a host path mapped into the sandbox at a

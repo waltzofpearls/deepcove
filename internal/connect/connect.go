@@ -26,7 +26,10 @@ type Status struct {
 	URL      string            `json:"url,omitempty"` // http or https, name or IP
 	TLS      bool              `json:"tls"`           // currently serving https
 	MagicDNS bool              `json:"magicdns_enabled"`
-	HTTPS    bool              `json:"https_enabled"` // certs available -> upgradable
+	HTTPS    bool              `json:"https_enabled"`           // certs available -> upgradable
+	Tailnet  string            `json:"tailnet_name,omitempty"`  // the tailnet this node is on
+	Name     string            `json:"name,omitempty"`          // this node's MagicDNS name
+	IPs      []string          `json:"ips,omitempty"`           // this node's tailnet IPs (v4, v6)
 	Owner    *tailnet.Identity `json:"owner,omitempty"`
 }
 
@@ -43,9 +46,10 @@ type Manager struct {
 	tsNode    *tailnet.Node
 	serveOnce bool
 
-	serveMu    sync.Mutex // guards serving80 + serving443 (which listeners are up)
-	serving80  bool
-	serving443 bool
+	serveMu       sync.Mutex // guards serving80 + serving443 + enabledMarked
+	serving80     bool
+	serving443    bool
+	enabledMarked bool // the auto-start marker has been written for the current connection
 
 	ownerMu        sync.RWMutex      // guards persistedOwner + ownerSaved (the node owner)
 	persistedOwner *tailnet.Identity // node owner from the DuckDB node table
@@ -113,7 +117,9 @@ func (m *Manager) Connect() (Status, error) {
 			return Status{}, err
 		}
 		m.tsNode = tsNode
-		_ = os.WriteFile(m.enabledFile, []byte("1\n"), 0o600)
+		// NOTE: the auto-start marker is deliberately NOT written here. We write it only once the node
+		// actually reaches Running (see ensureServing), so an abandoned sign-in never leaves a marker
+		// that would auto-start a half-connected node, reprinting its login URL forever, on the next boot.
 	}
 	if !m.serveOnce {
 		m.serveOnce = true
@@ -151,9 +157,10 @@ func (m *Manager) teardown(mode teardownMode) error {
 	m.serveMu.Lock()
 	m.serving80 = false
 	m.serving443 = false
+	m.enabledMarked = false
 	m.serveMu.Unlock()
 
-	_ = os.Remove(m.enabledFile)
+	m.clearEnabled()
 	if tsNode != nil {
 		if mode == wipeState {
 			_ = tsNode.Logout(m.ctx)
@@ -183,6 +190,9 @@ func (m *Manager) Status() Status {
 	out.MagicDNS = r.MagicDNSEnabled
 	out.HTTPS = r.HTTPSAvailable
 	out.TLS = r.HTTPSAvailable && m.serving(true)
+	out.Tailnet = r.TailnetName
+	out.Name = r.Name
+	out.IPs = r.IPs
 	host := r.Name
 	if !r.MagicDNSEnabled && len(r.IPs) > 0 {
 		host = r.IPs[0]
@@ -197,11 +207,29 @@ func (m *Manager) Status() Status {
 	return out
 }
 
-// AutoStartIfEnabled re-connects on boot when the user previously connected.
+// markEnabled records that this node has successfully connected, so it auto-starts on the next boot.
+func (m *Manager) markEnabled() error { return os.WriteFile(m.enabledFile, []byte("1\n"), 0o600) }
+
+// clearEnabled removes the auto-start marker (on disconnect/reset, or when a stale marker is healed).
+func (m *Manager) clearEnabled() { _ = os.Remove(m.enabledFile) }
+
+// isEnabled reports whether the auto-start marker is present.
+func (m *Manager) isEnabled() bool {
+	_, err := os.Stat(m.enabledFile)
+	return err == nil
+}
+
+// AutoStartIfEnabled re-connects on boot when the user previously connected. The marker is only written
+// once a connection actually reached Running (see ensureServing), so it's a reliable "was connected"
+// signal: a never-finished sign-in leaves no marker. We deliberately do NOT tear a node back down if it
+// comes up needing login, because that would also kill a node the user is in the middle of signing into.
+// A node that auto-starts but can't reconnect (e.g. removed from the admin) just sits at needs_login,
+// which is harmless and quiet (its login reminder is filtered); the user can sign in or forget it.
 func (m *Manager) AutoStartIfEnabled() {
-	if _, err := os.Stat(m.enabledFile); err == nil {
-		_, _ = m.Connect()
+	if !m.isEnabled() {
+		return
 	}
+	_, _ = m.Connect()
 }
 
 // serveLoop brings up :80 once Running and upgrades to :443 the moment HTTPS becomes available,
@@ -232,6 +260,13 @@ func (m *Manager) ensureServing() {
 	m.persistOwnerOnce(tsNode)
 	m.serveMu.Lock()
 	defer m.serveMu.Unlock()
+	if !m.enabledMarked {
+		// Now that we've actually reached Running, persist the auto-start marker (write-once per
+		// connection); this is the only place it's written.
+		if err := m.markEnabled(); err == nil {
+			m.enabledMarked = true
+		}
+	}
 	if !m.serving80 {
 		if ln, err := tsNode.Listen(); err == nil {
 			m.serving80 = true
@@ -278,6 +313,44 @@ func (m *Manager) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connect/status", m.handleStatus)
 	mux.HandleFunc("POST /api/connect/disconnect", m.handleDisconnect)
 	mux.HandleFunc("POST /api/connect/reset", m.handleReset)
+	mux.HandleFunc("GET /api/nodes", m.handleNodes)
+	mux.HandleFunc("GET /api/nodes/web", m.handleWebNodes)
+}
+
+// Nodes lists the user's deepcove nodes: this machine plus any same-user tailnet peers (discovered
+// via the tsnet node). On rung 1 (no tailnet) or before the node is Running, it returns just this
+// machine so the UI always has at least the local node to show.
+func (m *Manager) Nodes() []tailnet.NodeInfo {
+	m.nodeMu.Lock()
+	tsNode := m.tsNode
+	m.nodeMu.Unlock()
+	if tsNode != nil {
+		if nodes := tsNode.Nodes(); len(nodes) > 0 {
+			return nodes
+		}
+	}
+	host, _ := os.Hostname()
+	return []tailnet.NodeInfo{{Hostname: host, Self: true, Online: true}}
+}
+
+func (m *Manager) handleNodes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, m.Nodes())
+}
+
+// WebNodes lists the user's in-browser web nodes on the tailnet (for the Nodes page). Empty until the
+// node is Running. Kept separate from Nodes() so web nodes never enter session fan-out.
+func (m *Manager) WebNodes() []tailnet.NodeInfo {
+	m.nodeMu.Lock()
+	tsNode := m.tsNode
+	m.nodeMu.Unlock()
+	if tsNode == nil {
+		return nil
+	}
+	return tsNode.WebNodes()
+}
+
+func (m *Manager) handleWebNodes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, m.WebNodes())
 }
 
 func (m *Manager) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +383,8 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // defaultHostname builds the node's MagicDNS hostname with the deepcove-
-// discovery prefix: "deepcove-<sanitized OS hostname>".
+// discovery prefix: "deepcove-<sanitized OS hostname>". The prefix is what peer
+// discovery (tailnet.Nodes) matches on.
 func defaultHostname() string {
 	h, _ := os.Hostname()
 	var b strings.Builder
@@ -326,5 +400,5 @@ func defaultHostname() string {
 	if name == "" {
 		name = "node"
 	}
-	return "deepcove-" + name
+	return tailnet.HostnamePrefix + name
 }

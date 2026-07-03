@@ -1,0 +1,212 @@
+<script lang="ts">
+  import { api } from '$lib/api/client';
+  import { discoveryRequired } from '$lib/api/transport';
+  import { tailnetAuth, webNodeInfo, wasmHostname, type WebNodeInfo } from '$lib/api/wasm';
+  import { machineName } from '$lib/util/tailnet';
+  import { discovery } from '$lib/stores/discovery.svelte';
+  import TailnetConnect from '$lib/components/TailnetConnect.svelte';
+  import type { ConnectStatus, NodeInfo } from '$lib/api/types';
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import Server from '@lucide/svelte/icons/server';
+  import Globe from '@lucide/svelte/icons/globe';
+  import Network from '@lucide/svelte/icons/network';
+  import Loader2 from '@lucide/svelte/icons/loader-2';
+
+  // Your deepcove machines: this one plus same-user tailnet peers. Connected mode reads them from a
+  // server (GET /api/nodes); dashboard mode reads the in-browser node's own discovery (status()).
+  let fetched = $state<NodeInfo[] | null>(null);
+  let fetchedWeb = $state<NodeInfo[]>([]);
+  let connect = $state<ConnectStatus | null>(null);
+  let error = $state<string | null>(null);
+
+  // In direct (connected/local) mode, a node only has peers once it's joined the tailnet. So we first
+  // check connect status: not running → it's a lone rung-1 node, and we show the connect CTA instead of
+  // a lonely "this machine" row. Dashboard (discover) mode rides the in-browser node, which is its own
+  // tailnet connection, so it skips this and always lists discovered nodes.
+  async function loadDirect(signal?: AbortSignal) {
+    try {
+      const cs = await api.connectStatus(signal);
+      connect = cs;
+      if (cs.phase === 'running') {
+        fetched = await api.nodes(signal);
+        fetchedWeb = await api.webNodes(signal);
+      }
+      error = null;
+    } catch (e) {
+      if (!signal?.aborted) error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  $effect(() => {
+    if (discoveryRequired()) return; // discover mode reads the discovery store reactively below
+    const ac = new AbortController();
+    void loadDirect(ac.signal);
+    return () => ac.abort();
+  });
+
+  const connected = $derived(discoveryRequired() || connect?.phase === 'running');
+  const nodes = $derived(discoveryRequired() ? discovery.nodes : fetched);
+
+  // Web node = this browser's own in-browser Tailscale device. Shown as a distinct kind from the
+  // session nodes (your machines). Live details load once it's running (signed in).
+  const webRunning = $derived($tailnetAuth.phase === 'running');
+  let webInfo = $state<WebNodeInfo | null>(null);
+  $effect(() => {
+    if (webRunning) {
+      webNodeInfo()
+        .then((i) => (webInfo = i))
+        .catch(() => {});
+    } else {
+      webInfo = null;
+    }
+  });
+
+  // Other browsers' web nodes: online in-browser peers from the server (connected mode) or the
+  // in-browser netmap (dashboard mode), minus this browser, which we show from its own richer webInfo.
+  const webPeers = $derived(discoveryRequired() ? discovery.webNodes : fetchedWeb);
+  const otherWebNodes = $derived(webPeers.filter((n) => n.dns_name !== webInfo?.dnsName));
+</script>
+
+<div class="mx-auto max-w-2xl p-6">
+  <div class="mb-6 flex items-center gap-3">
+    <a
+      href="/"
+      class="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+      aria-label="Back to dashboard"
+    >
+      <ArrowLeft class="size-4" />
+    </a>
+    <h1 class="text-lg font-semibold">Nodes</h1>
+  </div>
+
+  {#if error}
+    <div class="text-sm text-destructive">{error}</div>
+  {:else if !connected && connect === null}
+    <!-- Still checking whether this node is on a tailnet. -->
+    <div class="flex items-center gap-2 text-sm text-muted-foreground">
+      <Loader2 class="size-4 animate-spin" /> Loading…
+    </div>
+  {:else if !connected}
+    <!-- Rung 1: a lone local node. Surface the connect flow right here, where you'd look for your
+         other machines, instead of leaving it buried in Settings. -->
+    <div class="rounded-xl border border-border bg-card p-6">
+      <div class="mb-4 flex items-start gap-3">
+        <div
+          class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground"
+        >
+          <Network class="size-5" />
+        </div>
+        <div class="space-y-1">
+          <h2 class="text-sm font-semibold">It's just this machine right now</h2>
+          <p class="text-sm text-muted-foreground">
+            deepcove is running locally. Connect to your tailnet to bring your other machines into one
+            cluster and see them all here.
+          </p>
+        </div>
+      </div>
+      <TailnetConnect onconnected={() => void loadDirect()} />
+    </div>
+  {:else if nodes === null}
+    <div class="flex items-center gap-2 text-sm text-muted-foreground">
+      <Loader2 class="size-4 animate-spin" /> Loading…
+    </div>
+  {:else}
+    <!-- Session nodes: your machines running deepcove (they host the containers/sessions). -->
+    <section class="mb-6">
+      <h2 class="mb-1 text-sm font-semibold">Session nodes</h2>
+      <p class="mb-3 text-xs text-muted-foreground">
+        Your machines running deepcove. Sessions live on the machine that created them.
+      </p>
+      <ul class="space-y-2">
+        {#each nodes as node (node.stable_node_id || node.hostname)}
+          <li class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
+            <Server class="size-5 shrink-0 text-muted-foreground" />
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="truncate font-medium">{node.hostname}</span>
+                {#if node.self}
+                  <span class="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
+                    >this machine</span
+                  >
+                {/if}
+              </div>
+              {#if node.dns_name}
+                <div class="truncate font-mono text-xs text-muted-foreground">{node.dns_name}</div>
+              {/if}
+            </div>
+            <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+              <span
+                class="size-2 rounded-full"
+                class:bg-green-500={node.online}
+                class:bg-muted-foreground={!node.online}
+                aria-hidden="true"
+              ></span>
+              {node.online ? 'online' : 'offline'}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    </section>
+
+    <!-- Web nodes: your browser as its own tailnet device, plus any other browsers you've signed in.
+         Online only (they're ephemeral). This browser is marked and shown from its own richer info;
+         the rest come from the tailnet (server in connected mode, in-browser netmap in dashboard). -->
+    <section>
+      <h2 class="mb-1 text-sm font-semibold">Web nodes</h2>
+      <p class="mb-3 text-xs text-muted-foreground">
+        Your browser, as its own device on your tailnet. This is how it reaches sessions on other
+        machines.
+      </p>
+      {#if webRunning || otherWebNodes.length > 0}
+        <ul class="space-y-2">
+          {#if webRunning}
+            <li class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
+              <Globe class="size-5 shrink-0 text-muted-foreground" />
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="truncate font-medium">{webInfo?.name ?? wasmHostname()}</span>
+                  <span class="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
+                    >this browser</span
+                  >
+                </div>
+                {#if webInfo?.ipv4}
+                  <div class="truncate font-mono text-xs text-muted-foreground">{webInfo.ipv4}</div>
+                {/if}
+              </div>
+              <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <span class="size-2 rounded-full bg-green-500" aria-hidden="true"></span>
+                online
+              </div>
+            </li>
+          {/if}
+          {#each otherWebNodes as node (node.stable_node_id || node.dns_name)}
+            <li class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
+              <Globe class="size-5 shrink-0 text-muted-foreground" />
+              <div class="min-w-0 flex-1">
+                <span class="truncate font-medium">{machineName(node.dns_name)}</span>
+                {#if node.dns_name}
+                  <div class="truncate font-mono text-xs text-muted-foreground">{node.dns_name}</div>
+                {/if}
+              </div>
+              <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <span class="size-2 rounded-full bg-green-500" aria-hidden="true"></span>
+                online
+              </div>
+            </li>
+          {/each}
+        </ul>
+        {#if !webRunning}
+          <p class="mt-2 text-xs text-muted-foreground">
+            This browser isn't on your tailnet yet. Use the <span class="font-medium">Web node</span>
+            chip in the top bar to sign in.
+          </p>
+        {/if}
+      {:else}
+        <p class="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+          This browser isn't on your tailnet yet. Use the <span class="font-medium">Web node</span> chip
+          in the top bar to sign in.
+        </p>
+      {/if}
+    </section>
+  {/if}
+</div>

@@ -8,19 +8,19 @@
 // addon serializes the buffer to HTML directly. xterm.js officially
 // supports this path (the typings doc recommends "before Terminal.open
 // is called" specifically). When _themeService is absent (unmounted),
-// the addon falls back to DEFAULT_ANSI_COLORS — the Tango palette,
+// the addon falls back to DEFAULT_ANSI_COLORS, the Tango palette,
 // which is also what xterm.js's full-view renders with our default
 // theme. So colors match by default; no palette plumbing needed.
 //
 // fontSize / fontFamily are set on the Terminal so the serializer
 // emits them in the outer wrapper div's inline style. That way the
 // CSS in the consumer component never has to fight scoped-selector
-// specificity to override them — what xterm.js writes is what renders.
+// specificity to override them. What xterm.js writes is what renders.
 //
 // Each convert() call constructs and disposes a fresh Terminal.
 // Reuse-with-resize was theoretically cheaper but xterm.js's resize
 // reflows the buffer, and reset doesn't always wipe state cleanly
-// after a resize — at terminal scale this was the suspect during
+// after a resize. At terminal scale this was the suspect during
 // the convertEol bug-hunt. Per-call construction is microseconds,
 // and rules out a whole class of state-carryover bugs.
 
@@ -30,8 +30,8 @@ type ConvertOpts = {
 };
 
 // Font sizes used by the two consumers. Exported so consumers don't
-// hard-code literals — keeps card vs full-view scale visible in one
-// place if anyone wants to tune them.
+// hard-code literals, which keeps card vs full-view scale visible in
+// one place if anyone wants to tune them.
 export const CARD_FONT_SIZE = 10;
 export const FULLVIEW_FONT_SIZE = 13;
 
@@ -60,7 +60,7 @@ export async function createConverter(): Promise<Converter> {
 
       // Pull current theme bg/fg from CSS vars so light/dark switches
       // take effect on the next poll. The ANSI palette stays the
-      // xterm.js default (Tango) — matching the full view.
+      // xterm.js default (Tango), matching the full view.
       const style = getComputedStyle(document.documentElement);
       const v = (n: string, fb: string) => style.getPropertyValue(n).trim() || fb;
       const theme = {
@@ -77,7 +77,7 @@ export async function createConverter(): Promise<Converter> {
         fontFamily,
         // capture-pane outputs bare \n between rows. xterm.js's
         // default LF behavior moves the cursor DOWN but keeps the
-        // column — so each subsequent row would start at the column
+        // column, so each subsequent row would start at the column
         // where the previous row's content ended, producing a
         // right-shifted, fragmented layout. convertEol makes \n
         // behave like \r\n (cursor returns to col 0).
@@ -103,7 +103,7 @@ export async function createConverter(): Promise<Converter> {
       }
     },
     dispose() {
-      // No shared state to release — each convert() owns its own
+      // No shared state to release. Each convert() owns its own
       // Terminal and disposes it on return. Kept for API symmetry
       // so callers can `converter?.dispose()` unconditionally.
     },
@@ -117,7 +117,7 @@ export async function createConverter(): Promise<Converter> {
 //
 // Cols: longest printable line, after stripping ANSI escapes. Going
 // SMALLER than content would cause xterm.js to wrap inside its own
-// buffer (one source row split into multiple buffer rows) — exactly
+// buffer (one source row split into multiple buffer rows), exactly
 // the bug we're avoiding.
 function measureAnsi(ansi: string): { cols: number; rows: number } {
   const stripped = ansi

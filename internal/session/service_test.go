@@ -704,7 +704,7 @@ func TestService_EditMounts(t *testing.T) {
 		wantMountsLen   int
 	}{
 		{
-			name: "happy path: replaces mounts on a running session — stop, destroy, create, start",
+			name: "happy path: replaces mounts on a running session (stop, destroy, create, start)",
 			setup: func(t *testing.T, svc *Service) string {
 				return mustCreate(t, svc, "claude").ID
 			},
@@ -804,7 +804,7 @@ func TestValidateMountRequests(t *testing.T) {
 		wantTargets      []string // per-index Target assertion (cleaned); nil = skip
 	}{
 		{
-			name:    "nil input is fine — sessions without user mounts",
+			name:    "nil input is fine, sessions without user mounts",
 			reqs:    nil,
 			wantLen: 0,
 		},

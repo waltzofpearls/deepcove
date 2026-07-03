@@ -82,7 +82,7 @@ func TestHandleAttach_PreUpgradeValidation(t *testing.T) {
 	tests := []struct {
 		name       string
 		setupID    func(t *testing.T, svc *Service) string
-		query      string // appended after `?` — empty string means no query
+		query      string // appended after `?`. Empty string means no query
 		wantStatus int
 	}{
 		{

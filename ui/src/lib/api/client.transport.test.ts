@@ -8,13 +8,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchMock = vi.fn();
 const openSocketMock = vi.fn();
 
-vi.mock('./transport', () => ({
-	transport: {
+vi.mock('./transport', () => {
+	const mockTransport = {
 		mode: 'direct',
 		fetch: (...args: unknown[]) => fetchMock(...args),
 		openSocket: (...args: unknown[]) => openSocketMock(...args),
-	},
-}));
+	};
+	return {
+		transport: mockTransport,
+		// Session-scoped calls route through transportForHost; with no host it resolves to the boot
+		// transport, so the mock returns the same object the rest of these assertions watch.
+		transportForHost: () => mockTransport,
+	};
+});
 
 import { api } from './client';
 

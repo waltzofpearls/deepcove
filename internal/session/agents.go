@@ -46,7 +46,7 @@ while true; do
   claude
   ec=$?
   echo ""
-  echo "claude exited (code $ec); restarting in 3s — switch to SSH mode for a shell"
+  echo "claude exited (code $ec); restarting in 3s. Switch to SSH mode for a shell"
   sleep 3
 done`,
 		Env: map[string]string{

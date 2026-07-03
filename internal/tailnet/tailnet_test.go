@@ -1,6 +1,9 @@
 package tailnet
 
 import (
+	"bytes"
+	"log"
+	"os"
 	"testing"
 
 	"tailscale.com/client/local"
@@ -18,5 +21,46 @@ func TestConfigureLocalClientOmitsAuth(t *testing.T) {
 	configureLocalClient(lc)
 	if !lc.OmitAuth {
 		t.Error("configureLocalClient must set OmitAuth=true to avoid per-request subprocess forks on macOS")
+	}
+}
+
+// TestFilteredLogf pins that tsnet's repetitive auth reminder is dropped while every other log line
+// still passes through. The reminder spams every few seconds for the whole time a node is unauthed.
+func TestFilteredLogf(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
+
+	cases := []struct {
+		name     string
+		format   string
+		args     []any
+		wantDrop bool
+	}{
+		{
+			name:     "drops auth reminder",
+			format:   "To start this tsnet server, restart with TS_AUTHKEY set, or go to: %s",
+			args:     []any{"https://login.tailscale.com/a/4b6130301d70c"},
+			wantDrop: true,
+		},
+		{name: "keeps status line", format: "tsnet running: %s", args: []any{"deepcove-host"}, wantDrop: false},
+		{name: "keeps unrelated line", format: "some diagnostic", wantDrop: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf.Reset()
+			filteredLogf(tc.format, tc.args...)
+			got := buf.String()
+			if tc.wantDrop && got != "" {
+				t.Errorf("expected line dropped, got %q", got)
+			}
+			if !tc.wantDrop && got == "" {
+				t.Error("expected line to pass through, got nothing")
+			}
+		})
 	}
 }

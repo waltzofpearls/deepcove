@@ -18,7 +18,7 @@
   // Split is hidden on mobile via Tailwind's md: prefix (handled
   // inline on the button below). The parent page also forces the
   // effective mode to 'agent' if a ?mode=split URL is opened on a
-  // narrow viewport — the visual hiding here is just so the button
+  // narrow viewport. The visual hiding here is just so the button
   // can't be tapped on a phone.
   type Opt = { value: SessionMode; label: string; mobileHidden?: boolean };
   const options: Opt[] = [

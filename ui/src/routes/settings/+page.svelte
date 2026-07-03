@@ -6,7 +6,7 @@
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 
   // Refresh-interval choices for the preview/session pollers. Kept to a
-  // few sensible steps rather than a free number field — fewer knobs.
+  // few sensible steps rather than a free number field, for fewer knobs.
   const intervals = [
     { ms: 2000, label: '2 seconds' },
     { ms: 5000, label: '5 seconds' },
@@ -117,7 +117,7 @@
       <h2 class="text-sm font-medium text-muted-foreground">About</h2>
       <div class="flex items-center justify-between gap-4 text-sm">
         <span class="font-medium">deepcove</span>
-        <span class="font-mono text-xs text-muted-foreground">{version || '—'}</span>
+        <span class="font-mono text-xs text-muted-foreground">{version || 'unknown'}</span>
       </div>
     </section>
   </div>

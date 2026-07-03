@@ -3,6 +3,7 @@
   import { api } from '$lib/api/client';
   import { preferences } from '$lib/stores/preferences.svelte';
   import { sessions } from '$lib/stores/sessions.svelte';
+  import { tailnetAuth } from '$lib/api/wasm';
   import { usePolling } from '$lib/polling';
   import { ageOf, shortId } from '$lib/format';
   import { createConverter, CARD_FONT_SIZE } from './ansiToHtml';
@@ -35,6 +36,7 @@
   import { Button } from '$lib/components/ui/button';
   import Pause from '@lucide/svelte/icons/pause';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
+  import Globe from '@lucide/svelte/icons/globe';
   import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
   import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
@@ -47,17 +49,28 @@
   // match without any palette plumbing on our side.
   //
   // The server caches the last successful capture per session, so
-  // stopped sessions still return their most recent snapshot — we
+  // stopped sessions still return their most recent snapshot. We
   // just dim it and overlay a status icon instead of going black.
   let { session }: { session: Session } = $props();
 
+  // host routes this card's per-session calls (preview poll, quick actions) to the node owning the
+  // session: undefined for a local session, the owning node for a remote one, reached over WASM.
+  const host = $derived(sessions.hostFor(session));
+
+  // A remote session's preview is fetched from its owning node over the in-browser web node. Track
+  // whether that's even possible so the card can show a helpful placeholder rather than a perpetual
+  // "waiting…", and so we don't force the wasm client to load just to poll a thumbnail.
+  const isRemote = $derived(sessions.isRemote(session));
+  const webReady = $derived($tailnetAuth.phase === 'running');
+
   let preview = $state<SessionPreview | null>(null);
+  let previewError = $state(false);
   let html = $state('');
 
   // One converter per card; disposed on unmount. We avoid a module
   // singleton so concurrent cards don't race on a shared Terminal.
   // Declared as $state so the "convert when preview changes" effect
-  // re-fires the moment the dynamic-import finishes — otherwise a
+  // re-fires the moment the dynamic-import finishes. Otherwise a
   // preview that arrives before the converter resolves would leave
   // the card blank until the next poll tick.
   let converter = $state<Awaited<ReturnType<typeof createConverter>> | undefined>(undefined);
@@ -81,16 +94,22 @@
   // Poll the preview endpoint at the configured cadence. AbortController is
   // required so an in-flight fetch from a briefly-mounted card (e.g. the
   // dashboard render between sessions.add(created) and goto(/sessions/<id>))
-  // doesn't leak its connection slot — see client.ts for the pool-exhaustion
+  // doesn't leak its connection slot. See client.ts for the pool-exhaustion
   // story.
   $effect(() => {
+    // A remote preview routes over the in-browser web node; polling before it's signed in would force
+    // the wasm client to load just for a card thumbnail. Skip, and let the placeholder explain why.
+    if (isRemote && !webReady) return;
     const ac = new AbortController();
     const stop = usePolling(
       async () => {
         try {
-          preview = await api.sessionPreview(session.id, ac.signal);
-        } catch {
-          /* aborts and transient failures both land here; next tick retries */
+          preview = await api.sessionPreview(session.id, host, ac.signal);
+          previewError = false;
+        } catch (e) {
+          // Aborts are normal on unmount. A real failure on a remote session means its node is
+          // unreachable, which the placeholder surfaces; local transient blips just retry next tick.
+          if ((e as Error)?.name !== 'AbortError') previewError = true;
         }
       },
       () => preferences.pollIntervalMs
@@ -129,7 +148,7 @@
   async function doStop() {
     sessions.patch(session.id, { status: 'stopped' });
     try {
-      await api.stopSession(session.id);
+      await api.stopSession(session.id, host);
     } catch {
       /* next poll reconciles the true status */
     }
@@ -138,7 +157,7 @@
   async function doStart() {
     sessions.patch(session.id, { status: 'running' });
     try {
-      await api.startSession(session.id);
+      await api.startSession(session.id, host);
     } catch {
       /* next poll reconciles */
     }
@@ -147,7 +166,7 @@
   async function doDestroy() {
     sessions.remove(session.id);
     try {
-      await api.destroySession(session.id);
+      await api.destroySession(session.id, host);
     } catch {
       /* next poll re-adds it if the destroy didn't take */
     }
@@ -170,7 +189,7 @@
       return;
     }
     try {
-      const updated = await api.renameSession(session.id, name);
+      const updated = await api.renameSession(session.id, name, host);
       sessions.patch(updated.id, { name: updated.name });
       renameOpen = false;
     } catch (e) {
@@ -204,11 +223,27 @@
     {/if}
 
     {#if session.status === 'running' && !html}
-      <div
-        class="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground"
-      >
-        waiting for first snapshot…
-      </div>
+      {#if isRemote && !webReady}
+        <div
+          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-3 text-center"
+        >
+          <Globe class="size-8 text-muted-foreground" />
+          <span class="text-xs text-muted-foreground">Sign in the web node to preview</span>
+        </div>
+      {:else if isRemote && previewError}
+        <div
+          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-3 text-center"
+        >
+          <CircleAlert class="size-8 text-muted-foreground" />
+          <span class="text-xs text-muted-foreground">Preview unavailable</span>
+        </div>
+      {:else}
+        <div
+          class="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground"
+        >
+          waiting for first snapshot…
+        </div>
+      {/if}
     {:else if session.status !== 'running'}
       <div
         class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5"
@@ -231,7 +266,8 @@
       <div class="min-w-0">
         <div class="truncate font-mono text-sm font-medium">{session.name}</div>
         <div class="truncate text-xs text-muted-foreground">
-          {session.agent} · {shortId(session.id)}
+          {session.agent} · {shortId(session.id)}{#if sessions.isRemote(session)} ·
+            <span class="text-primary">{session.host?.hostname}</span>{/if}
         </div>
       </div>
     </div>
@@ -328,7 +364,7 @@
          </div>
        </pre>
      Each row is padded with literal spaces out to the Terminal's col
-     width. white-space:pre MUST apply at every level — if it
+     width. white-space:pre MUST apply at every level. If it
      doesn't, the padding wraps and the card fills with gaps. Set
      globally so {@html}-injected DOM matches regardless of Svelte
      scoping. Font size/family come from the Terminal options so the

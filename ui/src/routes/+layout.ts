@@ -1,5 +1,5 @@
 // Disable SSR and prerendering everywhere. The deepcove UI is an
-// embedded SPA served by the Go binary — there is no Node server to
+// embedded SPA served by the Go binary, and there is no Node server to
 // SSR from. Worse: code that runs in the browser only (the
 // tailscale-web WASM client, anything that touches window /
 // localStorage) will crash during prerender if SSR isn't off here.

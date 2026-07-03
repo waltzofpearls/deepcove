@@ -3,8 +3,8 @@
 // poller avoids duplicate pings. Ref-counted + lazy like the sessions
 // store: starts on first subscriber, stops when the last leaves.
 //
-// Cadence is adaptive — poll fast while Docker is unreachable so the
-// banner clears promptly once it's back, slow when healthy.
+// Cadence is adaptive. We poll fast while Docker is unreachable so the
+// banner clears promptly once it's back, and slow when healthy.
 
 import { api } from '$lib/api/client';
 import type { DockerStatus } from '$lib/api/types';
@@ -24,12 +24,12 @@ let abortCtrl: AbortController | undefined;
 
 async function check(signal?: AbortSignal): Promise<void> {
 	try {
-		const p = await api.preflight(signal);
+		const p = await api.preflight(undefined, signal);
 		docker = p.docker;
 		loaded = true;
 	} catch {
 		// A failed preflight fetch itself (the deepcove server, not
-		// Docker) — keep the last known state; the banner reacts only to
+		// Docker) keeps the last known state. The banner reacts only to
 		// docker.reachable, and the sessions store surfaces server-down.
 		if (signal?.aborted) return;
 	}
@@ -75,7 +75,7 @@ export const preflight = {
 		};
 	},
 
-	// refresh forces an immediate re-check — used by the banner's Retry
+	// refresh forces an immediate re-check, used by the banner's Retry
 	// button so the user gets instant feedback rather than waiting for
 	// the next poll tick.
 	refresh(): Promise<void> {

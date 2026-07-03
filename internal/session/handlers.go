@@ -18,6 +18,7 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/images/pull", s.handlePullImage)
 	mux.HandleFunc("POST /api/sessions", s.handleCreate)
 	mux.HandleFunc("GET /api/sessions", s.handleList)
+	mux.HandleFunc("GET /api/sessions/local", s.handleListLocal)
 	mux.HandleFunc("GET /api/sessions/suggest-name", s.handleSuggestName)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleRename)
@@ -66,8 +67,12 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	sess, err := s.Create(r.Context(), req)
+	sess, err := s.CreateRouted(r.Context(), req)
 	if err != nil {
+		if errors.Is(err, ErrNodeNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
 		// Sandbox sentinels get precise status + a stable code the SPA
 		// can act on (Docker down → 503, image absent → 422). Mount and
 		// other user-input failures fall through to 400. See
@@ -78,7 +83,21 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, sess)
 }
 
+// handleList serves GET /api/sessions: the aggregated view across all the user's nodes (this node's
+// sessions plus fanned-out peers, each tagged with its host). On a single node it's just this node.
 func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
+	filter := ListFilter{IncludeAll: r.URL.Query().Get("all") == "true"}
+	resp, err := s.ListAggregated(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleListLocal serves GET /api/sessions/local: only this node's sessions, as a bare array. Used
+// by peers during fan-out and by the local CLI (a single-machine tool).
+func (s *Service) handleListLocal(w http.ResponseWriter, r *http.Request) {
 	filter := ListFilter{IncludeAll: r.URL.Query().Get("all") == "true"}
 	out, err := s.List(r.Context(), filter)
 	if err != nil {

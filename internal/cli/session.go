@@ -40,7 +40,7 @@ func cmdSession(ctx context.Context, args []string) error {
 
 func sessionUsage(w *os.File) {
 	lines := []string{
-		"deepcove session — create, list, and attach to coding-agent sessions",
+		"deepcove session: create, list, and attach to coding-agent sessions",
 		"",
 		"Usage:",
 		"  deepcove session <agent> [--name <name>] [flags]   create + attach",

@@ -1,14 +1,20 @@
 <script lang="ts">
   import { getContext } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { transport } from '$lib/api/transport';
+  import { isSetupDone, markSetupDone, isConnectSkipped, setConnectSkipped } from '$lib/setup';
   import { preferences } from '$lib/stores/preferences.svelte';
   import { sessions } from '$lib/stores/sessions.svelte';
   import { preflight } from '$lib/stores/preflight.svelte';
+  import { connect } from '$lib/stores/connect.svelte';
   import { NEW_SESSION_CTX } from '$lib/context';
   import SessionCard from '$lib/components/session/SessionCard.svelte';
   import SessionListView from '$lib/components/session/SessionListView.svelte';
   import Boxes from '@lucide/svelte/icons/boxes';
   import Plus from '@lucide/svelte/icons/plus';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
+  import Info from '@lucide/svelte/icons/info';
+  import X from '@lucide/svelte/icons/x';
   import Search from '@lucide/svelte/icons/search';
 
   // Subscribe to the shared sessions store. First subscriber kicks
@@ -18,7 +24,37 @@
 
   const openNewSession = getContext<() => void>(NEW_SESSION_CTX);
 
-  // Client-side filtering — the store already holds every session
+  // First-run: a fresh session node (direct mode, no sessions, setup not done) goes to the setup
+  // wizard. An existing install (has sessions) is marked done so it never nags. Dashboard (wasm) mode
+  // skips this, since its onboarding is the sign-in gate, not the wizard.
+  $effect(() => {
+    if (transport.mode !== 'direct' || sessions.loading) return;
+    if (sessions.list.length > 0) {
+      markSetupDone();
+    } else if (!isSetupDone()) {
+      void goto('/setup');
+    }
+  });
+
+  // Skipped-step nudge: if the wizard was finished without connecting the session node, suggest
+  // Tailscale for remote/multi-machine access. Auto-clears once connected; dismissable.
+  $effect(() => connect.subscribe());
+  let connectSkipped = $state(isConnectSkipped());
+  $effect(() => {
+    if (connect.connected && connectSkipped) {
+      setConnectSkipped(false);
+      connectSkipped = false;
+    }
+  });
+  const showConnectNudge = $derived(
+    transport.mode === 'direct' && connectSkipped && !connect.connected
+  );
+  function dismissNudge() {
+    setConnectSkipped(false);
+    connectSkipped = false;
+  }
+
+  // Client-side filtering. The store already holds every session
   // (it lists with all=true), so search/status filtering is a cheap
   // local derive, no extra requests.
   let query = $state('');
@@ -34,6 +70,32 @@
   });
 </script>
 
+{#if showConnectNudge}
+  <!-- Informational only: deepcove works fine local, this just surfaces the optional Tailscale upside. -->
+  <div
+    class="flex items-center gap-3 border-b border-blue-300 bg-blue-50 px-4 py-2.5 text-sm text-blue-900 dark:border-blue-400/25 dark:bg-blue-500/10 dark:text-blue-100"
+    role="status"
+  >
+    <Info class="size-4 shrink-0 text-blue-600 dark:text-blue-400" />
+    <span class="min-w-0 flex-1">
+      Reach your sessions remotely, or run them across more than one machine.
+      <a
+        href="/setup?step=connect"
+        class="font-medium text-blue-700 underline underline-offset-2 hover:text-blue-900 dark:text-blue-300 dark:hover:text-blue-100"
+      >
+        Resume setup
+      </a>
+    </span>
+    <button
+      class="rounded p-1 text-blue-700 transition-colors hover:bg-blue-500/15 dark:text-blue-300"
+      onclick={dismissNudge}
+      aria-label="Dismiss"
+    >
+      <X class="size-4" />
+    </button>
+  </div>
+{/if}
+
 {#if sessions.error}
   <div class="flex h-full items-center justify-center p-8">
     <div class="text-center text-sm text-destructive">{sessions.error}</div>
@@ -42,7 +104,7 @@
   <!-- Skeletons rather than a bare "Loading…" line so the layout
        doesn't jump when cards arrive. -->
   <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-    {#each Array(4) as _, i (i)}
+    {#each Array(16) as _, i (i)}
       <div class="flex aspect-[4/3] animate-pulse flex-col overflow-hidden rounded-lg border border-border bg-card">
         <div class="flex-1 bg-secondary/40"></div>
         <div class="flex items-center gap-2 border-t border-border px-3 py-2.5">
@@ -88,6 +150,19 @@
     </div>
   </div>
 {:else}
+  {#if sessions.unreachable.length > 0}
+    <!-- A node is on the tailnet but its deepcove API didn't answer this poll; surface that its
+         sessions are omitted rather than letting the list look complete. -->
+    <div
+      class="mx-6 mt-6 flex items-center gap-2.5 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm"
+    >
+      <CircleAlert class="size-4 shrink-0 text-warning" />
+      <span>
+        Couldn't reach {sessions.unreachable.map((n) => n.hostname).join(', ')}; its sessions aren't
+        shown.
+      </span>
+    </div>
+  {/if}
   <div class="flex flex-wrap items-center gap-3 px-6 pt-6">
     <div class="relative min-w-0 flex-1 sm:max-w-xs">
       <Search

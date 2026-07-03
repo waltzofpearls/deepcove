@@ -78,6 +78,7 @@ func TestInjectRuntimeConfig(t *testing.T) {
 		html      string
 		transport string
 		target    string
+		discover  bool
 		wantHas   string // substring that must appear, or "" to assert unchanged
 	}{
 		{
@@ -100,6 +101,13 @@ func TestInjectRuntimeConfig(t *testing.T) {
 			wantHas:   `{"transport":"direct"}`, // no "target"
 		},
 		{
+			name:      "dashboard discover mode carries the discover flag",
+			html:      "<head></head>",
+			transport: "wasm",
+			discover:  true,
+			wantHas:   `"discover":true`,
+		},
+		{
 			name:      "no head leaves document untouched",
 			html:      "<html><body>no head</body></html>",
 			transport: "direct",
@@ -109,7 +117,7 @@ func TestInjectRuntimeConfig(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := injectRuntimeConfig([]byte(tc.html), tc.transport, tc.target)
+			got := injectRuntimeConfig([]byte(tc.html), tc.transport, tc.target, tc.discover)
 			if tc.wantHas == "" {
 				if !bytes.Equal(got, []byte(tc.html)) {
 					t.Fatalf("expected unchanged, got %q", got)
