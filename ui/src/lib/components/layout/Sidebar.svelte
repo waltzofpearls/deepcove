@@ -5,6 +5,12 @@
   import { sessions } from '$lib/stores/sessions.svelte';
   import { NEW_SESSION_CTX } from '$lib/context';
   import { Button } from '$lib/components/ui/button';
+  import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+  } from '$lib/components/ui/tooltip';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import LogoIcon from './LogoIcon.svelte';
   import LayoutGrid from '@lucide/svelte/icons/layout-grid';
@@ -48,7 +54,11 @@
        a drawer (a full-width button there looks oversized), so this is hidden and the topbar's icon
        button handles it. -->
   <div class="hidden p-3 pb-0 md:block">
-    <Button class="w-full justify-start" onclick={openNewSession}>
+    <!-- badge-style teal (matches the remote-node tag), lighter than solid-primary -->
+    <Button
+      class="w-full justify-start bg-teal-500/15 text-teal-800 ring-1 ring-inset ring-teal-600/35 hover:bg-teal-500/25 hover:text-teal-900 dark:bg-teal-500/15 dark:text-teal-300 dark:ring-teal-500/30 dark:hover:bg-teal-500/25 dark:hover:text-teal-200"
+      onclick={openNewSession}
+    >
       <Plus class="size-4" />
       New session
     </Button>
@@ -81,23 +91,32 @@
       <div class="mt-5">
         <div class="px-3 pb-1 text-xs font-medium tracking-wide text-muted-foreground">Sessions</div>
         <ul class="space-y-0.5">
-          {#each sessions.list as s (s.id)}
-            <li>
-              <a
-                href="/sessions/{s.id}"
-                title={s.name}
-                class="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors"
-                class:bg-secondary={isCurrentSession(s.id)}
-                class:text-foreground={isCurrentSession(s.id)}
-                class:text-muted-foreground={!isCurrentSession(s.id)}
-                class:hover:bg-secondary={!isCurrentSession(s.id)}
-                class:hover:text-foreground={!isCurrentSession(s.id)}
-              >
-                <StatusIndicator status={s.status} />
-                <span class="truncate font-mono">{s.name}</span>
-              </a>
-            </li>
-          {/each}
+          <TooltipProvider>
+            {#each sessions.list as s (s.id)}
+              <li>
+                <Tooltip>
+                  <TooltipTrigger>
+                    {#snippet child({ props })}
+                      <a
+                        {...props}
+                        href="/sessions/{s.id}"
+                        class="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors"
+                        class:bg-secondary={isCurrentSession(s.id)}
+                        class:text-foreground={isCurrentSession(s.id)}
+                        class:text-muted-foreground={!isCurrentSession(s.id)}
+                        class:hover:bg-secondary={!isCurrentSession(s.id)}
+                        class:hover:text-foreground={!isCurrentSession(s.id)}
+                      >
+                        <StatusIndicator status={s.status} />
+                        <span class="truncate font-mono">{s.name}</span>
+                      </a>
+                    {/snippet}
+                  </TooltipTrigger>
+                  <TooltipContent side="right">{s.name}</TooltipContent>
+                </Tooltip>
+              </li>
+            {/each}
+          </TooltipProvider>
         </ul>
       </div>
     {/if}

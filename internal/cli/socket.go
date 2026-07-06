@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"os"
@@ -10,11 +12,14 @@ import (
 	"time"
 )
 
-// socketPath returns the per-OS path of the local control Unix socket. The directory is user private,
-// so the socket inherits owner-only access; on Unix we additionally chmod the socket 0600. The server
-// (`deepcove start`) and the CLI both call this, so they agree on the path without configuration.
-func socketPath() string {
-	const name = "deepcove.sock"
+// socketPath returns the per-OS path of the local control Unix socket for the given data dir. The name
+// is derived from the data dir so multiple `deepcove start` instances on one machine (each with its own
+// DATA_DIR) get distinct sockets instead of clobbering each other's, while the path stays short (Unix
+// socket paths have a low length limit) by living in the per-user tmp dir. The server and the CLI both
+// resolve the same data dir, so they agree on the path without extra configuration. The directory is
+// user private, so the socket inherits owner-only access; on Unix we additionally chmod the socket 0600.
+func socketPath(dataDir string) string {
+	name := "deepcove-" + shortHash(dataDir) + ".sock"
 	switch runtime.GOOS {
 	case "windows":
 		// %LOCALAPPDATA%\deepcove is per-user, ACL'd to the owner by Windows (os.Chmod can't
@@ -34,6 +39,13 @@ func socketPath() string {
 		}
 		return filepath.Join(os.TempDir(), name)
 	}
+}
+
+// shortHash returns the first 8 hex chars of sha256(s), enough to keep per-data-dir socket names
+// distinct without bloating the path length.
+func shortHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:4])
 }
 
 // socketAvailable reports whether the control socket exists; i.e. a current `deepcove start` is

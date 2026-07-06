@@ -35,14 +35,16 @@ import (
 // Still TODO:
 //   - Peer discovery, cross-node fan-out
 func cmdStart(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("start", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
 	cfg, err := config.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
+	}
+
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	// default to the env value so an explicit --cluster overrides DEEPCOVE_CLUSTER
+	fs.StringVar(&cfg.Cluster, "cluster", cfg.Cluster, `cluster label to group this node with your others (persisted; default "default")`)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
 	logger := newLogger(cfg)
@@ -56,6 +58,21 @@ func cmdStart(ctx context.Context, args []string) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	logger.Info("database ready", "data_dir", cfg.DataDir)
+
+	// Resolve this node's cluster label (SPEC §5.12): a --cluster/DEEPCOVE_CLUSTER value is written
+	// through to the settings table so it persists and the UI reflects it; otherwise the stored value is
+	// used, else the default.
+	if cfg.Cluster != "" {
+		if err := session.SaveCluster(sqlDB, session.NormalizeCluster(cfg.Cluster)); err != nil {
+			return fmt.Errorf("cluster: %w", err)
+		}
+	}
+	clusterName, err := session.LoadCluster(sqlDB)
+	if err != nil {
+		return fmt.Errorf("cluster: %w", err)
+	}
+	clusterStore := session.NewClusterStore(sqlDB, clusterName)
+	logger.Info("cluster", "name", clusterStore.Name())
 
 	// Sandbox driver: Docker is the v1 backend. $HOME is the one host root sharable with sandboxes;
 	// it covers the common case where the user mounts a project under their home dir (~/projects/foo,
@@ -77,6 +94,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	// lifecycle.
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
 	sessionSvc := session.NewService(sessionRepo, sandbox, logger)
+	sessionSvc.SetClusterStore(clusterStore)
 
 	mux := http.NewServeMux()
 	if err := api.New(
@@ -96,7 +114,8 @@ func cmdStart(ctx context.Context, args []string) error {
 		return fmt.Errorf("ui: %w", err)
 	}
 
-	connectMgr := connect.NewManager(ctx, cfg.DataDir, sqlDB, mux)
+	connectMgr := connect.NewManager(ctx, cfg.DataDir, sqlDB, mux, logger)
+	connectMgr.SetClusterStore(clusterStore)
 	connectMgr.AttachRoutes(mux)
 	// The connect manager owns the tsnet node, so it's also the cross-node source for aggregated
 	// session listing (fan-out to peers over the tailnet). No-op on a single node.
@@ -123,7 +142,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	// lock up a goroutine indefinitely. ReadHeaderTimeout is the load-bearing one; the others
 	// bound long-lived but stalled streams.
 	srv := &http.Server{
-		Handler:           middleware.LocalGate(mux, localToken, localAllowedHosts(cfg.Addr)),
+		Handler:           middleware.LocalGate(mux, localToken, middleware.LocalTokenCookieName(cfg.Addr), localAllowedHosts(cfg.Addr)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -132,7 +151,7 @@ func cmdStart(ctx context.Context, args []string) error {
 
 	// Unix socket: full runtime API for the local CLI, ungated; filesystem permissions are the
 	// trust boundary.
-	sockPath := socketPath()
+	sockPath := socketPath(cfg.DataDir)
 	sockSrv, sockLn, err := listenUnixSocket(sockPath, mux)
 	if err != nil {
 		return fmt.Errorf("listen unix socket %s: %w", sockPath, err)

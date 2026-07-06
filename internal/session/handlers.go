@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
@@ -19,6 +20,8 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions", s.handleCreate)
 	mux.HandleFunc("GET /api/sessions", s.handleList)
 	mux.HandleFunc("GET /api/sessions/local", s.handleListLocal)
+	mux.HandleFunc("GET /api/cluster", s.handleGetCluster)
+	mux.HandleFunc("PUT /api/cluster", s.handleSetCluster)
 	mux.HandleFunc("GET /api/sessions/suggest-name", s.handleSuggestName)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleRename)
@@ -107,7 +110,37 @@ func (s *Service) handleListLocal(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []*Session{}
 	}
+	// Report this node's cluster to fan-out callers via a header, keeping the body a bare array.
+	w.Header().Set(ClusterHeader, s.clusterStore.Name())
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleGetCluster returns this node's cluster label. GET /api/cluster
+func (s *Service) handleGetCluster(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"cluster": s.clusterStore.Name()})
+}
+
+// handleSetCluster sets this node's cluster label, persisted and effective immediately. PUT /api/cluster
+// with {"cluster": "..."}; an empty value resets to the default cluster.
+func (s *Service) handleSetCluster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Cluster string `json:"cluster"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// over-length gets a clear 400; Set/NormalizeCluster handles trim and the rest.
+	name := strings.TrimSpace(req.Cluster)
+	if len([]rune(name)) > MaxClusterNameLen {
+		writeError(w, http.StatusBadRequest, "cluster name too long (max 64 characters)")
+		return
+	}
+	if err := s.clusterStore.Set(name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"cluster": s.clusterStore.Name()})
 }
 
 // handleRename updates a session's display name. PATCH /api/sessions/{id}

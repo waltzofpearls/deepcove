@@ -27,6 +27,7 @@
   import Terminal from '$lib/components/session/Terminal.svelte';
   import RemoteSignInPrompt from '$lib/components/session/RemoteSignInPrompt.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
+  import SessionTags from '$lib/components/session/SessionTags.svelte';
   import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
   import EditMountsDialog from '$lib/components/session/EditMountsDialog.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
@@ -395,12 +396,9 @@
               </Tooltip>
             </TooltipProvider>
           {/if}
-          <!-- Subtitle is cosmetic (agent kind + short id). Hidden
-               below md so the name has room to breathe on phones. -->
-          <div class="hidden truncate text-xs text-muted-foreground md:block">
-            {session.agent} · {session.id.slice(0, 12)}
-          </div>
         </div>
+        <!-- prefer `listed` (aggregated, carries host) over `session` (single GET, no host) for the badges -->
+        <SessionTags session={listed ?? session} elevated />
       {:else if loadError}
         <span class="text-sm text-destructive">{loadError}</span>
       {:else if listed}

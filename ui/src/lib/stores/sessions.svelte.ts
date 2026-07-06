@@ -22,7 +22,7 @@
 //   {/if}
 
 import { ApiError, api } from '$lib/api/client';
-import { hostForSession, isRemoteSession } from '$lib/api/sessions';
+import { hostForSession, isRemoteSession, sessionHostLabel } from '$lib/api/sessions';
 import { discoveryRequired } from '$lib/api/transport';
 import type { Session, SessionHost } from '$lib/api/types';
 import { usePolling } from '$lib/polling';
@@ -96,6 +96,10 @@ export const sessions = {
 	},
 	isRemote(session: Session): boolean {
 		return isRemoteSession(session, self);
+	},
+	// hostLabel is the remote-host badge text, or undefined for a local session. See sessionHostLabel.
+	hostLabel(session: Session): string | undefined {
+		return sessionHostLabel(session, self);
 	},
 	// find looks a session up in the aggregated list by id. The session detail page uses it to learn a
 	// session's host (which the single-session GET doesn't carry) so its per-session calls can route to

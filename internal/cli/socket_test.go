@@ -25,8 +25,18 @@ func TestLocalAllowedHosts(t *testing.T) {
 	}
 }
 
-func TestSocketPathNonEmpty(t *testing.T) {
-	if p := socketPath(); p == "" {
-		t.Fatal("socketPath() returned empty")
+func TestSocketPath(t *testing.T) {
+	a := socketPath("/tmp/dc-a")
+	b := socketPath("/tmp/dc-b")
+	if a == "" || b == "" {
+		t.Fatal("socketPath returned empty")
+	}
+	// Distinct data dirs must give distinct sockets, so multiple instances on one machine don't collide.
+	if a == b {
+		t.Errorf("distinct data dirs share a socket path: %q", a)
+	}
+	// The same data dir must give the same socket, so the server and CLI agree without extra config.
+	if got := socketPath("/tmp/dc-a"); got != a {
+		t.Errorf("same data dir gave different sockets: %q vs %q", a, got)
 	}
 }

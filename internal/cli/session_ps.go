@@ -16,7 +16,8 @@ import (
 // Docker-style. Output columns: ID, NAME, AGENT, STATUS, AGE.
 func cmdSessionPs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("session ps", flag.ContinueOnError)
-	all := fs.Bool("a", false, "show all sessions (default: only running)")
+	var all bool
+	fs.BoolVar(&all, "a", false, "show all sessions (default: only running)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -27,7 +28,7 @@ func cmdSessionPs(ctx context.Context, args []string) error {
 	}
 
 	client := newSessionClient(cfg)
-	sessions, err := client.List(ctx, *all)
+	sessions, err := client.List(ctx, all)
 	if err != nil {
 		return err
 	}
