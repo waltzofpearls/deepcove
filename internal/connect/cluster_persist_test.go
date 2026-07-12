@@ -32,7 +32,7 @@ func TestNodeClusterPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadNodeClusters: %v", err)
 	}
-	if len(got) != 1 || got["nEREBOR"] != "prod" {
+	if len(got) != 1 || got["nEREBOR"].cluster != "prod" {
 		t.Fatalf("persisted = %v, want {nEREBOR: prod}", got)
 	}
 

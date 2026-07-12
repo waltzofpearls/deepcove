@@ -44,34 +44,30 @@ let stopPolling: (() => void) | undefined;
 
 let abortCtrl: AbortController | undefined;
 
+async function poll(signal: AbortSignal): Promise<void> {
+	try {
+		// Dashboard mode: the browser is the aggregator, so fan out across the discovered nodes
+		// ourselves. Connected mode: a server node fans out behind /api/sessions.
+		const resp = discoveryRequired()
+			? await api.listSessionsAcrossNodes(discovery.nodes, discovery.self, { all: true, signal })
+			: await api.listSessions({ all: true, signal });
+		list = resp.sessions ?? [];
+		self = resp.self ?? null;
+		unreachable = resp.unreachable ?? [];
+		error = null;
+	} catch (e) {
+		if (signal.aborted) return;
+		error = e instanceof ApiError ? e.message : String(e);
+	} finally {
+		loading = false;
+	}
+}
+
 function startIfIdle(): void {
 	if (stopPolling) return;
 	abortCtrl = new AbortController();
 	const signal = abortCtrl.signal;
-	stopPolling = usePolling(
-		async () => {
-			try {
-				// Dashboard mode: the browser is the aggregator, so fan out across the discovered nodes
-				// ourselves. Connected mode: a server node fans out behind /api/sessions.
-				const resp = discoveryRequired()
-					? await api.listSessionsAcrossNodes(discovery.nodes, discovery.self, {
-							all: true,
-							signal,
-						})
-					: await api.listSessions({ all: true, signal });
-				list = resp.sessions ?? [];
-				self = resp.self ?? null;
-				unreachable = resp.unreachable ?? [];
-				error = null;
-			} catch (e) {
-				if (signal.aborted) return;
-				error = e instanceof ApiError ? e.message : String(e);
-			} finally {
-				loading = false;
-			}
-		},
-		() => preferences.pollIntervalMs
-	);
+	stopPolling = usePolling(() => poll(signal), () => preferences.pollIntervalMs);
 }
 
 function stopIfDone(): void {
@@ -117,6 +113,11 @@ export const sessions = {
 	},
 	get error(): string | null {
 		return error;
+	},
+
+	// refresh forces an immediate poll (for a manual refresh button), independent of the interval.
+	async refresh(): Promise<void> {
+		await poll(abortCtrl?.signal ?? new AbortController().signal);
 	},
 
 	// subscribe registers interest in the sessions list. First call

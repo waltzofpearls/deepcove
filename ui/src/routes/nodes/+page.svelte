@@ -6,8 +6,10 @@
   import { machineName } from '$lib/util/tailnet';
   import { nodeClusterLabel } from '$lib/util/cluster';
   import { discovery } from '$lib/stores/discovery.svelte';
+  import { preferences } from '$lib/stores/preferences.svelte';
   import TailnetConnect from '$lib/components/TailnetConnect.svelte';
   import ClusterBadge from '$lib/components/ClusterBadge.svelte';
+  import { Button } from '$lib/components/ui/button';
   import type { ConnectStatus, NodeInfo } from '$lib/api/types';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Server from '@lucide/svelte/icons/server';
@@ -15,6 +17,7 @@
   import Layers from '@lucide/svelte/icons/layers';
   import Network from '@lucide/svelte/icons/network';
   import Loader2 from '@lucide/svelte/icons/loader-2';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   // Your deepcove machines: this one plus same-user tailnet peers. Connected mode reads them from a
   // server (GET /api/nodes); dashboard mode reads the in-browser node's own discovery (status()).
@@ -42,10 +45,13 @@
   }
 
   $effect(() => {
-    if (discoveryRequired()) return; // discover mode reads the discovery store reactively below
+    if (discoveryRequired()) return; // discover mode auto-updates via the discovery store (netmap poll)
     const ac = new AbortController();
-    void loadDirect(ac.signal);
-    return () => ac.abort();
+    const stop = usePolling(() => loadDirect(ac.signal), () => preferences.pollIntervalMs);
+    return () => {
+      ac.abort();
+      stop();
+    };
   });
 
   const connected = $derived(discoveryRequired() || connect?.phase === 'running');
@@ -74,6 +80,7 @@
   let clusterMap = $state<Record<string, string>>({});
   let clustersLoaded = $state(false);
   const CLUSTER_REFRESH_MS = 10_000; // renames are rare; no need for the fast sessions poll rate
+  const CLUSTER_RETRY_MS = 2_000; // but retry quickly until the first fetch lands (e.g. after a stale-primary timeout)
   const nodeIdsKey = $derived(
     (nodes ?? [])
       .map((n) => n.stable_node_id)
@@ -87,7 +94,9 @@
     return usePolling(
       async () => {
         try {
-          const m = await api.nodeClusters();
+          const m = discoveryRequired()
+            ? await api.nodeClustersFromNodes(discovery.nodes)
+            : await api.nodeClusters();
           // merge, not replace, so a momentarily-unreachable node keeps its last-known cluster
           clusterMap = { ...clusterMap, ...m };
           clustersLoaded = true;
@@ -95,7 +104,7 @@
           /* keep last-known; the next tick retries */
         }
       },
-      () => CLUSTER_REFRESH_MS
+      () => (clustersLoaded ? CLUSTER_REFRESH_MS : CLUSTER_RETRY_MS)
     );
   });
   const clusterFor = (n: NodeInfo): string => nodeClusterLabel(clusterMap, n.stable_node_id);
@@ -112,6 +121,27 @@
     }
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
   });
+
+  let refreshing = $state(false);
+  async function refreshNow() {
+    refreshing = true;
+    try {
+      let m: Record<string, string>;
+      if (discoveryRequired()) {
+        discovery.refreshNow();
+        m = await api.nodeClustersFromNodes(discovery.nodes);
+      } else {
+        await loadDirect();
+        m = await api.nodeClusters();
+      }
+      clusterMap = { ...clusterMap, ...m };
+      clustersLoaded = true;
+    } catch {
+      /* transient; the next poll retries */
+    } finally {
+      refreshing = false;
+    }
+  }
 </script>
 
 <div class="mx-auto max-w-2xl p-6">
@@ -124,6 +154,10 @@
       <ArrowLeft class="size-4" />
     </a>
     <h1 class="text-lg font-semibold">Nodes</h1>
+    <div class="flex-1"></div>
+    <Button variant="ghost" size="icon" onclick={refreshNow} disabled={refreshing} aria-label="Refresh">
+      <RefreshCw class="size-4 {refreshing ? 'animate-spin' : ''}" />
+    </Button>
   </div>
 
   {#if error}
@@ -195,6 +229,11 @@
       <p class="mb-3 text-xs text-muted-foreground">
         Your machines running deepcove. Sessions live on the machine that created them.
       </p>
+      {#if !clustersLoaded}
+        <div class="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 class="size-3.5 animate-spin" /> Grouping by cluster…
+        </div>
+      {/if}
       {#if showNodeClusters}
         {#each groupedNodes as [cluster, group], i (cluster)}
           <div class="mb-1.5 flex items-center gap-2" class:mt-4={i > 0}>

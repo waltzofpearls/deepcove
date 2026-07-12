@@ -64,12 +64,26 @@ function toNodeInfo(p: NodeStatus): NodeInfo {
 	};
 }
 
-// pickPrimary chooses the node for incidental app-level calls (agent registry, suggest-name, the global
-// preflight banner): the first online node by hostname order, or null if none are online. It is stateless
-// so it self-heals as nodes come and go. The sessions list does NOT depend on it (that fans out across
-// every node), so a primary going offline never stalls the cross-node view, only re-points these reads.
-export function pickPrimary(nodes: NodeInfo[]): NodeInfo | null {
-	return nodes.find((n) => n.online) ?? null;
+// pickReachablePrimary chooses the node for incidental app-level calls (agent registry, suggest-name, the
+// global preflight banner): an online node that answers a reachability probe, or null. `online` alone
+// can't be trusted, because a stopped node stays "online" in the netmap for minutes while its WireGuard handshake
+// never completes, so targeting it hangs every boot-transport call. Probes run concurrently and the first
+// reachable one wins (any is fine as the boot target); the store injects the real tailnet ping. The
+// sessions/clusters views do NOT depend on this (they fan out), so a primary going offline never stalls them.
+export function pickReachablePrimary(
+	nodes: NodeInfo[],
+	ping: (dnsName: string) => Promise<boolean>,
+): Promise<NodeInfo | null> {
+	const candidates = nodes.filter((n) => n.online && n.dns_name);
+	if (candidates.length === 0) return Promise.resolve(null);
+	// First candidate whose ping succeeds wins; if every ping fails, Promise.any rejects and we map to null.
+	const probes = candidates.map((n) =>
+		ping(n.dns_name).then((ok) => {
+			if (!ok) throw new Error('unreachable');
+			return n;
+		}),
+	);
+	return Promise.any(probes).catch(() => null);
 }
 
 // selfHost maps the browser's own tailnet node to a SessionHost so the aggregated list carries a self

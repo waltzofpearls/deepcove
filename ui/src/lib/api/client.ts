@@ -79,6 +79,30 @@ const CLUSTER_HEADER = 'X-Deepcove-Cluster';
 // unreachable so one slow node never stalls the whole cross-node list.
 const peerFanoutTimeoutMs = 2000;
 
+// nodeClustersTimeoutMs bounds /nodes/clusters. The WASM transport ignores AbortSignal, so a hung dial
+// to a dead-but-stale-online primary would otherwise stall the poll forever (usePolling awaits each
+// tick). Racing a timeout lets the tick reject and retry, by when discovery may have re-pointed the boot
+// transport at a live primary. The backend answers from cache, so this only ever fires on a bad dial.
+const nodeClustersTimeoutMs = 4000;
+
+// withTimeout rejects if p doesn't settle within ms. For calls over the WASM transport, which can hang
+// on a dead peer (it doesn't honor AbortSignal); the orphaned promise may still settle later, discarded.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const t = setTimeout(() => reject(new Error(label + ' timed out')), ms);
+		p.then(
+			(v) => {
+				clearTimeout(t);
+				resolve(v);
+			},
+			(e) => {
+				clearTimeout(t);
+				reject(e);
+			},
+		);
+	});
+}
+
 // fetchNodeSessions GETs one node's own sessions over WASM, rejecting after peerFanoutTimeoutMs. The
 // timeout is a racing promise, not an AbortSignal: tailscale-web's fetch doesn't honor signals, so a
 // signal alone wouldn't cut a slow dial. The orphaned fetch may still settle later; its result is
@@ -270,10 +294,36 @@ export const api = {
 		return request('/nodes/web', { signal });
 	},
 
-	// nodeClusters maps each session node's stable id to its cluster label (SPEC §5.12). Fanned out
-	// server-side by whichever node serves the UI, so one call covers both connected and dashboard mode.
+	// nodeClusters maps each session node's stable id to its cluster label (SPEC §5.12). Connected mode:
+	// the boot transport reaches this node's server, which gossips server-side. See nodeClustersFromNodes
+	// for the dashboard-mode variant.
 	nodeClusters(signal?: AbortSignal): Promise<Record<string, string>> {
-		return request('/nodes/clusters', { signal });
+		return withTimeout(
+			request<Record<string, string>>('/nodes/clusters', { signal }),
+			nodeClustersTimeoutMs,
+			'nodeClusters',
+		);
+	},
+
+	// nodeClustersFromNodes is the dashboard-mode variant: it asks every online node for /nodes/clusters
+	// concurrently and takes the first success, instead of the single boot-transport primary. That primary
+	// can be a dead-but-still-"online" node whose dial hangs on a never-completing WireGuard handshake, and
+	// the netmap can keep it "online" for minutes. Gossip makes every node's answer consistent, so any
+	// reachable one is correct.
+	async nodeClustersFromNodes(nodes: NodeInfo[]): Promise<Record<string, string>> {
+		const attempts = nodes
+			.filter((n) => n.online && n.dns_name)
+			.map((n) =>
+				withTimeout(
+					request<Record<string, string>>('/nodes/clusters', {}, transportForHost(nodeHost(n))),
+					nodeClustersTimeoutMs,
+					'nodeClusters',
+				),
+			);
+		if (attempts.length === 0) return {}; // no online node to ask -> nothing to group
+		// Rejects (AggregateError) only if EVERY node failed; the caller keeps the spinner and retries
+		// rather than flipping clustersLoaded on an empty result.
+		return Promise.any(attempts);
 	},
 
 	// getCluster / setCluster read and change this node's cluster label (SPEC §5.12). setCluster is
