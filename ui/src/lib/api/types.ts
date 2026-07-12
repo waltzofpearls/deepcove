@@ -32,6 +32,7 @@ export interface SessionHost {
 	stable_node_id: string;
 	hostname: string;
 	dns_name?: string;
+	cluster?: string; // the host node's cluster label; empty means the default cluster
 }
 
 // SessionListResponse is the aggregated GET /api/sessions payload: sessions across all your nodes,

@@ -40,7 +40,11 @@ export class ApiError extends Error {
 // request runs an API call through a transport. It defaults to the boot transport (local/this node);
 // session-scoped calls pass transportForHost(session.host) so per-session traffic reaches the node
 // that owns the session, over WASM when that node is a remote peer.
-async function request<T>(path: string, init?: RequestInit, t: Transport = transport): Promise<T> {
+async function requestRaw<T>(
+	path: string,
+	init?: RequestInit,
+	t: Transport = transport,
+): Promise<{ data: T; resp: Response }> {
 	const resp = await t.fetch(BASE + path, init);
 	if (!resp.ok) {
 		// API errors come back as {"error": "...", "code": "..."} per
@@ -58,9 +62,17 @@ async function request<T>(path: string, init?: RequestInit, t: Transport = trans
 		throw new ApiError(resp.status, msg, code);
 	}
 	// 204 No Content means the caller doesn't get a body. Cast to satisfy T.
-	if (resp.status === 204) return undefined as T;
-	return (await resp.json()) as T;
+	if (resp.status === 204) return { data: undefined as T, resp };
+	return { data: (await resp.json()) as T, resp };
 }
+
+// request is the body-only common case; requestRaw also returns the Response (for a header).
+async function request<T>(path: string, init?: RequestInit, t: Transport = transport): Promise<T> {
+	return (await requestRaw<T>(path, init, t)).data;
+}
+
+// mirrors session.ClusterHeader; read in browser fan-out to tag each peer's sessions.
+const CLUSTER_HEADER = 'X-Deepcove-Cluster';
 
 // peerFanoutTimeoutMs bounds each per-node /api/sessions/local fetch in the browser-side fan-out
 // (dashboard mode), mirroring the Go peerFanoutTimeout. A node that doesn't answer in time is reported
@@ -74,14 +86,15 @@ const peerFanoutTimeoutMs = 2000;
 function fetchNodeSessions(
 	node: NodeInfo,
 	opts: { all?: boolean; signal?: AbortSignal },
-): Promise<Session[]> {
+): Promise<{ sessions: Session[]; cluster: string }> {
 	const q = opts.all ? '?all=true' : '';
-	const fetchP = request<Session[]>(
+	// requestRaw so we can read the cluster header ourselves (no server aggregator in browser fan-out)
+	const fetchP = requestRaw<Session[]>(
 		`/sessions/local${q}`,
 		{ signal: opts.signal },
 		transportForHost(nodeHost(node)),
-	);
-	return new Promise<Session[]>((resolve, reject) => {
+	).then(({ data, resp }) => ({ sessions: data, cluster: resp.headers.get(CLUSTER_HEADER) ?? '' }));
+	return new Promise<{ sessions: Session[]; cluster: string }>((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error('node fan-out timeout')), peerFanoutTimeoutMs);
 		const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
 		opts.signal?.addEventListener('abort', onAbort);
@@ -257,6 +270,25 @@ export const api = {
 		return request('/nodes/web', { signal });
 	},
 
+	// nodeClusters maps each session node's stable id to its cluster label (SPEC §5.12). Fanned out
+	// server-side by whichever node serves the UI, so one call covers both connected and dashboard mode.
+	nodeClusters(signal?: AbortSignal): Promise<Record<string, string>> {
+		return request('/nodes/clusters', { signal });
+	},
+
+	// getCluster / setCluster read and change this node's cluster label (SPEC §5.12). setCluster is
+	// persisted and effective immediately; an empty name resets to the default cluster.
+	getCluster(signal?: AbortSignal): Promise<{ cluster: string }> {
+		return request('/cluster', { signal });
+	},
+	setCluster(cluster: string): Promise<{ cluster: string }> {
+		return request('/cluster', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ cluster }),
+		});
+	},
+
 	// Aggregated across all the user's nodes (each session tagged with its host; unreachable peers
 	// reported). On a single node it's just this machine's sessions.
 	listSessions(opts: { all?: boolean; signal?: AbortSignal } = {}): Promise<SessionListResponse> {
@@ -278,9 +310,10 @@ export const api = {
 		const perNode = await Promise.all(
 			online.map(async (node) => {
 				try {
-					return { node, sessions: await fetchNodeSessions(node, opts) };
+					const { sessions, cluster } = await fetchNodeSessions(node, opts);
+					return { node, sessions, cluster };
 				} catch {
-					return { node, sessions: null }; // timed out, aborted, or errored, so unreachable
+					return { node, sessions: null, cluster: '' }; // timed out, aborted, or errored, so unreachable
 				}
 			}),
 		);

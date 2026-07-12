@@ -47,6 +47,12 @@ func TestFilteredLogf(t *testing.T) {
 			args:     []any{"https://login.tailscale.com/a/4b6130301d70c"},
 			wantDrop: true,
 		},
+		{
+			name:     "drops netstack conns-in-flight noise",
+			format:   "netstack: decrementing connsInFlightByClient[%s] because the packet was not handled; new value is %d",
+			args:     []any{"100.86.239.55", 0},
+			wantDrop: true,
+		},
 		{name: "keeps status line", format: "tsnet running: %s", args: []any{"deepcove-host"}, wantDrop: false},
 		{name: "keeps unrelated line", format: "some diagnostic", wantDrop: false},
 	}

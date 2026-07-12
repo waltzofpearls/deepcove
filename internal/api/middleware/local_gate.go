@@ -14,8 +14,20 @@ import (
 	"strings"
 )
 
-// LocalTokenCookie is the cookie carrying the per-run local access token.
-const LocalTokenCookie = "deepcove_token"
+// LocalTokenCookieBaseName is the base name of the cookie carrying the per-run local access token. The actual
+// cookie name is per-listener (see LocalTokenCookieName): browser cookies are NOT isolated by port, so
+// two `deepcove start` instances on the same loopback host (different ports) would otherwise clobber
+// each other's token cookie and lock one out with 401s.
+const LocalTokenCookieBaseName = "deepcove_token"
+
+// LocalTokenCookieName returns the token cookie name for a bind address, suffixed with the port so
+// multiple instances on one machine (same host, different ports) keep distinct token cookies.
+func LocalTokenCookieName(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+		return LocalTokenCookieBaseName + "_" + port
+	}
+	return LocalTokenCookieBaseName
+}
 
 // LocalGate restricts the local TCP front door (127.0.0.1) to same-machine
 // browser access. Two independent checks, both required for the runtime API:
@@ -32,7 +44,7 @@ const LocalTokenCookie = "deepcove_token"
 // Non-API requests (SPA bundle, static assets, /api/health, future
 // /api/setup/*) are ungated and seed the cookie. The Unix socket (CLI) and the
 // owner-gated tailnet never use this gate.
-func LocalGate(next http.Handler, token string, allowedHosts []string) http.Handler {
+func LocalGate(next http.Handler, token, cookieName string, allowedHosts []string) http.Handler {
 	allow := make(map[string]struct{}, len(allowedHosts))
 	for _, host := range allowedHosts {
 		if host != "" {
@@ -46,17 +58,17 @@ func LocalGate(next http.Handler, token string, allowedHosts []string) http.Hand
 		}
 		switch {
 		case isRuntimeAPI(r.URL.Path):
-			if !validToken(r, token) {
+			if !validToken(r, token, cookieName) {
 				http.Error(w, "unauthorized: missing or invalid local token", http.StatusUnauthorized)
 				return
 			}
-		case !strings.HasPrefix(r.URL.Path, "/api/") && !validToken(r, token):
+		case !strings.HasPrefix(r.URL.Path, "/api/") && !validToken(r, token, cookieName):
 			// Seed the token on SPA/asset responses (any non-/api path) so the browser carries it on
 			// subsequent runtime calls. /api/health and /api/setup/* are exempt from both the check and
 			// seeding. HttpOnly so an XSS can't read it; SameSite=Strict so cross-site requests don't
 			// send it; no Secure, the local listener is plain http on loopback.
 			http.SetCookie(w, &http.Cookie{
-				Name:     LocalTokenCookie,
+				Name:     cookieName,
 				Value:    token,
 				Path:     "/",
 				HttpOnly: true,
@@ -67,8 +79,8 @@ func LocalGate(next http.Handler, token string, allowedHosts []string) http.Hand
 	})
 }
 
-func validToken(r *http.Request, token string) bool {
-	cookie, err := r.Cookie(LocalTokenCookie)
+func validToken(r *http.Request, token, cookieName string) bool {
+	cookie, err := r.Cookie(cookieName)
 	if err != nil {
 		return false
 	}

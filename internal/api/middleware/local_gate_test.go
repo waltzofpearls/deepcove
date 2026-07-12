@@ -6,13 +6,67 @@ import (
 	"testing"
 )
 
+func TestLocalTokenCookieName(t *testing.T) {
+	// Distinct ports must give distinct cookie names, so two instances on one loopback host (where
+	// cookies aren't port-isolated) don't clobber each other's token.
+	a := LocalTokenCookieName("127.0.0.1:8080")
+	b := LocalTokenCookieName("127.0.0.1:8081")
+	if a == b {
+		t.Errorf("distinct ports share a cookie name: %q", a)
+	}
+	if a != LocalTokenCookieBaseName+"_8080" {
+		t.Errorf("cookie name = %q, want %q", a, LocalTokenCookieBaseName+"_8080")
+	}
+	if got := LocalTokenCookieName("noport"); got != LocalTokenCookieBaseName {
+		t.Errorf("no-port addr -> %q, want base %q", got, LocalTokenCookieBaseName)
+	}
+}
+
+func TestLocalGatePerPortCookie(t *testing.T) {
+	const token = "secret-token"
+	name := LocalTokenCookieName("127.0.0.1:8081") // deepcove_token_8081
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	gate := LocalGate(next, token, name, nil)
+
+	do := func(path, cookieName, cookieVal string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "http://x"+path, nil)
+		r.Host = "127.0.0.1:8081"
+		if cookieName != "" {
+			r.AddCookie(&http.Cookie{Name: cookieName, Value: cookieVal})
+		}
+		w := httptest.NewRecorder()
+		gate.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := do("/api/sessions", name, token); w.Code != http.StatusOK {
+		t.Errorf("suffixed cookie: status %d, want 200", w.Code)
+	}
+	if w := do("/api/sessions", LocalTokenCookieBaseName, token); w.Code != http.StatusUnauthorized {
+		t.Errorf("base cookie name must not authorize the suffixed gate: status %d, want 401", w.Code)
+	}
+	w := do("/", "", "")
+	var seeded *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			seeded = c
+		}
+	}
+	if seeded == nil {
+		t.Fatalf("expected a seeded Set-Cookie named %q", name)
+	}
+	if seeded.Value != token {
+		t.Errorf("seeded value = %q, want token", seeded.Value)
+	}
+}
+
 func TestLocalGate(t *testing.T) {
 	const token = "secret-token"
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	gate := LocalGate(next, token, []string{"deepcove.example"})
+	gate := LocalGate(next, token, LocalTokenCookieBaseName, []string{"deepcove.example"})
 
 	cases := []struct {
 		name          string
@@ -40,7 +94,7 @@ func TestLocalGate(t *testing.T) {
 			r := httptest.NewRequest(tc.method, "http://x"+tc.path, nil)
 			r.Host = tc.host
 			if tc.cookie != "" {
-				r.AddCookie(&http.Cookie{Name: LocalTokenCookie, Value: tc.cookie})
+				r.AddCookie(&http.Cookie{Name: LocalTokenCookieBaseName, Value: tc.cookie})
 			}
 			w := httptest.NewRecorder()
 			gate.ServeHTTP(w, r)
@@ -50,7 +104,7 @@ func TestLocalGate(t *testing.T) {
 			}
 			var seeded *http.Cookie
 			for _, c := range w.Result().Cookies() {
-				if c.Name == LocalTokenCookie {
+				if c.Name == LocalTokenCookieBaseName {
 					seeded = c
 				}
 			}

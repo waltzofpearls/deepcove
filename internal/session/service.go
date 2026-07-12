@@ -69,6 +69,10 @@ type Service struct {
 	// single-node: only this machine's sessions.
 	federation Federation
 
+	// clusterStore is this node's cluster label, reported on /api/sessions/local so fan-out callers can
+	// group by cluster (set via SetClusterStore). Nil reads back as the default cluster.
+	clusterStore *ClusterStore
+
 	// previewCache holds the most recent successful capture-pane
 	// snapshot per session id. We serve it back when:
 	//   - the session is stopped (so the UI can show a dimmed

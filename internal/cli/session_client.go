@@ -23,7 +23,7 @@ type sessionClient struct {
 }
 
 func newSessionClient(cfg *config.Config) *sessionClient {
-	if sock := socketPath(); socketAvailable(sock) {
+	if sock := socketPath(cfg.DataDir); socketAvailable(sock) {
 		return &sessionClient{
 			baseURL: "http://unix", // host is ignored; the transport dials the socket
 			http:    socketHTTPClient(sock),

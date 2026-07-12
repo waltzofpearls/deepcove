@@ -103,13 +103,25 @@ func New(stateDir, hostname string) *Node {
 	}
 }
 
-// authReminder is the tsnet log line we suppress (matched as a substring, since the URL varies).
-const authReminder = "To start this tsnet server"
+// noisyLogFragments are tsnet/netstack log lines deepcove suppresses because they are high-volume and
+// not actionable for us:
+//   - "To start this tsnet server ...": the auth reminder, reprinted every few seconds while a node is
+//     unauthenticated. We already surface the login URL and state through the IPN bus and the UI.
+//   - "decrementing connsInFlightByClient ... the packet was not handled": netstack's per-packet
+//     in-flight bookkeeping. It fires for trailing/late packets after a flow is torn down, which our
+//     frequent cross-node polling (sessions, previews, connect-status) generates in bulk. Benign for
+//     app correctness; Tailscale's own rate-limit on this line is unreliable, hence the flood.
+var noisyLogFragments = []string{
+	"To start this tsnet server",
+	"decrementing connsInFlightByClient",
+}
 
 func filteredLogf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	if strings.Contains(msg, authReminder) {
-		return
+	for _, frag := range noisyLogFragments {
+		if strings.Contains(msg, frag) {
+			return
+		}
 	}
 	log.Print(msg)
 }

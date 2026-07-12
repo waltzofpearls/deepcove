@@ -54,7 +54,7 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 	// socketHTTPClient dials the socket regardless of the URL host.
 	dialOpts := &websocket.DialOptions{Subprotocols: []string{session.AttachSubprotocol}}
 	wsURL := "ws://" + cfg.Addr + "/api/sessions/" + sess.ID + "/attach"
-	if sock := socketPath(); socketAvailable(sock) {
+	if sock := socketPath(cfg.DataDir); socketAvailable(sock) {
 		wsURL = "ws://unix/api/sessions/" + sess.ID + "/attach"
 		dialOpts.HTTPClient = socketHTTPClient(sock)
 	}

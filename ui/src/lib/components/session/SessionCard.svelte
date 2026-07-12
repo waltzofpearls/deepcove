@@ -5,9 +5,10 @@
   import { sessions } from '$lib/stores/sessions.svelte';
   import { tailnetAuth } from '$lib/api/wasm';
   import { usePolling } from '$lib/polling';
-  import { ageOf, shortId } from '$lib/format';
+  import { ageOf } from '$lib/format';
   import { createConverter, CARD_FONT_SIZE } from './ansiToHtml';
   import StatusIndicator from './StatusIndicator.svelte';
+  import SessionTags from './SessionTags.svelte';
   import {
     DropdownMenu,
     DropdownMenuTrigger,
@@ -265,9 +266,8 @@
       <StatusIndicator status={session.status} />
       <div class="min-w-0">
         <div class="truncate font-mono text-sm font-medium">{session.name}</div>
-        <div class="truncate text-xs text-muted-foreground">
-          {session.agent} · {shortId(session.id)}{#if sessions.isRemote(session)} ·
-            <span class="text-primary">{session.host?.hostname}</span>{/if}
+        <div class="mt-1">
+          <SessionTags {session} />
         </div>
       </div>
     </div>

@@ -15,6 +15,10 @@ type Config struct {
 	DataDir  string `env:"DATA_DIR"`
 	NodeName string `env:"NODE_NAME"`
 	LogLevel string `env:"LOG_LEVEL"`
+
+	// Cluster is this node's cluster label (SPEC §5.12), also settable with the `--cluster` flag on
+	// `deepcove start` and later in the web UI. Empty falls back to the persisted value, then "default".
+	Cluster string `env:"DEEPCOVE_CLUSTER"`
 	ViteURL  string `env:"VITE_URL, default=http://localhost:5173"`
 
 	// Transport forces the SPA's runtime transport ("direct" or "wasm"), and

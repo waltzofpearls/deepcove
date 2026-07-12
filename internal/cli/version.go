@@ -17,7 +17,8 @@ var Version = "dev"
 
 func cmdVersion(_ context.Context, args []string) error {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
-	short := fs.Bool("short", false, "print only the version string")
+	var short bool
+	fs.BoolVar(&short, "short", false, "print only the version string")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -31,7 +32,7 @@ func cmdVersion(_ context.Context, args []string) error {
 		}
 	}
 
-	if *short {
+	if short {
 		fmt.Println(Version)
 		return nil
 	}

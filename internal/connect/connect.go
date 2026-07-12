@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/waltzofpearls/deepcove/internal/session"
 	"github.com/waltzofpearls/deepcove/internal/tailnet"
 )
 
@@ -37,14 +39,21 @@ type Status struct {
 type Manager struct {
 	ctx         context.Context
 	db          *sql.DB
+	logger      *slog.Logger
 	stateDir    string
 	enabledFile string
 	hostname    string
 	handler     http.Handler // app mux, served (owner-gated) on the tailnet listeners
 
-	nodeMu    sync.Mutex // guards tsNode + serveOnce (the node lifecycle)
-	tsNode    *tailnet.Node
-	serveOnce bool
+	clusterStore *session.ClusterStore // this node's cluster label, reported to fan-out callers
+
+	clusterCacheMu sync.RWMutex      // guards clusterCache
+	clusterCache   map[string]string // last-known peer cluster by stable node id; backed by the node_clusters table
+
+	nodeMu     sync.Mutex // guards tsNode + httpClient + serveOnce (the node lifecycle)
+	tsNode     *tailnet.Node
+	httpClient *http.Client // cached from tsNode; reused across fan-out
+	serveOnce  bool
 
 	serveMu       sync.Mutex // guards serving80 + serving443 + enabledMarked
 	serving80     bool
@@ -56,22 +65,67 @@ type Manager struct {
 	ownerSaved     bool
 }
 
-func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Handler) *Manager {
+func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Handler, logger *slog.Logger) *Manager {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	m := &Manager{
 		ctx:         ctx,
 		db:          db,
+		logger:      logger,
 		stateDir:    filepath.Join(dataDir, "tailnet"),
 		enabledFile: filepath.Join(dataDir, "tailnet.enabled"),
 		hostname:    defaultHostname(),
 		handler:     handler,
 	}
 	if db != nil {
-		if owner, err := loadOwner(db); err == nil && owner != nil {
+		if owner, err := loadOwner(db); err != nil {
+			logger.Warn("connect: load persisted node owner", "err", err)
+		} else if owner != nil {
 			m.persistedOwner = owner
 			m.ownerSaved = true
 		}
+		// seed the last-known cluster cache so offline peers survive a restart
+		if cached, err := loadNodeClusters(db); err != nil {
+			logger.Warn("connect: load persisted node clusters", "err", err)
+		} else {
+			m.clusterCache = cached
+		}
 	}
 	return m
+}
+
+// SetClusterStore wires this node's cluster label so Self() and fan-out report it. Optional; a nil
+// store reads back as the default cluster.
+func (m *Manager) SetClusterStore(cs *session.ClusterStore) { m.clusterStore = cs }
+
+// cacheCluster records a peer's observed cluster label, in memory and written through to DuckDB so it
+// survives a restart. Empty ids/labels and unchanged values are ignored.
+func (m *Manager) cacheCluster(stableNodeID, cluster string) {
+	if stableNodeID == "" || cluster == "" {
+		return
+	}
+	m.clusterCacheMu.Lock()
+	defer m.clusterCacheMu.Unlock()
+	if m.clusterCache == nil {
+		m.clusterCache = make(map[string]string)
+	}
+	if m.clusterCache[stableNodeID] == cluster {
+		return
+	}
+	m.clusterCache[stableNodeID] = cluster
+
+	// persist under the lock so the DB row order matches the map order
+	if m.db != nil {
+		_ = saveNodeCluster(m.db, stableNodeID, cluster)
+	}
+}
+
+// cachedCluster returns a peer's last-known cluster label, or "" if none was ever observed.
+func (m *Manager) cachedCluster(stableNodeID string) string {
+	m.clusterCacheMu.RLock()
+	defer m.clusterCacheMu.RUnlock()
+	return m.clusterCache[stableNodeID]
 }
 
 // persistOwnerOnce records the node owner in DuckDB the first time the node is
@@ -117,6 +171,7 @@ func (m *Manager) Connect() (Status, error) {
 			return Status{}, err
 		}
 		m.tsNode = tsNode
+		m.httpClient = tsNode.HTTPClient() // reused across fan-out
 		// NOTE: the auto-start marker is deliberately NOT written here. We write it only once the node
 		// actually reaches Running (see ensureServing), so an abandoned sign-in never leaves a marker
 		// that would auto-start a half-connected node, reprinting its login URL forever, on the next boot.
@@ -149,6 +204,7 @@ func (m *Manager) teardown(mode teardownMode) error {
 	m.nodeMu.Lock()
 	tsNode := m.tsNode
 	m.tsNode = nil
+	m.httpClient = nil
 	m.nodeMu.Unlock()
 
 	// Reset the serving flags so a reconnect re-creates the listeners. The long-
@@ -169,6 +225,15 @@ func (m *Manager) teardown(mode teardownMode) error {
 	}
 	if mode == wipeState {
 		_ = os.RemoveAll(m.stateDir)
+		// forget drops the remembered peer clusters too (fresh identity, possibly different peers)
+		m.clusterCacheMu.Lock()
+		m.clusterCache = nil
+		m.clusterCacheMu.Unlock()
+		if m.db != nil {
+			if _, err := m.db.Exec(`DELETE FROM node_clusters`); err != nil {
+				m.logger.Warn("connect: clear node_clusters on reset", "err", err)
+			}
+		}
 	}
 	return nil
 }
@@ -315,6 +380,7 @@ func (m *Manager) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connect/reset", m.handleReset)
 	mux.HandleFunc("GET /api/nodes", m.handleNodes)
 	mux.HandleFunc("GET /api/nodes/web", m.handleWebNodes)
+	mux.HandleFunc("GET /api/nodes/clusters", m.handleNodeClusters)
 }
 
 // Nodes lists the user's deepcove nodes: this machine plus any same-user tailnet peers (discovered
@@ -351,6 +417,10 @@ func (m *Manager) WebNodes() []tailnet.NodeInfo {
 
 func (m *Manager) handleWebNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.WebNodes())
+}
+
+func (m *Manager) handleNodeClusters(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, m.NodeClusters(r.Context()))
 }
 
 func (m *Manager) handleConnect(w http.ResponseWriter, r *http.Request) {

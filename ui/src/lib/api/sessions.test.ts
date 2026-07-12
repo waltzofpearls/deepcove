@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	hostForSession,
 	isRemoteSession,
+	sessionHostLabel,
 	mergeAggregated,
 	onlineHostNodes,
 	defaultNodeId,
@@ -85,11 +86,73 @@ describe('mergeAggregated', () => {
 		expect(out.unreachable?.map((u) => u.stable_node_id)).toEqual(['down']);
 	});
 
+	it('stamps each node cluster (from its header) onto its sessions, leaving others untagged', () => {
+		const out = mergeAggregated(
+			[
+				{ node: node('a'), sessions: [s('a1', '2026-06-01T10:00:00Z')], cluster: 'dev' },
+				{ node: node('b'), sessions: [s('b1', '2026-06-01T09:00:00Z')] }, // no cluster header
+			],
+			browser,
+		);
+		expect(out.sessions.find((x) => x.id === 'a1')?.host?.cluster).toBe('dev');
+		expect(out.sessions.find((x) => x.id === 'b1')?.host?.cluster).toBeUndefined();
+	});
+
+	it('orders by parsed instant, not raw string (survives timezone offsets, matching Go)', () => {
+		const out = mergeAggregated(
+			[
+				{ node: node('a'), sessions: [s('a1', '2026-06-01T09:00:00+02:00')] }, // = 07:00 UTC
+				{ node: node('b'), sessions: [s('b1', '2026-06-01T08:00:00Z')] }, // 08:00 UTC, more recent
+			],
+			browser,
+		);
+		// Instant order: b1 (08:00 UTC) is newer than a1 (07:00 UTC). A raw-string localeCompare would
+		// wrongly put a1 first because "09" > "08".
+		expect(out.sessions.map((x) => x.id)).toEqual(['b1', 'a1']);
+	});
+
 	it('omits self/unreachable when empty', () => {
 		const out = mergeAggregated([{ node: node('a'), sessions: [] }], null);
 		expect(out.sessions).toEqual([]);
 		expect(out.self).toBeUndefined();
 		expect(out.unreachable).toBeUndefined();
+	});
+});
+
+describe('sessionHostLabel', () => {
+	const cases: Array<{
+		name: string;
+		host: SessionHost | undefined;
+		self: SessionHost | null;
+		want: string | undefined;
+	}> = [
+		{ name: 'undefined for an untagged session', host: undefined, self, want: undefined },
+		{ name: 'undefined for a self-hosted (local) session', host: self, self, want: undefined },
+		{
+			name: 'undefined on a single-node setup (no self)',
+			host: { stable_node_id: 'n-peer', hostname: 'peer' },
+			self: null,
+			want: undefined,
+		},
+		{
+			name: 'first label of the host MagicDNS name (keeping any dedup suffix)',
+			host: {
+				stable_node_id: 'n-peer',
+				hostname: 'deepcove-erebor',
+				dns_name: 'deepcove-erebor-1.tail-scale.ts.net',
+			},
+			self,
+			want: 'deepcove-erebor-1',
+		},
+		{
+			name: 'falls back to hostname when the host has no MagicDNS name',
+			host: { stable_node_id: 'n-peer', hostname: 'deepcove-peer' },
+			self,
+			want: 'deepcove-peer',
+		},
+	];
+	it.each(cases)('$name', ({ host, self: s, want }) => {
+		expect(sessionHostLabel(sess(host), s)).toBe(want);
 	});
 });
 
