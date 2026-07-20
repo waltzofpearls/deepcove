@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { NodeStatus, TailnetStatus } from 'tailscale-web';
-import { discoverableNodes, discoverableWebNodes, pickPrimary, selfHost } from './discovery';
+import { discoverableNodes, discoverableWebNodes, pickReachablePrimary, selfHost } from './discovery';
 import type { NodeInfo } from './types';
 
 function node(over: Partial<NodeStatus> = {}): NodeStatus {
@@ -87,23 +87,29 @@ describe('discoverableWebNodes', () => {
 	});
 });
 
-describe('pickPrimary', () => {
+describe('pickReachablePrimary', () => {
 	const mk = (over: Partial<NodeInfo>): NodeInfo => ({
 		stable_node_id: 'n',
 		hostname: 'n',
-		dns_name: 'n',
+		dns_name: 'n.ts',
 		online: true,
 		self: false,
 		...over,
 	});
 
-	it('picks the first online node', () => {
-		const got = pickPrimary([mk({ hostname: 'a', online: false }), mk({ hostname: 'b' })]);
+	it('picks an online node that pings alive, skipping an unreachable one', async () => {
+		const got = await pickReachablePrimary(
+			[mk({ hostname: 'a', dns_name: 'a.ts' }), mk({ hostname: 'b', dns_name: 'b.ts' })],
+			async (dns) => dns === 'b.ts',
+		);
 		expect(got?.hostname).toBe('b');
 	});
-	it('is null when none are online', () => {
-		expect(pickPrimary([mk({ online: false })])).toBeNull();
-		expect(pickPrimary([])).toBeNull();
+	it('is null when no online node is reachable', async () => {
+		expect(await pickReachablePrimary([mk({ dns_name: 'a.ts' })], async () => false)).toBeNull();
+	});
+	it('ignores offline nodes and empty lists', async () => {
+		expect(await pickReachablePrimary([mk({ online: false })], async () => true)).toBeNull();
+		expect(await pickReachablePrimary([], async () => true)).toBeNull();
 	});
 });
 

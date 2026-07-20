@@ -28,48 +28,38 @@ func (m *Manager) Self() session.NodeRef {
 	return session.NodeRef{Cluster: m.clusterStore.Name()}
 }
 
-// NodeClusters returns each of the user's session nodes' cluster labels, keyed by stable node id. Self
-// is read locally; online peers are queried for their /api/cluster in parallel with a short timeout.
-// Used only by the Nodes page, so it fans out on demand rather than on every sessions poll.
+// ClusterObservation is a node's cluster label and when it was observed, exchanged during gossip.
+type ClusterObservation struct {
+	Cluster    string    `json:"cluster"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+// gossipMinInterval throttles the background gossip refresh: at most one round this often, however many
+// pollers hit NodeClusters.
+const gossipMinInterval = 5 * time.Second
+
+// NodeClusters returns each session node's cluster label, keyed by stable node id. It returns the merged
+// cache immediately (so a slow/dead peer never stalls the Nodes page) and refreshes it via a throttled
+// background gossip round. A cold cache warms up synchronously so the first response isn't blank. Self is
+// always live; the rest come from the cache, which gossip keeps consistent across nodes.
 func (m *Manager) NodeClusters(ctx context.Context) map[string]string {
+	if m.clusterCacheLen() == 0 {
+		m.gossipOnce(ctx)
+	} else {
+		m.maybeGossipAsync()
+	}
+	return m.buildClusterMap()
+}
+
+func (m *Manager) buildClusterMap() map[string]string {
 	out := map[string]string{}
-	nodes := m.Nodes()
-	for _, n := range nodes {
-		if n.Self {
-			if n.StableNodeID == "" {
-				continue // lone rung-1 node has no stable id yet
-			}
-			c := m.clusterStore.Name()
-			out[n.StableNodeID] = c
-			m.cacheCluster(n.StableNodeID, c)
-		}
-	}
-	m.nodeMu.Lock()
-	client := m.httpClient
-	m.nodeMu.Unlock()
-	if client != nil {
-		type result struct{ id, cluster string }
-		ch := make(chan result)
-		pending := 0
-		for _, node := range nodes {
-			if node.Self || !node.Online || node.DNSName == "" {
-				continue
-			}
-			pending++
-			go func(id, dns string) {
-				ch <- result{id, fetchPeerCluster(ctx, client, dns)}
-			}(node.StableNodeID, node.DNSName)
-		}
-		for i := 0; i < pending; i++ {
-			if r := <-ch; r.cluster != "" {
-				out[r.id] = r.cluster
-				m.cacheCluster(r.id, r.cluster)
-			}
-		}
-	}
-	// fill unreached nodes from the last-known cache (live values above win)
-	for _, n := range nodes {
-		if _, ok := out[n.StableNodeID]; !ok {
+	for _, n := range m.Nodes() {
+		switch {
+		case n.StableNodeID == "":
+			continue // lone rung-1 node has no stable id yet
+		case n.Self:
+			out[n.StableNodeID] = m.clusterStore.Name()
+		default:
 			if c := m.cachedCluster(n.StableNodeID); c != "" {
 				out[n.StableNodeID] = c
 			}
@@ -78,32 +68,86 @@ func (m *Manager) NodeClusters(ctx context.Context) map[string]string {
 	return out
 }
 
-// fetchPeerCluster GETs a peer's /api/cluster, returning "" on any failure.
-func fetchPeerCluster(ctx context.Context, client *http.Client, dnsName string) string {
+// gossipOnce pulls every online peer's known map and merges it freshest-wins into the cache.
+func (m *Manager) gossipOnce(ctx context.Context) {
+	m.nodeMu.Lock()
+	client := m.httpClient
+	m.nodeMu.Unlock()
+	if client == nil {
+		return
+	}
+	ch := make(chan map[string]ClusterObservation)
+	pending := 0
+	for _, n := range m.Nodes() {
+		if n.Self || !n.Online || n.DNSName == "" {
+			continue
+		}
+		pending++
+		go func(dns string) { ch <- fetchKnownClusters(ctx, client, dns) }(n.DNSName)
+	}
+	for i := 0; i < pending; i++ {
+		for id, obs := range <-ch {
+			if obs.Cluster == "" {
+				continue
+			}
+			m.observeCluster(id, session.NormalizeCluster(obs.Cluster), obs.ObservedAt)
+		}
+	}
+}
+
+// maybeGossipAsync runs a gossip round in the background, unless one is already running or the last
+// finished less than gossipMinInterval ago. It uses the Manager's context so it outlives the request.
+func (m *Manager) maybeGossipAsync() {
+	m.gossipMu.Lock()
+	if m.gossiping || time.Since(m.lastGossip) < gossipMinInterval {
+		m.gossipMu.Unlock()
+		return
+	}
+	m.gossiping = true
+	m.gossipMu.Unlock()
+	go func() {
+		m.gossipOnce(m.ctx)
+		m.gossipMu.Lock()
+		m.gossiping = false
+		m.lastGossip = time.Now()
+		m.gossipMu.Unlock()
+	}()
+}
+
+// knownClusterMap is this node's memory of every peer's cluster (from the cache) plus its own cluster
+// stamped now. Served over /api/nodes/clusters/known for peers to pull during gossip.
+func (m *Manager) knownClusterMap() map[string]ClusterObservation {
+	out := map[string]ClusterObservation{}
+	for id, obs := range m.knownClusters() {
+		out[id] = ClusterObservation{Cluster: obs.cluster, ObservedAt: obs.observedAt}
+	}
+	if self := m.Self(); self.StableNodeID != "" {
+		out[self.StableNodeID] = ClusterObservation{Cluster: self.Cluster, ObservedAt: time.Now()}
+	}
+	return out
+}
+
+// fetchKnownClusters GETs a peer's known-cluster map, returning nil on any failure.
+func fetchKnownClusters(ctx context.Context, client *http.Client, dnsName string) map[string]ClusterObservation {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+dnsName+"/api/cluster", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+dnsName+"/api/nodes/clusters/known", nil)
 	if err != nil {
-		return ""
+		return nil
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return nil
 	}
-	var out struct {
-		Cluster string `json:"cluster"`
-	}
+	var out map[string]ClusterObservation
 	if json.NewDecoder(resp.Body).Decode(&out) != nil {
-		return ""
+		return nil
 	}
-	if out.Cluster == "" {
-		return "" // empty stays empty, don't fabricate default
-	}
-	return session.NormalizeCluster(out.Cluster)
+	return out
 }
 
 // Peers are the user's other deepcove nodes that are online. Offline nodes are skipped so fan-out

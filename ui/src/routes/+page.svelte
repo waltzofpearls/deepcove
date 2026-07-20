@@ -19,6 +19,7 @@
   import Info from '@lucide/svelte/icons/info';
   import X from '@lucide/svelte/icons/x';
   import Search from '@lucide/svelte/icons/search';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   // Subscribe to the shared sessions store. First subscriber kicks
   // off polling; cleanup is automatic on unmount via the $effect
@@ -62,6 +63,16 @@
   // local derive, no extra requests.
   let query = $state('');
   let statusFilter = $state<'all' | 'running'>('all');
+
+  let refreshing = $state(false);
+  async function refreshDashboard() {
+    refreshing = true;
+    try {
+      await sessions.refresh();
+    } finally {
+      refreshing = false;
+    }
+  }
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -237,6 +248,14 @@
         {#each allClusters as c (c)}<option value={c}>{c}</option>{/each}
       </select>
     {/if}
+    <button
+      onclick={refreshDashboard}
+      disabled={refreshing}
+      aria-label="Refresh"
+      class="flex size-9 shrink-0 items-center justify-center rounded-md border border-input text-muted-foreground shadow-xs transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
+    >
+      <RefreshCw class="size-4 {refreshing ? 'animate-spin' : ''}" />
+    </button>
   </div>
 
   {#if filtered.length === 0}

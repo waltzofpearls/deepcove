@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,10 +29,10 @@ type Status struct {
 	URL      string            `json:"url,omitempty"` // http or https, name or IP
 	TLS      bool              `json:"tls"`           // currently serving https
 	MagicDNS bool              `json:"magicdns_enabled"`
-	HTTPS    bool              `json:"https_enabled"`           // certs available -> upgradable
-	Tailnet  string            `json:"tailnet_name,omitempty"`  // the tailnet this node is on
-	Name     string            `json:"name,omitempty"`          // this node's MagicDNS name
-	IPs      []string          `json:"ips,omitempty"`           // this node's tailnet IPs (v4, v6)
+	HTTPS    bool              `json:"https_enabled"`          // certs available -> upgradable
+	Tailnet  string            `json:"tailnet_name,omitempty"` // the tailnet this node is on
+	Name     string            `json:"name,omitempty"`         // this node's MagicDNS name
+	IPs      []string          `json:"ips,omitempty"`          // this node's tailnet IPs (v4, v6)
 	Owner    *tailnet.Identity `json:"owner,omitempty"`
 }
 
@@ -47,8 +48,12 @@ type Manager struct {
 
 	clusterStore *session.ClusterStore // this node's cluster label, reported to fan-out callers
 
-	clusterCacheMu sync.RWMutex      // guards clusterCache
-	clusterCache   map[string]string // last-known peer cluster by stable node id; backed by the node_clusters table
+	clusterCacheMu sync.RWMutex               // guards clusterCache
+	clusterCache   map[string]observedCluster // last known peer cluster + observed_at by stable node id; backed by node_clusters
+
+	gossipMu   sync.Mutex // guards lastGossip + gossiping
+	lastGossip time.Time
+	gossiping  bool
 
 	nodeMu     sync.Mutex // guards tsNode + httpClient + serveOnce (the node lifecycle)
 	tsNode     *tailnet.Node
@@ -85,7 +90,7 @@ func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Ha
 			m.persistedOwner = owner
 			m.ownerSaved = true
 		}
-		// seed the last-known cluster cache so offline peers survive a restart
+		// seed the last known cluster cache so offline peers survive a restart
 		if cached, err := loadNodeClusters(db); err != nil {
 			logger.Warn("connect: load persisted node clusters", "err", err)
 		} else {
@@ -99,33 +104,56 @@ func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Ha
 // store reads back as the default cluster.
 func (m *Manager) SetClusterStore(cs *session.ClusterStore) { m.clusterStore = cs }
 
-// cacheCluster records a peer's observed cluster label, in memory and written through to DuckDB so it
-// survives a restart. Empty ids/labels and unchanged values are ignored.
-func (m *Manager) cacheCluster(stableNodeID, cluster string) {
+// observeCluster merges an observation of a peer's cluster into the cache (and DuckDB), keeping the
+// value with the freshest timestamp when observations disagree. Seeing the same value again keeps the
+// original timestamp (so it means "when this value was first seen"). Empty ids/labels are ignored.
+func (m *Manager) observeCluster(stableNodeID, cluster string, at time.Time) {
 	if stableNodeID == "" || cluster == "" {
 		return
 	}
 	m.clusterCacheMu.Lock()
 	defer m.clusterCacheMu.Unlock()
 	if m.clusterCache == nil {
-		m.clusterCache = make(map[string]string)
+		m.clusterCache = make(map[string]observedCluster)
 	}
-	if m.clusterCache[stableNodeID] == cluster {
-		return
+	if cur, ok := m.clusterCache[stableNodeID]; ok && (cur.cluster == cluster || cur.observedAt.After(at)) {
+		return // same value, or we already hold fresher evidence
 	}
-	m.clusterCache[stableNodeID] = cluster
+	obs := observedCluster{cluster: cluster, observedAt: at}
+	m.clusterCache[stableNodeID] = obs
 
 	// persist under the lock so the DB row order matches the map order
 	if m.db != nil {
-		_ = saveNodeCluster(m.db, stableNodeID, cluster)
+		_ = saveNodeCluster(m.db, stableNodeID, obs)
 	}
 }
 
-// cachedCluster returns a peer's last-known cluster label, or "" if none was ever observed.
+// cacheCluster records a direct observation of a peer's current cluster (as of now).
+func (m *Manager) cacheCluster(stableNodeID, cluster string) {
+	m.observeCluster(stableNodeID, cluster, time.Now())
+}
+
+// cachedCluster returns a peer's last known cluster label, or "" if none was ever observed.
 func (m *Manager) cachedCluster(stableNodeID string) string {
 	m.clusterCacheMu.RLock()
 	defer m.clusterCacheMu.RUnlock()
-	return m.clusterCache[stableNodeID]
+	return m.clusterCache[stableNodeID].cluster
+}
+
+// knownClusters snapshots this node's memory of every peer's cluster, for gossip.
+func (m *Manager) knownClusters() map[string]observedCluster {
+	m.clusterCacheMu.RLock()
+	defer m.clusterCacheMu.RUnlock()
+	out := make(map[string]observedCluster, len(m.clusterCache))
+	maps.Copy(out, m.clusterCache)
+	return out
+}
+
+// clusterCacheLen reports how many peers we have a remembered cluster for (0 = cold cache).
+func (m *Manager) clusterCacheLen() int {
+	m.clusterCacheMu.RLock()
+	defer m.clusterCacheMu.RUnlock()
+	return len(m.clusterCache)
 }
 
 // persistOwnerOnce records the node owner in DuckDB the first time the node is
@@ -381,6 +409,7 @@ func (m *Manager) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/nodes", m.handleNodes)
 	mux.HandleFunc("GET /api/nodes/web", m.handleWebNodes)
 	mux.HandleFunc("GET /api/nodes/clusters", m.handleNodeClusters)
+	mux.HandleFunc("GET /api/nodes/clusters/known", m.handleKnownClusters)
 }
 
 // Nodes lists the user's deepcove nodes: this machine plus any same-user tailnet peers (discovered
@@ -421,6 +450,12 @@ func (m *Manager) handleWebNodes(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) handleNodeClusters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.NodeClusters(r.Context()))
+}
+
+// handleKnownClusters serves this node's raw known-cluster map (its memory of peers plus its own cluster
+// stamped now), without fanning out. Peers pull it during gossip. GET /api/nodes/clusters/known
+func (m *Manager) handleKnownClusters(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, m.knownClusterMap())
 }
 
 func (m *Manager) handleConnect(w http.ResponseWriter, r *http.Request) {
