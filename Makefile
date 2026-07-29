@@ -152,6 +152,25 @@ lint-go: ui/build/index.html ## Run Go linters (go vet + golangci-lint; UI stub 
 lint-js: ## Run the frontend linter (svelte-check, incl. .ts type-checking)
 	cd ui && npm run check
 
+# --- Apple VF runtime (macOS only) -----------------------------------------
+# The guest init is a static pure-Go Linux binary baked into the session image. GUEST_ARCH defaults to
+# the host arch mapping (arm64 host -> arm64 guest); override for a different guest.
+GUEST_ARCH ?= arm64
+
+.PHONY: guest-init
+guest-init: ## Build the Linux guest init binary into dist/guest/
+	@mkdir -p dist/guest
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(GUEST_ARCH) \
+		go build -ldflags '-s -w' -o dist/guest/deepcove-guest-init ./cmd/deepcove-guest-init
+
+.PHONY: applevf-smoke
+applevf-smoke: ## Build + codesign the VF boot smoke harness (needs an Apple signing identity)
+	@mkdir -p dist/darwin-$(shell go env GOARCH)
+	CGO_ENABLED=1 go build -o dist/darwin-$(shell go env GOARCH)/applevf-smoke ./cmd/applevf-smoke
+	codesign -f --entitlements build/virtualization.entitlements -s "$${CODESIGN_IDENTITY:--}" \
+		dist/darwin-$(shell go env GOARCH)/applevf-smoke
+	@echo "Signed dist/darwin-$(shell go env GOARCH)/applevf-smoke (identity: $${CODESIGN_IDENTITY:-ad-hoc})"
+
 .PHONY: clean
 clean: ## Remove built binaries
 	rm -f deepcove
