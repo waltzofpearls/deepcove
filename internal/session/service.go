@@ -15,6 +15,19 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
+// toSandboxResources converts the session's human facing units to the byte counts the sandbox layer
+// uses. Zero stays zero, which every driver reads as "no explicit limit".
+func toSandboxResources(r Resources) sandbox.Resources {
+	out := sandbox.Resources{CPU: r.CPU}
+	if r.MemoryMB > 0 {
+		out.Memory = r.MemoryMB << 20
+	}
+	if r.DiskMB > 0 {
+		out.Disk = r.DiskMB << 20
+	}
+	return out
+}
+
 // workspaceDir is the conventional working directory. A user mount can target it (your
 // code lives there), and it's the default the New Session form pre-fills. When no mount
 // targets it, the entrypoint creates an empty /workspace so the agent always has a
@@ -61,9 +74,14 @@ var ErrNotFound = errors.New("session: not found")
 // Owner_email is threaded through to the repo on every call; today every caller passes the
 // placeholder owner, but the shape is ready for identity wiring.
 type Service struct {
-	repo    SessionRepository
-	sandbox sandbox.Sandbox
-	logger  *slog.Logger
+	repo   SessionRepository
+	logger *slog.Logger
+
+	// runtimes are the sandbox drivers this node provides, keyed by runtime name. A node can offer
+	// more than one (Docker everywhere, plus a VM runtime where the platform supports it), so each
+	// session records which one hosts it.
+	runtimes       map[string]sandbox.Sandbox
+	defaultRuntime string
 
 	// federation supplies the cross-node view for ListAggregated (set via SetFederation). Nil means
 	// single-node: only this machine's sessions.
@@ -84,14 +102,17 @@ type Service struct {
 }
 
 // NewService constructs a Service.
-func NewService(repo SessionRepository, sb sandbox.Sandbox, logger *slog.Logger) *Service {
+// NewService builds the service with NO runtimes. The caller registers each one it can provide and then
+// picks the default, because none of them is privileged: Docker, Apple VF, and whatever comes next are
+// peers. Baking one in made every other runtime look like an add-on to it.
+func NewService(repo SessionRepository, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
 	return &Service{
 		repo:         repo,
-		sandbox:      sb,
 		logger:       logger,
+		runtimes:     map[string]sandbox.Sandbox{},
 		previewCache: newPreviewCache(previewCacheMaxEntries),
 	}
 }
@@ -113,6 +134,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	// the sandbox layer's validator owns host-path concerns (absolute, allowed root).
 	userMounts, err := validateMountRequests(req.Mounts)
 	if err != nil {
+		return nil, err
+	}
+	if err := req.Resources.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -137,6 +161,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		Env:            req.Env,
 		Mounts:         req.Mounts,
 		SetupScript:    req.SetupScript,
+		Resources:      req.Resources,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		LastActivityAt: now,
@@ -145,23 +170,39 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		sess.Name = generateName(req.Agent)
 	}
 
+	// Resolve the runtime before anything is created, so an unavailable one fails cleanly instead of
+	// leaving a half built session behind.
+	sess.Runtime = req.Runtime
+	if sess.Runtime == "" {
+		sess.Runtime = s.defaultRuntime
+	}
+	runtime, err := s.runtimeNamed(sess.Runtime)
+	if err != nil {
+		return nil, err
+	}
+	// Refuse before building anything. The driver would fail anyway, but deeper and in its own words; a
+	// node with nothing usable should say so plainly rather than surface a backend's connection error.
+	if reason := s.runtimeUnavailable(ctx, sess.Runtime); reason != "" {
+		return nil, ErrRuntimeUnavailable{Runtime: sess.Runtime, Reason: reason}
+	}
+
 	spec := s.buildSandboxSpec(sess, agent, userMounts)
 
-	handle, err := s.sandbox.Create(ctx, spec)
+	handle, err := runtime.Create(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("session: create sandbox: %w", err)
 	}
 	sess.ContainerID = string(handle)
 
-	if err := s.sandbox.Start(ctx, handle); err != nil {
-		_ = s.sandbox.Destroy(context.Background(), handle)
+	if err := runtime.Start(ctx, handle); err != nil {
+		_ = runtime.Destroy(context.Background(), handle)
 		return nil, fmt.Errorf("session: start sandbox: %w", err)
 	}
 	sess.Status = StatusRunning
 
 	if err := s.repo.Insert(ctx, sess); err != nil {
-		_ = s.sandbox.Stop(context.Background(), handle)
-		_ = s.sandbox.Destroy(context.Background(), handle)
+		_ = runtime.Stop(context.Background(), handle)
+		_ = runtime.Destroy(context.Background(), handle)
 		return nil, fmt.Errorf("session: insert row: %w", err)
 	}
 
@@ -228,12 +269,20 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if sess.Status == StatusRunning {
 		return nil
 	}
-	if err := s.sandbox.Start(ctx, sandbox.Handle(sess.ContainerID)); err != nil {
-		// If the Docker container has been removed out of band
-		// (e.g. `docker rm` on the host), the session row is now
-		// orphaned. Surface as ErrNotFound so the UI can offer a
-		// recreate path. Today we just propagate.
-		return fmt.Errorf("session: sandbox start: %w", err)
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return err
+	}
+	if err := runtime.Start(ctx, sandbox.Handle(sess.ContainerID)); err != nil {
+		// The sandbox this row points at is gone: a container removed out of band with `docker rm`, or,
+		// far more routinely, a VM that died when deepcove restarted, since that runtime's registry only
+		// ever lived in memory. Build a new one rather than leaving the session permanently unstartable.
+		if !sandboxVanished(err, sess.ContainerID) {
+			return fmt.Errorf("session: sandbox start: %w", err)
+		}
+		if _, rerr := s.rebuildSandbox(ctx, sess, runtime); rerr != nil {
+			return rerr
+		}
 	}
 	if err := s.repo.MarkRunning(ctx, placeholderOwner, id, time.Now().UTC()); err != nil {
 		return fmt.Errorf("session: mark running: %w", err)
@@ -253,7 +302,11 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 	if sess.Status == StatusStopped {
 		return nil
 	}
-	if err := s.sandbox.Stop(ctx, sandbox.Handle(sess.ContainerID)); err != nil {
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return err
+	}
+	if err := runtime.Stop(ctx, sandbox.Handle(sess.ContainerID)); err != nil {
 		// If the sandbox is already gone, finish the transition anyway.
 		if !errors.Is(err, sandbox.ErrNotFound) {
 			return fmt.Errorf("session: sandbox stop: %w", err)
@@ -276,9 +329,13 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 		return err
 	}
 	handle := sandbox.Handle(sess.ContainerID)
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return err
+	}
 	// Best-effort sandbox teardown: if the daemon already lost the container, we still want to clear
 	// our row.
-	if err := s.sandbox.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+	if err := runtime.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return fmt.Errorf("session: sandbox destroy: %w", err)
 	}
 	// Don't remove the agent-home volume; it's shared (see agentHomeVolumeName).
@@ -304,15 +361,22 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 		return nil, err
 	}
 
+	// The recreate stays on the session's existing runtime: changing mounts must not silently move a
+	// session between a container and a VM.
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return nil, err
+	}
+
 	oldHandle := sandbox.Handle(sess.ContainerID)
 	wasRunning := sess.Status == StatusRunning
 
 	if wasRunning {
-		if err := s.sandbox.Stop(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+		if err := runtime.Stop(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 			return nil, fmt.Errorf("session: stop sandbox: %w", err)
 		}
 	}
-	if err := s.sandbox.Destroy(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+	if err := runtime.Destroy(ctx, oldHandle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return nil, fmt.Errorf("session: destroy old sandbox: %w", err)
 	}
 
@@ -323,15 +387,15 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 
 	spec := s.buildSandboxSpec(sess, agent, userMounts)
 
-	newHandle, err := s.sandbox.Create(ctx, spec)
+	newHandle, err := runtime.Create(ctx, spec)
 	if err != nil {
 		// Half-state: row exists but no container. User's recovery is destroy.
 		_ = s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC())
 		return nil, fmt.Errorf("session: create new sandbox: %w", err)
 	}
 	if wasRunning {
-		if err := s.sandbox.Start(ctx, newHandle); err != nil {
-			_ = s.sandbox.Destroy(context.Background(), newHandle)
+		if err := runtime.Start(ctx, newHandle); err != nil {
+			_ = runtime.Destroy(context.Background(), newHandle)
 			_ = s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC())
 			return nil, fmt.Errorf("session: start new sandbox: %w", err)
 		}
@@ -391,10 +455,12 @@ func (s *Service) buildSandboxSpec(
 	mergedEnv["DEEPCOVE_WORKDIR"] = workdirFor(userMounts)
 
 	return sandbox.SandboxSpec{
-		Image:  sess.Image,
-		Cmd:    buildEntrypoint(sess.Name, effectiveSetup, agent.LaunchCmd),
-		Env:    mergedEnv,
-		Mounts: mounts,
+		Image:     sess.Image,
+		Agent:     sess.Agent,
+		Resources: toSandboxResources(sess.Resources),
+		Cmd:       buildEntrypoint(sess.Name, effectiveSetup, agent.LaunchCmd),
+		Env:       mergedEnv,
+		Mounts:    mounts,
 		// NetNAT for outbound LLM API calls + package installs. Zero value (NetIsolated)
 		// would block `apk add` at startup.
 		Network: sandbox.NetworkConfig{Mode: sandbox.NetNAT},
@@ -450,6 +516,20 @@ chmod +x /usr/local/bin/deepcove-agent-launch
 # A fresh tmux refuses to reuse a stale socket from a previous boot.
 rm -rf /tmp/tmux-* 2>/dev/null || true
 tmux new-session -d -s main -n main /usr/local/bin/deepcove-agent-launch
+
+# Let tmux interpret mouse input. This is what makes the browser's wheel scroll the pane.
+#
+# Deliberately adds no bindings of its own: tmux's defaults already handle every case, and an earlier
+# hand-rolled Shift-PageUp binding got each of them subtly wrong. What the defaults do:
+#   - a full screen TUI that grabbed the mouse (the agent) gets the wheel forwarded and scrolls its own
+#     transcript, which is the only thing that can, since tmux records no scrollback for the alternate
+#     screen (history_size is 0 for such a pane)
+#   - a shell pane enters copy mode and scrolls tmux's real scrollback, and leaves copy mode by itself on
+#     reaching the bottom
+#
+# The browser synthesizes the wheel as SGR mouse sequences (see Terminal.svelte). xterm.js's own mouse
+# reporting stays suppressed there, so dragging still selects text natively; only the wheel is sent.
+tmux set-option -g mouse on
 
 # Flip to ready only after tmux is up. The frontend gates WS attach on this.
 echo ready > /etc/deepcove-bootstrap-status

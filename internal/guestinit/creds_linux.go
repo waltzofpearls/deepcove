@@ -3,10 +3,14 @@
 package guestinit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 
 	"github.com/mdlayher/vsock"
 	"github.com/waltzofpearls/deepcove/internal/credbroker"
@@ -47,8 +51,70 @@ func fetchCredentials(cfg Config) error {
 	return nil
 }
 
-// returnCredentials hands whatever the agent refreshed back to the host, at shutdown, so the next VM
-// starts already logged in.
+// credentialPollInterval is how often the guest checks whether the agent's login changed. Logging in is
+// a human paced action, so a few seconds is responsive, and reading two small files costs nothing.
+const credentialPollInterval = 5 * time.Second
+
+// watchCredentials pushes the agent's login to the host whenever it changes, for the life of the VM.
+//
+// Pushing only at shutdown is not enough: sessions run concurrently, so logging in inside one VM has to
+// reach the host while that VM is still alive, or a session created afterwards starts logged out. The
+// Docker runtime gets this for free by sharing one live volume; VMs cannot share a disk, so the guest
+// has to tell the host.
+func watchCredentials(cfg Config) {
+	if cfg.Agent == "" {
+		return // a gateway credential profile brokers nothing
+	}
+	var lastPushed string
+	for {
+		time.Sleep(credentialPollInterval)
+
+		files, err := readCredentialFiles()
+		if err != nil || len(files) == 0 {
+			// Nothing stored yet, or unreadable. Never push an empty bundle: it would wipe a good login
+			// on the host just because this VM has not logged in.
+			continue
+		}
+		sum := fingerprint(files)
+		if sum == lastPushed {
+			continue
+		}
+		if err := pushCredentials(cfg.Agent, files); err != nil {
+			logf("WARNING: could not push credentials: %v", err)
+			continue
+		}
+		lastPushed = sum
+		logf("pushed %d credential file(s) for %q to the host", len(files), cfg.Agent)
+	}
+}
+
+// fingerprint identifies a bundle's contents so unchanged credentials are not pushed repeatedly.
+func fingerprint(files map[string][]byte) string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names) // map order is random; the fingerprint must not be
+	h := sha256.New()
+	for _, name := range names {
+		h.Write([]byte(name))
+		h.Write(files[name])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// pushCredentials sends one bundle to the host's broker.
+func pushCredentials(agent string, files map[string][]byte) error {
+	conn, err := vsock.Dial(hostContextID, credbroker.Port, nil)
+	if err != nil {
+		return fmt.Errorf("dial credential broker: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	return credbroker.StoreFiles(conn, agent, files)
+}
+
+// returnCredentials hands whatever the agent refreshed back to the host, at shutdown. The watcher above
+// already pushes on change, so this is a final flush for anything written in the last few seconds.
 func returnCredentials(cfg Config) error {
 	if cfg.Agent == "" {
 		return nil
@@ -57,13 +123,7 @@ func returnCredentials(cfg Config) error {
 	if err != nil || len(files) == 0 {
 		return err
 	}
-	conn, err := vsock.Dial(hostContextID, credbroker.Port, nil)
-	if err != nil {
-		return fmt.Errorf("dial credential broker: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	if err := credbroker.StoreFiles(conn, cfg.Agent, files); err != nil {
+	if err := pushCredentials(cfg.Agent, files); err != nil {
 		return err
 	}
 	logf("returned %d credential file(s) for %q", len(files), cfg.Agent)

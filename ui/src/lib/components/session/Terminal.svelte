@@ -17,6 +17,7 @@
   import { untrack } from 'svelte';
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { api } from '$lib/api/client';
+  import { wheelSteps } from '$lib/util/wheel';
   import type { DeepcoveSocket } from '$lib/api/transport';
   import type { BootstrapStatus, SessionHost } from '$lib/api/types';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -183,10 +184,7 @@
         // Retry if the connection died young, usually because the server
         // failed to exec `tmux attach` while the container is
         // mid-startup.
-        if (
-          attempts < maxReconnectAttempts &&
-          (!everOpened || lifetime < earlyCloseThresholdMs)
-        ) {
+        if (attempts < maxReconnectAttempts && (!everOpened || lifetime < earlyCloseThresholdMs)) {
           attempts++;
           status = 'connecting';
           // Backoff: 500ms, 700ms, 900ms, ... up to ~2s.
@@ -214,13 +212,14 @@
       }
       if (disposed) return;
 
-      const [{ Terminal }, { FitAddon }, { WebLinksAddon }, { Unicode11Addon }] =
-        await Promise.all([
+      const [{ Terminal }, { FitAddon }, { WebLinksAddon }, { Unicode11Addon }] = await Promise.all(
+        [
           import('@xterm/xterm'),
           import('@xterm/addon-fit'),
           import('@xterm/addon-web-links'),
           import('@xterm/addon-unicode11'),
-        ]);
+        ],
+      );
       if (disposed) return;
 
       term = new Terminal({
@@ -255,9 +254,51 @@
       term.open(container);
       fit.fit();
 
+      // 1-based terminal cell under a pixel offset, clamped to the grid.
+      const cellIndex = (offset: number, size: number, cells: number) =>
+        Math.min(cells, Math.max(1, Math.ceil((offset / size) * cells)));
+
       const enc = new TextEncoder();
-      term.onData((s) => {
+      const send = (s: string) => {
         if (ws?.readyState === 1) ws.send(enc.encode(s));
+      };
+      term.onData(send);
+
+      // Make the wheel scroll instead of walking the agent's prompt history.
+      //
+      // tmux always runs on the alternate screen, where xterm.js keeps no scrollback of its own; its
+      // fallback there is to translate a wheel notch into an arrow key, which is why scrolling up replayed
+      // past prompts (and past shell commands in the SSH tab).
+      //
+      // So hand the wheel to tmux as an SGR mouse report and let ITS defaults decide: forward to a TUI
+      // that grabbed the mouse (the agent scrolls its own transcript), or scroll tmux's scrollback for a
+      // shell pane. Only the wheel is synthesized. xterm.js's own mouse reporting stays suppressed above,
+      // so a drag still selects text natively and Cmd-C still copies.
+      const WHEEL_UP = 64;
+      const WHEEL_DOWN = 65;
+      let wheelCarry = 0;
+      term.attachCustomWheelEventHandler((ev) => {
+        const t = term;
+        if (!t) return true;
+        // On the normal screen xterm's own scrollback is the right thing; leave it alone.
+        if (t.buffer.active.type !== 'alternate') return true;
+
+        const { steps, carry } = wheelSteps(ev.deltaY, ev.deltaMode, wheelCarry);
+        wheelCarry = carry;
+        if (steps !== 0) {
+          // tmux picks the target pane from the coordinates, so a split has to report where the pointer
+          // actually is rather than a fixed corner.
+          const rect = container.getBoundingClientRect();
+          const col = cellIndex(ev.clientX - rect.left, rect.width, t.cols);
+          const row = cellIndex(ev.clientY - rect.top, rect.height, t.rows);
+          const button = steps < 0 ? WHEEL_UP : WHEEL_DOWN;
+          for (let i = 0; i < Math.abs(steps); i++) {
+            send(`\x1b[<${button};${col};${row}M`);
+          }
+        }
+        // Handled either way: letting a sub-step trackpad nudge fall through would fire the arrow-key
+        // fallback and jump the prompt history.
+        return false;
       });
 
       // Terminal-focused paste/drop of files & images. Upload each into the
@@ -398,45 +439,39 @@
   {/if}
 
   {#if bootstrap === 'installing'}
-    <div
-      class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground"
-    >
+    <div class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground">
       <div class="flex shrink-0 flex-col items-center gap-2">
         <div class="flex items-center gap-2 text-sm">
           <Loader2 class="size-4 animate-spin text-primary" />
           Setting up your session…
         </div>
         <p class="max-w-md text-center text-xs text-muted-foreground">
-          Installing the coding agent and its dependencies. This is one-time per agent;
-          future sessions of the same agent skip this step.
+          Installing the coding agent and its dependencies. This is one-time per agent; future
+          sessions of the same agent skip this step.
         </p>
       </div>
       {#if bootstrapLog}
         <pre
           bind:this={logPreEl}
-          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-border bg-card/50 px-3 py-2 font-mono text-[11px] leading-tight text-muted-foreground"
-        >{bootstrapLog}</pre>
+          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-border bg-card/50 px-3 py-2 font-mono text-[11px] leading-tight text-muted-foreground">{bootstrapLog}</pre>
       {/if}
     </div>
   {:else if bootstrap === 'errored'}
-    <div
-      class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground"
-    >
+    <div class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground">
       <div class="flex shrink-0 flex-col items-center gap-2">
         <div class="flex items-center gap-2 text-sm text-destructive">
           <TriangleAlert class="size-4" />
           Setup failed
         </div>
         <p class="max-w-md text-center text-xs text-muted-foreground">
-          The container's entrypoint setup script exited non-zero. Use SSH mode to
-          inspect, or destroy and recreate the session.
+          The container's entrypoint setup script exited non-zero. Use SSH mode to inspect, or
+          destroy and recreate the session.
         </p>
       </div>
       {#if bootstrapLog}
         <pre
           bind:this={logPreEl}
-          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 font-mono text-[11px] leading-tight"
-        >{bootstrapLog}</pre>
+          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 font-mono text-[11px] leading-tight">{bootstrapLog}</pre>
       {/if}
     </div>
   {:else if status === 'connecting'}

@@ -1,10 +1,15 @@
 package applevf
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -15,7 +20,15 @@ import (
 func newTestDriver(t *testing.T) *Driver {
 	t.Helper()
 	dir := t.TempDir()
-	d, err := New(filepath.Join(dir, "vmlinux"), filepath.Join(dir, "init"), dir)
+	// Real files: New fingerprints the guest init's bytes to key the image cache, so it has to be
+	// readable. Failing at construction is deliberate, since a missing init means no VM can ever boot.
+	kernel, guestInit := filepath.Join(dir, "vmlinux"), filepath.Join(dir, "init")
+	for _, f := range []string{kernel, guestInit} {
+		if err := os.WriteFile(f, []byte("stub "+filepath.Base(f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, err := New(kernel, guestInit, dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -49,7 +62,7 @@ func TestNewRejectsMissingPaths(t *testing.T) {
 
 func TestCreateBuildsTheBaseImageAndReturnsAHandle(t *testing.T) {
 	d := newTestDriver(t)
-	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "ghcr.io/x/agent:latest"})
+	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "ghcr.io/x/agent:latest", Cmd: []string{"sh", "-c", "true"}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -70,9 +83,18 @@ func TestCreateRejectsASpecWithNoImage(t *testing.T) {
 	}
 }
 
+// The entrypoint is what the guest runs; without it a VM would boot to nothing, so the driver rejects
+// the spec rather than starting a session that can never work.
+func TestCreateRequiresAnEntrypoint(t *testing.T) {
+	d := newTestDriver(t)
+	if _, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag"}); err == nil {
+		t.Error("a spec without Cmd must be rejected")
+	}
+}
+
 func TestHandlesAreUnique(t *testing.T) {
 	d := newTestDriver(t)
-	spec := sandbox.SandboxSpec{Image: "ghcr.io/x/agent:latest"}
+	spec := sandbox.SandboxSpec{Image: "ghcr.io/x/agent:latest", Cmd: []string{"sh", "-c", "true"}}
 	first, err := d.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("first Create: %v", err)
@@ -106,7 +128,7 @@ func TestUnknownHandleIsNotFound(t *testing.T) {
 // Exec against a created but unstarted sandbox is a lifecycle conflict, not a missing sandbox.
 func TestExecBeforeStartIsAConflict(t *testing.T) {
 	d := newTestDriver(t)
-	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag"})
+	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag", Cmd: []string{"sh", "-c", "true"}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -118,7 +140,7 @@ func TestExecBeforeStartIsAConflict(t *testing.T) {
 // Stopping a sandbox that never started is a no op, so session teardown does not have to track state.
 func TestStopWithoutStartIsANoOp(t *testing.T) {
 	d := newTestDriver(t)
-	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag"})
+	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag", Cmd: []string{"sh", "-c", "true"}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -129,7 +151,7 @@ func TestStopWithoutStartIsANoOp(t *testing.T) {
 
 func TestDestroyForgetsTheSandbox(t *testing.T) {
 	d := newTestDriver(t)
-	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag"})
+	h, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag", Cmd: []string{"sh", "-c", "true"}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -201,3 +223,109 @@ func TestImageExistsReflectsTheCache(t *testing.T) {
 		t.Error("the image should be cached after a pull")
 	}
 }
+
+// The registry is the only record these VMs have, so listing it is the only way to see them at all.
+func TestListSandboxes(t *testing.T) {
+	d := &Driver{
+		machines: map[sandbox.Handle]*session{
+			"older": {
+				spec:      sandbox.SandboxSpec{Image: "alpine:3.20"},
+				createdAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+			},
+			"newer": {
+				spec:      sandbox.SandboxSpec{Image: "debian:13", Resources: sandbox.Resources{CPU: 4, Memory: 8 << 30}},
+				createdAt: time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC),
+				machine:   &machine{},
+			},
+		},
+	}
+
+	got, err := d.ListSandboxes(context.Background())
+	if err != nil {
+		t.Fatalf("ListSandboxes: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d instances, want 2", len(got))
+	}
+
+	// Newest first, so a poll does not reshuffle the view and what you just made is at the top.
+	if got[0].Handle != "newer" || got[1].Handle != "older" {
+		t.Errorf("order = %q, %q; want newer, older", got[0].Handle, got[1].Handle)
+	}
+	// A booted VM is running; one that was created but never started is not.
+	if got[0].State != sandbox.InstanceRunning {
+		t.Errorf("started sandbox state = %q, want running", got[0].State)
+	}
+	if got[1].State != sandbox.InstanceStopped {
+		t.Errorf("unstarted sandbox state = %q, want stopped", got[1].State)
+	}
+	// Resources report what the VM actually got, so an explicit request comes back as asked...
+	if got[0].Resources.CPU != 4 || got[0].Resources.Memory != 8<<30 {
+		t.Errorf("explicit resources = %+v, want 4 CPU / 8GiB", got[0].Resources)
+	}
+	// ...and a request that named nothing reports the defaults that were applied, not zero.
+	if got[1].Resources.CPU != float64(defaultCPUCount) || got[1].Resources.Memory != int64(defaultMemoryBytes) {
+		t.Errorf("default resources = %+v, want the driver defaults", got[1].Resources)
+	}
+	// An uncapped writable layer is not unlimited: tmpfs defaults to half the RAM, so that is the real
+	// cap and reporting zero would read as "no limit".
+	if got[1].Resources.Disk != int64(defaultMemoryBytes)/2 {
+		t.Errorf("default disk = %d, want half of memory (%d)", got[1].Resources.Disk, int64(defaultMemoryBytes)/2)
+	}
+	// The derived cap follows each sandbox's OWN memory, not the default.
+	if got[0].Resources.Disk != (8<<30)/2 {
+		t.Errorf("disk for an 8GiB sandbox = %d, want half of its own memory", got[0].Resources.Disk)
+	}
+	if got[1].Image != "alpine:3.20" {
+		t.Errorf("image = %q, want alpine:3.20", got[1].Image)
+	}
+}
+
+// fakeProcess records what was written to stdin and whether it was closed, which is the whole contract
+// streamStdin has to honour.
+type fakeProcess struct {
+	sandbox.Process
+	buf    bytes.Buffer
+	closed bool
+}
+
+func (f *fakeProcess) Stdin() io.WriteCloser { return &fakeStdin{p: f} }
+
+type fakeStdin struct{ p *fakeProcess }
+
+func (s *fakeStdin) Write(b []byte) (int, error) { return s.p.buf.Write(b) }
+func (s *fakeStdin) Close() error                { s.p.closed = true; return nil }
+
+// A command reading to EOF never exits unless stdin is CLOSED after the data, so both halves matter.
+// Dropping the payload is what broke file upload on this runtime.
+func TestStreamStdin(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"a payload arrives intact", "hello upload"},
+		{"an empty payload still closes, so the command can exit", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proc := &fakeProcess{}
+			streamStdin(proc, strings.NewReader(tc.in))
+
+			if got := proc.buf.String(); got != tc.in {
+				t.Errorf("stdin = %q, want %q", got, tc.in)
+			}
+			if !proc.closed {
+				t.Error("stdin was never closed, so a command reading to EOF would hang forever")
+			}
+		})
+	}
+}
+
+// A driver whose process cannot accept stdin must not panic on a nil writer.
+func TestStreamStdinWithoutAWriter(t *testing.T) {
+	streamStdin(&noStdinProcess{}, strings.NewReader("data"))
+}
+
+type noStdinProcess struct{ sandbox.Process }
+
+func (noStdinProcess) Stdin() io.WriteCloser { return nil }

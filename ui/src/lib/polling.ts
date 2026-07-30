@@ -8,28 +8,25 @@
 // before scheduling the next, so an unhealthy endpoint just slows
 // the poll cadence rather than building a backlog.
 
-export function usePolling(
-	tick: () => Promise<void>,
-	intervalMs: () => number
-): () => void {
-	let cancelled = false;
-	let timer: ReturnType<typeof setTimeout> | undefined;
+export function usePolling(tick: () => Promise<void>, intervalMs: () => number): () => void {
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
-	async function run() {
-		if (cancelled) return;
-		try {
-			await tick();
-		} finally {
-			if (!cancelled) {
-				timer = setTimeout(run, intervalMs());
-			}
-		}
-	}
+  async function run() {
+    if (cancelled) return;
+    try {
+      await tick();
+    } finally {
+      if (!cancelled) {
+        timer = setTimeout(run, intervalMs());
+      }
+    }
+  }
 
-	run();
+  run();
 
-	return () => {
-		cancelled = true;
-		if (timer) clearTimeout(timer);
-	};
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
 }

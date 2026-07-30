@@ -87,7 +87,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// processes piling up inside the container after each toggle).
 	viewSession := "view-" + uuid.NewString()[:8]
 	setupCtx, cancelSetup := context.WithTimeout(r.Context(), 3*time.Second)
-	if _, err := s.execTmux(setupCtx, sess.ContainerID,
+	if _, err := s.execTmux(setupCtx, sess,
 		"new-session", "-d", "-s", viewSession, "-t", AgentTmuxWindowName,
 	); err != nil {
 		cancelSetup()
@@ -102,7 +102,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		// process exits, preventing the accumulation.
 		killCtx, cancelKill := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelKill()
-		if _, err := s.execTmux(killCtx, sess.ContainerID, "kill-session", "-t", viewSession); err != nil {
+		if _, err := s.execTmux(killCtx, sess, "kill-session", "-t", viewSession); err != nil {
 			s.logger.Warn("attach: view session cleanup failed",
 				"id", id, "view", viewSession, "err", err)
 		}
@@ -131,7 +131,12 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	if tmuxWindow != "" {
 		cmd = append(cmd, ";", "select-window", "-t", viewSession+":"+tmuxWindow)
 	}
-	proc, err := s.sandbox.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		s.logger.Warn("attach: unknown runtime", "id", id, "err", err)
+		return
+	}
+	proc, err := runtime.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
 		Cmd: cmd,
 		Tty: true,
 		// TERM is required for tmux to function; without it tmux

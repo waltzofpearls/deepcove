@@ -12,11 +12,11 @@ const CONNECTING_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title
 // onto the returned Window and set its location to the login URL once it is known (or close it if the
 // node connected without needing one). Returns null in a non-browser context or if the open was blocked.
 export function openConnectingTab(): Window | null {
-	if (typeof window === 'undefined') return null;
-	const tab = window.open('', '_blank');
-	if (tab) {
-		tab.document.write(CONNECTING_PAGE);
-		tab.document.close();
-	}
-	return tab;
+  if (typeof window === 'undefined') return null;
+  const tab = window.open('', '_blank');
+  if (tab) {
+    tab.document.write(CONNECTING_PAGE);
+    tab.document.close();
+  }
+  return tab;
 }

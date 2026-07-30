@@ -45,123 +45,126 @@ let stopPolling: (() => void) | undefined;
 let abortCtrl: AbortController | undefined;
 
 async function poll(signal: AbortSignal): Promise<void> {
-	try {
-		// Dashboard mode: the browser is the aggregator, so fan out across the discovered nodes
-		// ourselves. Connected mode: a server node fans out behind /api/sessions.
-		const resp = discoveryRequired()
-			? await api.listSessionsAcrossNodes(discovery.nodes, discovery.self, { all: true, signal })
-			: await api.listSessions({ all: true, signal });
-		list = resp.sessions ?? [];
-		self = resp.self ?? null;
-		unreachable = resp.unreachable ?? [];
-		error = null;
-	} catch (e) {
-		if (signal.aborted) return;
-		error = e instanceof ApiError ? e.message : String(e);
-	} finally {
-		loading = false;
-	}
+  try {
+    // Dashboard mode: the browser is the aggregator, so fan out across the discovered nodes
+    // ourselves. Connected mode: a server node fans out behind /api/sessions.
+    const resp = discoveryRequired()
+      ? await api.listSessionsAcrossNodes(discovery.nodes, discovery.self, { all: true, signal })
+      : await api.listSessions({ all: true, signal });
+    list = resp.sessions ?? [];
+    self = resp.self ?? null;
+    unreachable = resp.unreachable ?? [];
+    error = null;
+  } catch (e) {
+    if (signal.aborted) return;
+    error = e instanceof ApiError ? e.message : String(e);
+  } finally {
+    loading = false;
+  }
 }
 
 function startIfIdle(): void {
-	if (stopPolling) return;
-	abortCtrl = new AbortController();
-	const signal = abortCtrl.signal;
-	stopPolling = usePolling(() => poll(signal), () => preferences.pollIntervalMs);
+  if (stopPolling) return;
+  abortCtrl = new AbortController();
+  const signal = abortCtrl.signal;
+  stopPolling = usePolling(
+    () => poll(signal),
+    () => preferences.pollIntervalMs,
+  );
 }
 
 function stopIfDone(): void {
-	if (subscriberCount > 0) return;
-	abortCtrl?.abort();
-	abortCtrl = undefined;
-	stopPolling?.();
-	stopPolling = undefined;
+  if (subscriberCount > 0) return;
+  abortCtrl?.abort();
+  abortCtrl = undefined;
+  stopPolling?.();
+  stopPolling = undefined;
 }
 
 export const sessions = {
-	get list(): Session[] {
-		return list;
-	},
-	// self is this node; isRemote(s) tells whether a session lives on a different node, which the UI
-	// uses to decide whether to badge it with its host.
-	get self(): SessionHost | null {
-		return self;
-	},
-	get unreachable(): SessionHost[] {
-		return unreachable;
-	},
-	isRemote(session: Session): boolean {
-		return isRemoteSession(session, self);
-	},
-	// hostLabel is the remote-host badge text, or undefined for a local session. See sessionHostLabel.
-	hostLabel(session: Session): string | undefined {
-		return sessionHostLabel(session, self);
-	},
-	// find looks a session up in the aggregated list by id. The session detail page uses it to learn a
-	// session's host (which the single-session GET doesn't carry) so its per-session calls can route to
-	// the owning node. Undefined until the first poll lands or for an unknown id.
-	find(id: string): Session | undefined {
-		return list.find((s) => s.id === id);
-	},
-	// hostFor resolves the host to route a session's per-session API calls to: the owning node for a
-	// remote session, undefined for a local one (use the boot transport). See hostForSession.
-	hostFor(session: Session): SessionHost | undefined {
-		return hostForSession(session, self);
-	},
-	get loading(): boolean {
-		return loading;
-	},
-	get error(): string | null {
-		return error;
-	},
+  get list(): Session[] {
+    return list;
+  },
+  // self is this node; isRemote(s) tells whether a session lives on a different node, which the UI
+  // uses to decide whether to badge it with its host.
+  get self(): SessionHost | null {
+    return self;
+  },
+  get unreachable(): SessionHost[] {
+    return unreachable;
+  },
+  isRemote(session: Session): boolean {
+    return isRemoteSession(session, self);
+  },
+  // hostLabel is the remote-host badge text, or undefined for a local session. See sessionHostLabel.
+  hostLabel(session: Session): string | undefined {
+    return sessionHostLabel(session, self);
+  },
+  // find looks a session up in the aggregated list by id. The session detail page uses it to learn a
+  // session's host (which the single-session GET doesn't carry) so its per-session calls can route to
+  // the owning node. Undefined until the first poll lands or for an unknown id.
+  find(id: string): Session | undefined {
+    return list.find((s) => s.id === id);
+  },
+  // hostFor resolves the host to route a session's per-session API calls to: the owning node for a
+  // remote session, undefined for a local one (use the boot transport). See hostForSession.
+  hostFor(session: Session): SessionHost | undefined {
+    return hostForSession(session, self);
+  },
+  get loading(): boolean {
+    return loading;
+  },
+  get error(): string | null {
+    return error;
+  },
 
-	// refresh forces an immediate poll (for a manual refresh button), independent of the interval.
-	async refresh(): Promise<void> {
-		await poll(abortCtrl?.signal ?? new AbortController().signal);
-	},
+  // refresh forces an immediate poll (for a manual refresh button), independent of the interval.
+  async refresh(): Promise<void> {
+    await poll(abortCtrl?.signal ?? new AbortController().signal);
+  },
 
-	// subscribe registers interest in the sessions list. First call
-	// kicks off the poll loop; the returned cleanup decrements the
-	// ref-count and stops the loop when it reaches zero. Designed to
-	// be returned from a Svelte $effect:
-	//
-	//   $effect(() => sessions.subscribe());
-	subscribe(): () => void {
-		subscriberCount++;
-		startIfIdle();
-		return () => {
-			subscriberCount--;
-			stopIfDone();
-		};
-	},
+  // subscribe registers interest in the sessions list. First call
+  // kicks off the poll loop; the returned cleanup decrements the
+  // ref-count and stops the loop when it reaches zero. Designed to
+  // be returned from a Svelte $effect:
+  //
+  //   $effect(() => sessions.subscribe());
+  subscribe(): () => void {
+    subscriberCount++;
+    startIfIdle();
+    return () => {
+      subscriberCount--;
+      stopIfDone();
+    };
+  },
 
-	// remove drops a session from the list synchronously, used as an
-	// optimistic update after DELETE /api/sessions/{id} succeeds, so
-	// the dashboard doesn't briefly render a card for a session that
-	// no longer exists (its preview fetch would 404 and the card
-	// would flash "waiting for first snapshot…" until the next
-	// poll tick reconciled). Next poll is the source of truth.
-	remove(id: string): void {
-		list = list.filter((s) => s.id !== id);
-	},
+  // remove drops a session from the list synchronously, used as an
+  // optimistic update after DELETE /api/sessions/{id} succeeds, so
+  // the dashboard doesn't briefly render a card for a session that
+  // no longer exists (its preview fetch would 404 and the card
+  // would flash "waiting for first snapshot…" until the next
+  // poll tick reconciled). Next poll is the source of truth.
+  remove(id: string): void {
+    list = list.filter((s) => s.id !== id);
+  },
 
-	// add pushes a newly-created session onto the list synchronously
-	// so the dashboard renders it immediately after POST /api/sessions
-	// returns. Without this, the new card wouldn't appear until the
-	// next poll tick, which is annoying lag right after a deliberate create.
-	// Idempotent: if a session with the same id is already in the
-	// list (unlikely but possible if the poll happens to land between
-	// the POST resolving and us calling add), we leave it alone.
-	add(session: Session): void {
-		if (list.some((s) => s.id === session.id)) return;
-		list = [...list, session];
-	},
+  // add pushes a newly-created session onto the list synchronously
+  // so the dashboard renders it immediately after POST /api/sessions
+  // returns. Without this, the new card wouldn't appear until the
+  // next poll tick, which is annoying lag right after a deliberate create.
+  // Idempotent: if a session with the same id is already in the
+  // list (unlikely but possible if the poll happens to land between
+  // the POST resolving and us calling add), we leave it alone.
+  add(session: Session): void {
+    if (list.some((s) => s.id === session.id)) return;
+    list = [...list, session];
+  },
 
-	// patch optimistically merges fields into a session already in the
-	// list, used by card quick actions (stop/start) so the status
-	// indicator flips immediately instead of lagging until the next poll
-	// tick. The next poll is still the source of truth and reconciles.
-	patch(id: string, fields: Partial<Session>): void {
-		list = list.map((s) => (s.id === id ? { ...s, ...fields } : s));
-	},
+  // patch optimistically merges fields into a session already in the
+  // list, used by card quick actions (stop/start) so the status
+  // indicator flips immediately instead of lagging until the next poll
+  // tick. The next poll is still the source of truth and reconciles.
+  patch(id: string, fields: Partial<Session>): void {
+    list = list.map((s) => (s.id === id ? { ...s, ...fields } : s));
+  },
 };

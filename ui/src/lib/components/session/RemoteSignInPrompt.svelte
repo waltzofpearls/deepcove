@@ -30,9 +30,7 @@
       <p class="text-sm font-medium">
         This session runs on <span class="font-mono">{hostName ?? 'another node'}</span>.
       </p>
-      <p class="text-sm text-muted-foreground">
-        Sign in to your tailnet to open it from here.
-      </p>
+      <p class="text-sm text-muted-foreground">Sign in to your tailnet to open it from here.</p>
     </div>
     <a
       href={auth.url}

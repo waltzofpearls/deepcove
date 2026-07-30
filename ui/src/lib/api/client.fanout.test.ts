@@ -9,70 +9,70 @@ const clusters = new Map<string, string>();
 const failing = new Set<string>();
 
 vi.mock('./transport', () => ({
-	transport: { mode: 'wasm' },
-	transportForHost: (host?: { dns_name?: string }) => ({
-		mode: 'wasm',
-		fetch: async (path: string) => {
-			const dns = host?.dns_name ?? '';
-			if (failing.has(dns)) throw new Error(`dial ${dns} failed`);
-			const body = JSON.stringify(responses.get(dns) ?? []);
-			void path;
-			const headers: Record<string, string> = { 'content-type': 'application/json' };
-			const cluster = clusters.get(dns);
-			if (cluster !== undefined) headers['X-Deepcove-Cluster'] = cluster;
-			return new Response(body, { status: 200, headers });
-		},
-		openSocket: () => ({}),
-	}),
+  transport: { mode: 'wasm' },
+  transportForHost: (host?: { dns_name?: string }) => ({
+    mode: 'wasm',
+    fetch: async (path: string) => {
+      const dns = host?.dns_name ?? '';
+      if (failing.has(dns)) throw new Error(`dial ${dns} failed`);
+      const body = JSON.stringify(responses.get(dns) ?? []);
+      void path;
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      const cluster = clusters.get(dns);
+      if (cluster !== undefined) headers['X-Deepcove-Cluster'] = cluster;
+      return new Response(body, { status: 200, headers });
+    },
+    openSocket: () => ({}),
+  }),
 }));
 
 import { api } from './client';
 import type { NodeInfo } from './types';
 
 const node = (id: string, online = true): NodeInfo => ({
-	stable_node_id: id,
-	hostname: id,
-	dns_name: `${id}.ts`,
-	online,
-	self: false,
+  stable_node_id: id,
+  hostname: id,
+  dns_name: `${id}.ts`,
+  online,
+  self: false,
 });
 
 beforeEach(() => {
-	responses.clear();
-	clusters.clear();
-	failing.clear();
+  responses.clear();
+  clusters.clear();
+  failing.clear();
 });
 
 describe('listSessionsAcrossNodes', () => {
-	it('tags hosts, marks a failed node unreachable, and skips offline nodes', async () => {
-		responses.set('a.ts', [{ id: 'a1', last_activity_at: '2026-06-01T10:00:00Z' }]);
-		failing.add('b.ts'); // online but errors -> unreachable
-		const self = { stable_node_id: 'web', hostname: 'deepcove-web' };
+  it('tags hosts, marks a failed node unreachable, and skips offline nodes', async () => {
+    responses.set('a.ts', [{ id: 'a1', last_activity_at: '2026-06-01T10:00:00Z' }]);
+    failing.add('b.ts'); // online but errors -> unreachable
+    const self = { stable_node_id: 'web', hostname: 'deepcove-web' };
 
-		const out = await api.listSessionsAcrossNodes([node('a'), node('b'), node('c', false)], self);
+    const out = await api.listSessionsAcrossNodes([node('a'), node('b'), node('c', false)], self);
 
-		expect(out.sessions.map((s) => s.id)).toEqual(['a1']);
-		expect(out.sessions[0].host?.stable_node_id).toBe('a');
-		// b failed -> unreachable; c is offline -> skipped entirely (not unreachable).
-		expect(out.unreachable?.map((u) => u.stable_node_id)).toEqual(['b']);
-		expect(out.self).toEqual(self);
-	});
+    expect(out.sessions.map((s) => s.id)).toEqual(['a1']);
+    expect(out.sessions[0].host?.stable_node_id).toBe('a');
+    // b failed -> unreachable; c is offline -> skipped entirely (not unreachable).
+    expect(out.unreachable?.map((u) => u.stable_node_id)).toEqual(['b']);
+    expect(out.self).toEqual(self);
+  });
 
-	it('tags each session host with the node cluster from the X-Deepcove-Cluster header', async () => {
-		responses.set('a.ts', [{ id: 'a1', last_activity_at: '2026-06-01T10:00:00Z' }]);
-		responses.set('b.ts', [{ id: 'b1', last_activity_at: '2026-06-01T09:00:00Z' }]);
-		clusters.set('a.ts', 'prod'); // node b answers with no cluster header
+  it('tags each session host with the node cluster from the X-Deepcove-Cluster header', async () => {
+    responses.set('a.ts', [{ id: 'a1', last_activity_at: '2026-06-01T10:00:00Z' }]);
+    responses.set('b.ts', [{ id: 'b1', last_activity_at: '2026-06-01T09:00:00Z' }]);
+    clusters.set('a.ts', 'prod'); // node b answers with no cluster header
 
-		const out = await api.listSessionsAcrossNodes([node('a'), node('b')], null);
+    const out = await api.listSessionsAcrossNodes([node('a'), node('b')], null);
 
-		expect(out.sessions.find((s) => s.id === 'a1')?.host?.cluster).toBe('prod');
-		expect(out.sessions.find((s) => s.id === 'b1')?.host?.cluster).toBeUndefined();
-	});
+    expect(out.sessions.find((s) => s.id === 'a1')?.host?.cluster).toBe('prod');
+    expect(out.sessions.find((s) => s.id === 'b1')?.host?.cluster).toBeUndefined();
+  });
 
-	it('returns an empty list (no unreachable) when every online node answers empty', async () => {
-		const out = await api.listSessionsAcrossNodes([node('a'), node('b')], null);
-		expect(out.sessions).toEqual([]);
-		expect(out.unreachable).toBeUndefined();
-		expect(out.self).toBeUndefined();
-	});
+  it('returns an empty list (no unreachable) when every online node answers empty', async () => {
+    const out = await api.listSessionsAcrossNodes([node('a'), node('b')], null);
+    expect(out.sessions).toEqual([]);
+    expect(out.unreachable).toBeUndefined();
+    expect(out.self).toBeUndefined();
+  });
 });

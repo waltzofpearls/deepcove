@@ -19,10 +19,10 @@ func (r *fakeRepo) List(context.Context, string, bool) ([]*Session, error) {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].LastActivityAt.After(out[j].LastActivityAt) })
 	return out, nil
 }
-func (r *fakeRepo) Insert(context.Context, *Session) error              { return nil }
-func (r *fakeRepo) Get(context.Context, string, string) (*Session, error) { return nil, ErrNotFound }
-func (r *fakeRepo) MarkRunning(context.Context, string, string, time.Time) error { return nil }
-func (r *fakeRepo) MarkStopped(context.Context, string, string, time.Time) error { return nil }
+func (r *fakeRepo) Insert(context.Context, *Session) error                          { return nil }
+func (r *fakeRepo) Get(context.Context, string, string) (*Session, error)           { return nil, ErrNotFound }
+func (r *fakeRepo) MarkRunning(context.Context, string, string, time.Time) error    { return nil }
+func (r *fakeRepo) MarkStopped(context.Context, string, string, time.Time) error    { return nil }
 func (r *fakeRepo) UpdateActivity(context.Context, string, string, time.Time) error { return nil }
 func (r *fakeRepo) Rename(context.Context, string, string, string, time.Time) error { return nil }
 func (r *fakeRepo) UpdateMountsAndContainer(context.Context, string, string, []MountRequest, string, time.Time) error {
@@ -73,7 +73,7 @@ func TestListAggregated(t *testing.T) {
 		self:  NodeRef{StableNodeID: "n-self", Hostname: "deepcove-laptop", Cluster: "home"},
 		peers: []NodeRef{serverPeer, cloudPeer},
 		results: map[string][]*Session{
-			"n-server": {sessionAt("server-mid", now.Add(-30 * time.Minute))},
+			"n-server": {sessionAt("server-mid", now.Add(-30*time.Minute))},
 		},
 		clusters: map[string]string{
 			"n-server": "prod",

@@ -66,7 +66,9 @@
 </script>
 
 <Dialog bind:open>
-  <DialogContent class="max-h-[80vh] w-[calc(100%-2rem)] max-w-lg gap-0 overflow-hidden p-0 sm:max-w-lg">
+  <DialogContent
+    class="max-h-[80vh] w-[calc(100%-2rem)] max-w-lg gap-0 overflow-hidden p-0 sm:max-w-lg"
+  >
     <DialogHeader class="border-b border-border px-5 py-3.5">
       <DialogTitle>Choose a folder</DialogTitle>
       <DialogDescription>Pick a directory under your home folder to mount.</DialogDescription>
@@ -109,9 +111,7 @@
         {:else if error}
           <div class="px-3 py-6 text-center text-sm text-destructive">{error}</div>
         {:else if entries.length === 0}
-          <div class="px-3 py-6 text-center text-sm text-muted-foreground">
-            No subfolders here.
-          </div>
+          <div class="px-3 py-6 text-center text-sm text-muted-foreground">No subfolders here.</div>
         {:else}
           <ul class="divide-y divide-border">
             {#each entries as e (e.path)}

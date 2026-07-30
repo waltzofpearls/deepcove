@@ -30,7 +30,7 @@ func TestHandleFsList(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		path       string   // "" = no ?path param (defaults to home)
+		path       string // "" = no ?path param (defaults to home)
 		wantStatus int
 		wantPath   string   // checked on 200 only; "" = skip
 		wantParent string   // checked on 200 only

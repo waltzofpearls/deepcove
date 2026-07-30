@@ -121,8 +121,8 @@
 
   {#if !status || status.phase === 'stopped'}
     <p class="text-xs text-muted-foreground">
-      Connect this machine to your tailnet to reach deepcove from your phone, work laptop, or
-      other devices, over Tailscale, identified as you.
+      Connect this machine to your tailnet to reach deepcove from your phone, work laptop, or other
+      devices, over Tailscale, identified as you.
     </p>
     <Button size="sm" onclick={connect} disabled={starting}>
       {#if starting}<Loader2 class="size-4 animate-spin" />{/if}
@@ -162,7 +162,13 @@
         <a href={status.url} target="_blank" rel="noopener" class="flex-1 truncate hover:underline"
           >{status.url}</a
         >
-        <Button size="icon" variant="ghost" class="size-7 shrink-0" onclick={copyUrl} aria-label="Copy URL">
+        <Button
+          size="icon"
+          variant="ghost"
+          class="size-7 shrink-0"
+          onclick={copyUrl}
+          aria-label="Copy URL"
+        >
           {#if copied}
             <Check class="size-3.5 text-[var(--color-success)]" />
           {:else}

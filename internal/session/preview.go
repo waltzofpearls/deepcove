@@ -110,7 +110,7 @@ func (s *Service) Preview(ctx context.Context, id string) (*PreviewResponse, err
 		return &PreviewResponse{}, nil
 	}
 
-	resp := s.fetchLivePreview(ctx, sess.ContainerID)
+	resp := s.fetchLivePreview(ctx, sess)
 	if resp != nil {
 		s.previewCache.Set(id, resp)
 		return resp, nil
@@ -125,11 +125,11 @@ func (s *Service) Preview(ctx context.Context, id string) (*PreviewResponse, err
 // fetchLivePreview execs `tmux capture-pane -p -e -t main` and returns
 // the captured bytes. Returns nil on any failure so the caller can
 // fall back to cache.
-func (s *Service) fetchLivePreview(ctx context.Context, containerID string) *PreviewResponse {
+func (s *Service) fetchLivePreview(ctx context.Context, sess *Session) *PreviewResponse {
 	execCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	ansi, ok := s.execCapture(execCtx, containerID,
+	ansi, ok := s.execCapture(execCtx, sess,
 		[]string{"tmux", "capture-pane", "-p", "-e", "-t", "main"})
 	if !ok || len(ansi) == 0 {
 		return nil
@@ -137,25 +137,29 @@ func (s *Service) fetchLivePreview(ctx context.Context, containerID string) *Pre
 	return &PreviewResponse{Ansi: string(ansi)}
 }
 
-func (s *Service) execCapture(ctx context.Context, containerID string, cmd []string) ([]byte, bool) {
-	proc, err := s.sandbox.Exec(ctx, sandbox.Handle(containerID), sandbox.ExecSpec{
+func (s *Service) execCapture(ctx context.Context, sess *Session, cmd []string) ([]byte, bool) {
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return nil, false
+	}
+	proc, err := runtime.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
 		Cmd: cmd,
 		Tty: false,
 	})
 	if err != nil {
-		s.logger.Debug("preview: exec failed", "container", containerID, "cmd", cmd[0], "err", err)
+		s.logger.Debug("preview: exec failed", "container", sess.ContainerID, "cmd", cmd[0], "err", err)
 		return nil, false
 	}
 	defer func() { _ = proc.Close() }()
 
 	out, err := io.ReadAll(proc.Stdout())
 	if err != nil {
-		s.logger.Debug("preview: stdout read failed", "container", containerID, "err", err)
+		s.logger.Debug("preview: stdout read failed", "container", sess.ContainerID, "err", err)
 		return nil, false
 	}
 	if exit, werr := proc.Wait(ctx); werr != nil || exit != 0 {
 		s.logger.Debug("preview: non-zero exit",
-			"container", containerID, "cmd", cmd[0], "exit", exit, "err", werr)
+			"container", sess.ContainerID, "cmd", cmd[0], "exit", exit, "err", werr)
 		return nil, false
 	}
 	return out, true

@@ -30,8 +30,11 @@ import (
 
 // Driver implements sandbox.Sandbox against the Docker daemon.
 type Driver struct {
-	cli           *client.Client
-	allowedRoots  []string
+	// nodeScope identifies the deepcove instance that owns these containers, so a listing never claims
+	// another instance's sessions. See labelNode.
+	nodeScope    string
+	cli          *client.Client
+	allowedRoots []string
 }
 
 // Option configures a Driver at construction time.
@@ -48,12 +51,19 @@ func WithAllowedMountRoots(roots ...string) Option {
 
 // New connects to the Docker daemon using DOCKER_HOST env config (falls back to the platform
 // default, unix:///var/run/docker.sock on Unix). The client negotiates API version with the server.
-func New(opts ...Option) (*Driver, error) {
+//
+// nodeScope identifies this instance (see NodeScope). It is a required argument rather than an option
+// because getting it wrong is dangerous, not merely wrong: containers are reported as leaked when no
+// session row owns them, and an unscoped driver would report another instance's live sessions that way.
+func New(nodeScope string, opts ...Option) (*Driver, error) {
+	if nodeScope == "" {
+		return nil, fmt.Errorf("docker: a node scope is required so a listing cannot claim another instance's containers")
+	}
 	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, err
 	}
-	d := &Driver{cli: cli}
+	d := &Driver{cli: cli, nodeScope: nodeScope}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -155,6 +165,9 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 		Image: spec.Image,
 		Cmd:   spec.Cmd,
 		Env:   envList(spec.Env),
+		// Marks the container as ours, and as THIS instance's, so a listing finds it again without
+		// sweeping in unrelated containers or another deepcove's live sessions.
+		Labels: map[string]string{labelManaged: "true", labelNode: d.nodeScope},
 	}
 
 	netMode, err := toNetworkMode(spec.Network.Mode)
@@ -387,4 +400,3 @@ func toNetworkMode(m sandbox.NetworkMode) (container.NetworkMode, error) {
 		return "", fmt.Errorf("docker: unknown NetworkMode %d", m)
 	}
 }
-

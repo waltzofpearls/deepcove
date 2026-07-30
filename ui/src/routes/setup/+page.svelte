@@ -130,7 +130,9 @@
     <div class="rounded-xl border border-border bg-card p-6">
       {#if step === 0}
         <div class="flex flex-col items-center gap-4 py-4 text-center">
-          <div class="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+          <div
+            class="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+          >
             <Boxes class="size-7" />
           </div>
           <h1 class="text-xl font-semibold">Welcome to deepcove</h1>
@@ -148,11 +150,15 @@
             machine.
           </p>
           {#if dockerReady}
-            <div class="flex items-center gap-2 rounded-md border border-border bg-secondary/30 px-3 py-2.5 text-sm">
+            <div
+              class="flex items-center gap-2 rounded-md border border-border bg-secondary/30 px-3 py-2.5 text-sm"
+            >
               <Check class="size-4 text-[var(--color-success)]" /> Docker is running.
             </div>
           {:else if preflight.loaded}
-            <div class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm">
+            <div
+              class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm"
+            >
               <CircleAlert class="size-4 shrink-0 translate-y-0.5 text-destructive" />
               <div>
                 {preflight.docker.message || "Docker isn't reachable. Start Docker and try again."}
@@ -176,7 +182,9 @@
         <div class="space-y-4">
           <div class="flex items-center gap-2">
             <h2 class="text-lg font-semibold">Connect to Tailscale</h2>
-            <span class="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+            <span
+              class="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground"
+            >
               optional
             </span>
           </div>
@@ -197,7 +205,12 @@
                 <Check class="size-4" /> Connected
               </span>
             {:else if connect.status?.login_url}
-              <Button class="shrink-0" href={connect.status.login_url} target="_blank" rel="noopener noreferrer">
+              <Button
+                class="shrink-0"
+                href={connect.status.login_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 <TailscaleLogo class="size-5 -ml-0.5" /> Sign in
               </Button>
             {:else if connect.pending}
@@ -249,7 +262,9 @@
         </div>
       {:else}
         <div class="flex flex-col items-center gap-4 py-4 text-center">
-          <div class="flex size-14 items-center justify-center rounded-2xl bg-[var(--color-success)]/10 text-[var(--color-success)]">
+          <div
+            class="flex size-14 items-center justify-center rounded-2xl bg-[var(--color-success)]/10 text-[var(--color-success)]"
+          >
             <Check class="size-7" />
           </div>
           <h2 class="text-xl font-semibold">You're all set</h2>

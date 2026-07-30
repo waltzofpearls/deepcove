@@ -49,7 +49,11 @@ func (s *Service) UploadFile(ctx context.Context, id, origName string, data []by
 	// after copying the body, so cat exits cleanly. Inputs are a constant
 	// dir + a generated name, but quote defensively anyway.
 	script := fmt.Sprintf("mkdir -p %s && cat > %s", shQuote(uploadsDir), shQuote(target))
-	proc, err := s.sandbox.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return nil, err
+	}
+	proc, err := runtime.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
 		Cmd:   []string{"sh", "-c", script},
 		Stdin: bytes.NewReader(data),
 		Tty:   false,

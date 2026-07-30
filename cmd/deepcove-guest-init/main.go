@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	if err := guestinit.Run(guestinit.LoadConfig()); err != nil {
+	if err := guestinit.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "deepcove-guest-init:", err)
 		os.Exit(1)
 	}

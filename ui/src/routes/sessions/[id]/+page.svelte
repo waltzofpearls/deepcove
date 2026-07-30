@@ -64,7 +64,7 @@
   // prompt instead of an indefinite "loading…". Dashboard (wasm) mode never hits this, since its global
   // gate already handles the login; local sessions (no host) don't either.
   const needsWasmSignin = $derived(
-    transport.mode === 'direct' && !!host && $tailnetAuth.phase !== 'running'
+    transport.mode === 'direct' && !!host && $tailnetAuth.phase !== 'running',
   );
 
   let session = $state<Session | null>(null);
@@ -128,9 +128,7 @@
   // but the viewport is too narrow. This keeps the URL honest while
   // refusing to render a useless side-by-side on phones. Widening
   // the window snaps back to split automatically.
-  const mode = $derived<SessionMode>(
-    (page.url.searchParams.get('mode') as SessionMode) || 'agent'
-  );
+  const mode = $derived<SessionMode>((page.url.searchParams.get('mode') as SessionMode) || 'agent');
   let isWide = $state(true);
   $effect(() => {
     const mq = matchMedia('(min-width: 768px)');
@@ -139,9 +137,7 @@
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   });
-  const effectiveMode = $derived<SessionMode>(
-    mode === 'split' && !isWide ? 'agent' : mode
-  );
+  const effectiveMode = $derived<SessionMode>(mode === 'split' && !isWide ? 'agent' : mode);
 
   // Keep the URL honest: if `?mode=split` is opened on a narrow
   // viewport (refresh, deep link, shared URL), rewrite to drop the
@@ -531,7 +527,8 @@
         <AlertDialogTitle>Destroy session?</AlertDialogTitle>
         <AlertDialogDescription>
           {#if session}
-            This permanently destroys <span class="font-mono">{session.name}</span> and its workspace. This action cannot be undone.
+            This permanently destroys <span class="font-mono">{session.name}</span> and its workspace.
+            This action cannot be undone.
           {:else}
             This permanently destroys the session and its workspace. This action cannot be undone.
           {/if}

@@ -3,8 +3,6 @@ package guestinit
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -30,34 +28,6 @@ func TestOverlayDirsLiveUnderTheBakedMountPoint(t *testing.T) {
 	// The read only root is the lower layer directly, so no bind mount is needed.
 	if got := defaultOverlay().Lower; got != "/" {
 		t.Errorf("lowerdir = %q, want / (the read only root used directly)", got)
-	}
-}
-
-func TestTmuxLaunchMatchesDockerShape(t *testing.T) {
-	got := tmuxLaunch("/bin/agent")
-	// session and window must both be "main" so session/attach.go and session/preview.go work unchanged.
-	want := []string{"tmux", "new-session", "-d", "-s", "main", "-n", "main", "/bin/agent"}
-	if !slices.Equal(got, want) {
-		t.Errorf("tmuxLaunch() = %v, want %v", got, want)
-	}
-}
-
-func TestLaunchCommandFallsBackToShell(t *testing.T) {
-	cases := []struct {
-		name string
-		in   Config
-		want string
-	}{
-		{"empty falls back", Config{}, "/bin/sh"},
-		{"whitespace falls back", Config{LaunchCmd: "  \n"}, "/bin/sh"},
-		{"real command kept", Config{LaunchCmd: "claude --dangerously-skip-permissions"}, "claude --dangerously-skip-permissions"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.in.launchCommand(); got != tc.want {
-				t.Errorf("launchCommand() = %q, want %q", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -198,17 +168,39 @@ func TestCredentialPathsAreRelative(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFrom(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent-launch")
-	if err := os.WriteFile(path, []byte("  claude \n"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+func TestTmpfsSizeOption(t *testing.T) {
+	cases := []struct {
+		name  string
+		bytes int64
+		want  string
+	}{
+		{"uncapped renders no option, leaving the kernel default", 0, ""},
+		{"a negative cap is treated as no cap rather than a mount error", -1, ""},
+		{"a cap renders as a byte count, the form mount understands", 512 << 20, "size=536870912"},
 	}
-	if got := loadConfigFrom(path).LaunchCmd; got != "claude" {
-		t.Errorf("LaunchCmd = %q, want %q (trimmed)", got, "claude")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tmpfsSizeOption(tc.bytes); got != tc.want {
+				t.Errorf("tmpfsSizeOption(%d) = %q, want %q", tc.bytes, got, tc.want)
+			}
+		})
 	}
-	// A missing file is not fatal; it yields the shell fallback.
-	if got := loadConfigFrom(filepath.Join(dir, "nope")).launchCommand(); got != "/bin/sh" {
-		t.Errorf("missing config launchCommand = %q, want /bin/sh", got)
+}
+
+func TestOverlayCapLabel(t *testing.T) {
+	cases := []struct {
+		name  string
+		bytes int64
+		want  string
+	}{
+		{"uncapped says so, rather than printing a misleading zero", 0, "default (half the guest's RAM)"},
+		{"a cap is reported in the units it was requested in", 2 << 30, "2048MiB"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := overlayCapLabel(tc.bytes); got != tc.want {
+				t.Errorf("overlayCapLabel(%d) = %q, want %q", tc.bytes, got, tc.want)
+			}
+		})
 	}
 }

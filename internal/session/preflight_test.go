@@ -63,7 +63,7 @@ func TestWriteSandboxError(t *testing.T) {
 		wantStatus int
 		wantCode   string
 	}{
-		{"unavailable", fmt.Errorf("wrap: %w", sandbox.ErrUnavailable), http.StatusServiceUnavailable, codeDockerUnreachable},
+		{"unavailable", fmt.Errorf("wrap: %w", sandbox.ErrUnavailable), http.StatusServiceUnavailable, codeRuntimeUnavailable},
 		{"image not found", fmt.Errorf("wrap: %w", sandbox.ErrImageNotFound), http.StatusUnprocessableEntity, codeImageNotFound},
 		{"sandbox not found", fmt.Errorf("wrap: %w", sandbox.ErrNotFound), http.StatusNotFound, codeNotFound},
 		{"session not found", fmt.Errorf("wrap: %w", ErrNotFound), http.StatusNotFound, codeNotFound},

@@ -93,6 +93,61 @@ type PullProgress struct {
 	Total   int64
 }
 
+// ResourceDefaulter is an optional capability for drivers that allocate a fixed amount to a sandbox
+// that asks for nothing. It exists so the create form can show the real numbers instead of the word
+// "default", which tells a user nothing about what they are about to get.
+//
+// A driver that imposes no limit of its own (Docker leaves a container free to use the whole host)
+// should NOT implement this: reporting the host's size as a "default" would read as an allocation.
+type ResourceDefaulter interface {
+	// DefaultResources is what a sandbox gets when its spec asks for nothing. A zero field means the
+	// driver does not cap that dimension.
+	DefaultResources() Resources
+}
+
+// Lister is an optional capability for drivers that can enumerate what they are actually hosting,
+// independent of what the session table believes. That gap is the whole point: comparing the two is how
+// you tell a leaked sandbox from a session whose sandbox is already gone.
+//
+// It matters most for VM backends. Their VMs run in process, as threads inside deepcove rather than as
+// OS processes, so no external tool can ever show them. Drivers that cannot enumerate their sandboxes
+// simply do not implement this, and the session layer reports listing as unsupported for them.
+type Lister interface {
+	// ListSandboxes returns every sandbox this driver currently tracks, running or not.
+	ListSandboxes(ctx context.Context) ([]Instance, error)
+}
+
+// InstanceState is a sandbox's lifecycle state as the driver sees it, normalized across backends. A
+// driver with a richer native vocabulary (Docker's paused, restarting, exited, dead) maps onto these,
+// because the view exists to answer "is this thing still holding resources", not to mirror Docker.
+type InstanceState string
+
+const (
+	// InstanceRunning is executing right now and holding memory and CPU.
+	InstanceRunning InstanceState = "running"
+	// InstanceStopped exists but is not executing. Created-but-never-started lands here too: from the
+	// outside the two are the same, something tracked that is not running.
+	InstanceStopped InstanceState = "stopped"
+	// InstanceUnknown is a state the driver reported but we could not map.
+	InstanceUnknown InstanceState = "unknown"
+)
+
+// Instance is one sandbox as its driver sees it. Deliberately thin: the session layer joins it against
+// the session table to produce the view a user reads, so anything already on the session row (name,
+// agent, owner) does not belong here.
+type Instance struct {
+	Handle Handle
+	State  InstanceState
+	// Image is the reference the sandbox was built from, for spotting a sandbox left over from an
+	// image you no longer use.
+	Image string
+	// Resources are what the sandbox was actually given, which is not always what was asked for: a VM
+	// rounds CPU up to whole cores, and a zero field means the driver's own default applied.
+	Resources Resources
+	// CreatedAt is when the driver first tracked the sandbox. Zero when the driver cannot say.
+	CreatedAt time.Time
+}
+
 // Handle is an opaque, driver-owned reference to a created sandbox. Treat it as a token to pass back
 // into the same driver; do not interpret its contents. Drivers may store side state keyed off the
 // handle internally.
@@ -149,6 +204,11 @@ type SandboxSpec struct {
 	// equivalent). Nil/empty = use the image default.
 	Cmd []string
 
+	// Agent names the coding agent this sandbox hosts. Container drivers ignore it; VM drivers use it
+	// to broker the agent's login with the host, since they cannot share the named volume that gives
+	// container sessions one shared login.
+	Agent string
+
 	// Mounts are host paths shared with the sandbox. Source paths must be owned by this node;
 	// sessions never cross host boundaries. ValidateSpec enforces this.
 	Mounts []Mount
@@ -170,8 +230,8 @@ type SandboxSpec struct {
 
 // Mount is a single host→sandbox path mapping.
 type Mount struct {
-	Source   string    // host path (must be absolute, cleaned, and under an allowed root)
-	Target   string    // path inside the sandbox (must be absolute)
+	Source   string // host path (must be absolute, cleaned, and under an allowed root)
+	Target   string // path inside the sandbox (must be absolute)
 	ReadOnly bool
 	Type     MountType // Bind = live host share; CopyIn = snapshot at create
 }

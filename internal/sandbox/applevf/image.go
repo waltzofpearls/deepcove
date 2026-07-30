@@ -3,6 +3,8 @@ package applevf
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,18 +30,51 @@ type imageStore struct {
 	platform v1.Platform
 	// inject is baked into every base image built by this store: the guest init binary and its overlay
 	// mount point, without which the image cannot boot. The driver populates it once at construction.
-	inject        injection
+	inject injection
+	// injectFP fingerprints what inject bakes in, so a rebuilt guest init gets its own cache entry
+	// instead of silently reusing an image containing the old one.
+	injectFP      string
 	resolveDigest func(ctx context.Context, ref string) (string, error)
 	pull          func(ctx context.Context, ref string, platform v1.Platform) (v1.Image, error)
 }
 
-func newImageStore(dir string) *imageStore {
+func newImageStore(dir string, inject injection) (*imageStore, error) {
+	fingerprint, err := injectionFingerprint(inject)
+	if err != nil {
+		return nil, err
+	}
 	return &imageStore{
 		dir:           dir,
+		inject:        inject,
+		injectFP:      fingerprint,
 		platform:      guestPlatform(),
 		resolveDigest: resolveDigestRemote,
 		pull:          pullRemote,
+	}, nil
+}
+
+// injectionFingerprint hashes everything baked on top of the OCI content: the guest init's BYTES, plus
+// each target path and mode.
+//
+// This is what makes the cache honest. Keying only on the OCI digest meant a rebuilt guest init was
+// never picked up, because the image containing the old one was still a cache hit. Sessions then kept
+// booting stale init code, which is invisible: the VM comes up fine, it just silently lacks whatever the
+// rebuild added.
+func injectionFingerprint(inject injection) (string, error) {
+	h := sha256.New()
+	for _, d := range inject.Dirs {
+		_, _ = fmt.Fprintf(h, "dir %s %o\n", d.Target, d.Mode)
 	}
+	for _, f := range inject.Files {
+		_, _ = fmt.Fprintf(h, "file %s %o\n", f.Target, f.Mode)
+		body, err := os.ReadFile(f.Source)
+		if err != nil {
+			return "", fmt.Errorf("fingerprint injected file %s: %w", f.Source, err)
+		}
+		h.Write(body)
+	}
+	// 12 hex chars is plenty to separate builds of one binary, and keeps the filename readable.
+	return hex.EncodeToString(h.Sum(nil))[:12], nil
 }
 
 // guestPlatform is the OCI platform to pull. Apple VF runs the Linux guest on the host's own CPU with no
@@ -72,6 +107,8 @@ func (s *imageStore) baseImage(ctx context.Context, ref string) (string, error) 
 	if err := s.buildBase(img, path); err != nil {
 		return "", err
 	}
+	// Only once a usable replacement exists, so a failed build never leaves the node with nothing.
+	s.pruneStaleVariants(digest)
 	return path, nil
 }
 
@@ -110,7 +147,39 @@ func (s *imageStore) buildBase(img v1.Image, path string) error {
 // because a multi arch tag resolves to one index digest across platforms, so two different guest
 // architectures would otherwise collide on the same cache entry.
 func (s *imageStore) cachePath(digest string) string {
-	return filepath.Join(s.dir, strings.ReplaceAll(digest, ":", "-")+"-"+s.platform.Architecture+".ext4")
+	return filepath.Join(s.dir, s.cachePrefix(digest)+s.cacheSuffix()+".ext4")
+}
+
+// cachePrefix identifies the OCI content and architecture, shared by every build of this image.
+func (s *imageStore) cachePrefix(digest string) string {
+	return strings.ReplaceAll(digest, ":", "-") + "-" + s.platform.Architecture
+}
+
+// cacheSuffix identifies what was baked on top. Empty for an image with no injections, which keeps the
+// smoke harness's filenames unchanged.
+func (s *imageStore) cacheSuffix() string {
+	if s.injectFP == "" {
+		return ""
+	}
+	return "-init" + s.injectFP
+}
+
+// pruneStaleVariants deletes cached images with the same OCI content and architecture but a DIFFERENT
+// injection, which is what every earlier guest init build leaves behind. Each is a few hundred MB, so
+// without this a week of rebuilds quietly fills the disk. Best effort: a failed delete wastes space but
+// must not fail a session that is otherwise ready to boot.
+func (s *imageStore) pruneStaleVariants(digest string) {
+	keep := filepath.Base(s.cachePath(digest))
+	matches, err := filepath.Glob(filepath.Join(s.dir, s.cachePrefix(digest)+"*.ext4"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if filepath.Base(m) == keep {
+			continue
+		}
+		_ = os.Remove(m)
+	}
 }
 
 // Anonymous auth: the agent images are public GHCR pulls (see the publishing plan), and it keeps the

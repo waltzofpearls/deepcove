@@ -39,7 +39,7 @@
         opt.mobileHidden && 'hidden md:inline-flex',
         mode === opt.value
           ? 'bg-secondary text-foreground'
-          : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground'
+          : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground',
       )}
     >
       {opt.label}

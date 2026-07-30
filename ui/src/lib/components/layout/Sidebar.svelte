@@ -15,6 +15,7 @@
   import LogoIcon from './LogoIcon.svelte';
   import LayoutGrid from '@lucide/svelte/icons/layout-grid';
   import Server from '@lucide/svelte/icons/server';
+  import Box from '@lucide/svelte/icons/box';
   import Plus from '@lucide/svelte/icons/plus';
 
   // Opens the New Session dialog mounted in +layout.svelte (and closes the mobile drawer). Same
@@ -32,6 +33,7 @@
   const navItems: Array<{ href: string; label: string; icon: typeof LayoutGrid }> = [
     { href: '/', label: 'Dashboard', icon: LayoutGrid },
     { href: '/nodes', label: 'Nodes', icon: Server },
+    { href: '/runtimes', label: 'Runtimes', icon: Box },
   ];
 
   function isActive(href: string): boolean {
@@ -89,7 +91,9 @@
       <!-- Sessions group: a non-link section label with the live sessions as children. Lives at the
            top level (not nested under Dashboard) so you can hop between sessions from any route. -->
       <div class="mt-5">
-        <div class="px-3 pb-1 text-xs font-medium tracking-wide text-muted-foreground">Sessions</div>
+        <div class="px-3 pb-1 text-xs font-medium tracking-wide text-muted-foreground">
+          Sessions
+        </div>
         <ul class="space-y-0.5">
           <TooltipProvider>
             {#each sessions.list as s (s.id)}

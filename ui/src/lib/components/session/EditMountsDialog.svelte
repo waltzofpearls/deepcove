@@ -103,12 +103,7 @@
       session = updated;
       open = false;
     } catch (e) {
-      submitError =
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e);
+      submitError = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
     } finally {
       submitting = false;
     }
@@ -138,10 +133,9 @@
         <div class="space-y-1">
           <div class="font-medium">Saving recreates the container.</div>
           <p class="text-xs text-muted-foreground">
-            <code>/root</code> (agent state, shell history) and any mounted
-            folder are preserved. Everything else inside the container
-            (installed packages, and an unmounted <code>/workspace</code>'s
-            contents) will be lost.
+            <code>/root</code> (agent state, shell history) and any mounted folder are preserved.
+            Everything else inside the container (installed packages, and an unmounted
+            <code>/workspace</code>'s contents) will be lost.
           </p>
         </div>
       </div>
@@ -156,8 +150,8 @@
         </div>
         {#if mounts.length === 0}
           <p class="text-xs text-muted-foreground">
-            No folders. The agent runs in an empty <code>/workspace</code>, with the
-            shared <code>/root</code> home regardless.
+            No folders. The agent runs in an empty <code>/workspace</code>, with the shared
+            <code>/root</code> home regardless.
           </p>
         {/if}
         {#each mounts as m, i (i)}
@@ -199,15 +193,15 @@
       </div>
 
       {#if submitError}
-        <div class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div
+          class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
           {submitError}
         </div>
       {/if}
 
       <div class="flex items-center justify-end gap-2">
-        <Button variant="ghost" onclick={() => (open = false)} disabled={submitting}>
-          Cancel
-        </Button>
+        <Button variant="ghost" onclick={() => (open = false)} disabled={submitting}>Cancel</Button>
         <Button onclick={submit} disabled={submitting || !session}>
           {submitting ? 'Recreating…' : 'Save and recreate'}
         </Button>

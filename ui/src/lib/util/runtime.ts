@@ -1,0 +1,53 @@
+// Presentation for sandbox runtimes. The wire values are the backend's runtime names
+// (internal/session.Runtime*), kept short and stable; these turn them into something worth reading in
+// the UI. An unknown name falls through to itself rather than being hidden, so a node offering a runtime
+// this build has never heard of still renders sensibly.
+
+export const RUNTIME_DOCKER = 'docker';
+export const RUNTIME_APPLEVF = 'applevf';
+
+// runtimeLabel names the runtime by what the user gets, not by its implementation. "Container" and
+// "Virtual machine" describe the isolation boundary, which is the thing being chosen.
+export function runtimeLabel(name: string): string {
+  switch (name) {
+    case RUNTIME_DOCKER:
+      return 'Container (Docker)';
+    case RUNTIME_APPLEVF:
+      return 'Virtual machine';
+    default:
+      return name;
+  }
+}
+
+// runtimeHint explains the tradeoff, since the choice is not obvious from the name alone.
+export function runtimeHint(name: string): string {
+  switch (name) {
+    case RUNTIME_DOCKER:
+      return 'Shares the host kernel. Starts fastest, and keeps your agent login between sessions.';
+    case RUNTIME_APPLEVF:
+      return 'Its own Linux kernel, so the session is fully isolated from your machine. Slower to start.';
+    default:
+      return '';
+  }
+}
+
+// runtimeCapsDisk reports whether a runtime actually applies a disk cap. Only the VM runtime does: its
+// writable layer is a tmpfs that would otherwise be free to eat the guest's RAM. Docker's own
+// storage driver quotas need backing-filesystem support we do not require, so it ignores the field, and
+// offering the input there would promise something we do not deliver.
+export function runtimeCapsDisk(name: string): boolean {
+  return name === RUNTIME_APPLEVF;
+}
+
+// runtimeShortLabel is the tag-sized name, where the full label would not fit next to the agent and
+// cluster tags. "VM" over "Virtual machine" because a tag is scanned, not read.
+export function runtimeShortLabel(name: string): string {
+  switch (name) {
+    case RUNTIME_DOCKER:
+      return 'Docker';
+    case RUNTIME_APPLEVF:
+      return 'VM';
+    default:
+      return name;
+  }
+}

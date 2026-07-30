@@ -100,12 +100,7 @@
       }}
       onkeydown={onKeydown}
     />
-    <Button
-      type="button"
-      variant="outline"
-      class="shrink-0"
-      onclick={() => (pickerOpen = true)}
-    >
+    <Button type="button" variant="outline" class="shrink-0" onclick={() => (pickerOpen = true)}>
       <FolderOpen class="size-4" />
       Browse
     </Button>

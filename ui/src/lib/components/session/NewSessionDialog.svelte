@@ -19,7 +19,16 @@
   import { onlineHostNodes, defaultNodeId, nodeHost } from '$lib/api/sessions';
   import HostPathField from './HostPathField.svelte';
   import { shellQuote } from '$lib/util/shell';
-  import type { Agent, DockerStatus, MountRequest, NodeInfo } from '$lib/api/types';
+  import type {
+    Agent,
+    DockerStatus,
+    MountRequest,
+    NodeInfo,
+    RuntimesInfo,
+    SessionResources,
+  } from '$lib/api/types';
+  import { runtimeCapsDisk, runtimeHint, runtimeLabel } from '$lib/util/runtime';
+  import { emptyResourceFields, fieldsFromDefaults, parseResources } from '$lib/util/resources';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
   import Plus from '@lucide/svelte/icons/plus';
@@ -57,7 +66,9 @@
   let suggestedName = $state('');
   // Prefer-setting: start with one folder row ready to fill (the conventional
   // /workspace). The user can opt out ("Run without a folder") to clear it.
-  let mounts = $state<FormMount[]>([{ host_path: '', container_path: '/workspace', read_only: false }]);
+  let mounts = $state<FormMount[]>([
+    { host_path: '', container_path: '/workspace', read_only: false },
+  ]);
   // The deepcove host's home dir, where the host-path picker/autocomplete starts.
   // Fetched on open so we can pre-fill the host-path field (with a trailing slash
   // so suggestions appear immediately) instead of leaving it blank.
@@ -120,16 +131,23 @@
   // Docker is down, or block you on the primary's when the target is fine. Null until fetched / when
   // there's no distinct selection, in which case we fall back to the global preflight store below.
   let nodeDocker = $state<DockerStatus | null>(null);
+  // Which runtimes the create target offers. Runtime availability is a property of the node (a Linux
+  // node will never offer Apple VF), so this is fetched from the selected node alongside its Docker
+  // status rather than assumed from the node serving this page.
+  let nodeRuntimes = $state<RuntimesInfo | null>(null);
   $effect(() => {
     const host = selectedHost;
     nodeDocker = null;
+    nodeRuntimes = null;
     if (!open || !host) return;
     let cancelled = false;
     const ac = new AbortController();
     api
       .preflight(host, ac.signal)
       .then((p) => {
-        if (!cancelled) nodeDocker = p.docker;
+        if (cancelled) return;
+        nodeDocker = p.docker;
+        nodeRuntimes = p.runtimes;
       })
       .catch(() => {});
     return () => {
@@ -143,6 +161,62 @@
   const dockerReachable = $derived(nodeDocker ? nodeDocker.reachable : preflight.dockerReachable);
   const dockerLoaded = $derived(nodeDocker !== null || preflight.loaded);
   const dockerMessage = $derived(nodeDocker ? nodeDocker.message : preflight.docker.message);
+
+  // The runtimes the create target offers: the selected node's when known, else this node's. Older
+  // nodes predate the field, so treat a missing list as "docker only" rather than showing nothing.
+  const runtimes = $derived(nodeRuntimes ?? preflight.runtimes);
+  const runtimeOptions = $derived(runtimes?.available ?? []);
+  // Only worth showing a picker when there is an actual choice to make.
+  const showRuntimePicker = $derived(runtimeOptions.length > 1);
+  // Only the user's explicit pick is stored. Resolving it against the node happens in a $derived
+  // below, NOT in an $effect: an effect that both reads and writes the same state re-triggers itself,
+  // which in Svelte 5 runs until effect_update_depth_exceeded and hangs the page.
+  let runtimeChoice = $state('');
+  // What the create will actually use. A pick the target node does not offer falls back to that node's
+  // default, so switching nodes can never leave an unavailable runtime selected. Image checks and pulls
+  // target this too, since each runtime keeps its own image store.
+  const effectiveRuntime = $derived.by(() => {
+    if (runtimeChoice && runtimeOptions.includes(runtimeChoice)) return runtimeChoice;
+    return runtimes?.default ?? '';
+  });
+
+  // Why the SELECTED runtime cannot host a session, or null when it can. Docker being down says nothing
+  // about the VM runtime, so this is asked per runtime rather than treating Docker as a prerequisite.
+  const runtimeBlocked = $derived(runtimes?.unavailable?.[effectiveRuntime] ?? null);
+  // Every runtime this node has is down, so nothing can be created here at all.
+  const noRuntimeUsable = $derived(
+    runtimeOptions.length > 0 &&
+      runtimeOptions.every((name) => Boolean(runtimes?.unavailable?.[name])),
+  );
+
+  // Size of the machine the session runs on. Blank fields mean "whatever the runtime defaults to",
+  // which is what every session got before these inputs existed.
+  let resourceFields = $state({ ...emptyResourceFields });
+  // Docker ignores a disk cap, so only offer the field where it does something.
+  const showDiskField = $derived(runtimeCapsDisk(effectiveRuntime));
+  const parsedResources = $derived(parseResources(resourceFields, showDiskField));
+  // What this runtime gives a session that asks for nothing. Keyed as a string, not held as the object
+  // itself: the preflight poll hands back a fresh object every tick, and an effect that depended on the
+  // reference would re-seed the form underneath the user on every poll.
+  const defaultsKey = $derived(JSON.stringify(runtimes?.defaults?.[effectiveRuntime] ?? null));
+  // Set once the user edits any size field, so re-seeding can never discard what they typed.
+  let sizeEdited = $state(false);
+
+  // Seed the size fields with this runtime's real defaults, so the numbers are visible AND editable
+  // rather than hidden behind a placeholder. Re-seeds when the runtime changes, because a VM's defaults
+  // are not a container's. Reads only defaultsKey and sizeEdited, never resourceFields, so it cannot
+  // retrigger itself into effect_update_depth_exceeded.
+  $effect(() => {
+    const key = defaultsKey;
+    if (sizeEdited) return;
+    resourceFields = fieldsFromDefaults(JSON.parse(key));
+  });
+  // Naming the runtime makes "default" mean something: a VM's defaults are not a container's.
+  const sizeHint = $derived(
+    showDiskField
+      ? "Greyed values are what you get if you leave a field blank. Disk caps the writable layer, which lives in the VM's memory."
+      : 'Greyed values are what you get if you leave a field blank.',
+  );
 
   // Resolve the host's home dir once, then seed the default folder row's host
   // path so it opens pre-filled at $HOME/ rather than blank.
@@ -216,7 +290,11 @@
 
   // A fresh folder row, pre-filled at the host home dir (with trailing slash) when known.
   function newMountRow(): FormMount {
-    return { host_path: homeDir ? homeDir + '/' : '', container_path: '/workspace', read_only: false };
+    return {
+      host_path: homeDir ? homeDir + '/' : '',
+      container_path: '/workspace',
+      read_only: false,
+    };
   }
 
   function addMount() {
@@ -256,6 +334,10 @@
     imagePresent = null;
     customImage = '';
     customSetup = '';
+    runtimeChoice = '';
+    resourceFields = { ...emptyResourceFields };
+    // Let the defaults seed again on the next open, rather than keeping the last session's sizes.
+    sizeEdited = false;
     // baseImage / setupScript / imageStrategy get re-seeded by the agent-change $effect.
   }
 
@@ -267,8 +349,13 @@
       image?: string;
       setup_script?: string;
       node_id?: string;
+      runtime?: string;
+      resources?: SessionResources;
     } = {
       agent,
+      // Only send a runtime when the user had a real choice; otherwise let the node pick its default.
+      runtime: showRuntimePicker ? effectiveRuntime || undefined : undefined,
+      resources: parsedResources.resources,
       name: name.trim() || undefined,
       // Only send a target when there's a real choice; on a single node the backend creates here.
       node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
@@ -318,7 +405,7 @@
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const present = await api.imageExists(img, selectedHost);
+        const present = await api.imageExists(img, selectedHost, undefined, effectiveRuntime);
         if (!cancelled) imagePresent = present;
       } catch {
         // Don't block create on a flaky check; leave it unknown. The
@@ -344,7 +431,8 @@
           pullPercent = p.percent;
           pullStatus = p.status;
         },
-        selectedHost
+        selectedHost,
+        effectiveRuntime,
       );
       imagePresent = true;
     } finally {
@@ -407,8 +495,8 @@
     <DialogHeader class="border-b border-border px-6 py-4">
       <DialogTitle>New session</DialogTitle>
       <DialogDescription>
-        Spin up a coding-agent sandbox on this node. Pick the folder the agent should
-        work in, or run without one.
+        Spin up a coding-agent sandbox on this node. Pick the folder the agent should work in, or
+        run without one.
       </DialogDescription>
     </DialogHeader>
 
@@ -469,6 +557,78 @@
         </div>
       {/if}
 
+      {#if showRuntimePicker}
+        <div class="space-y-2">
+          <Label for="runtime">Isolation</Label>
+          <select
+            id="runtime"
+            value={effectiveRuntime}
+            onchange={(e) => (runtimeChoice = e.currentTarget.value)}
+            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {#each runtimeOptions as name (name)}
+              <option value={name}>{runtimeLabel(name)}</option>
+            {/each}
+          </select>
+          <p class="text-xs text-muted-foreground">{runtimeHint(effectiveRuntime)}</p>
+        </div>
+      {/if}
+
+      <div class="space-y-2">
+        <Label>Size</Label>
+        <div
+          class="grid gap-3"
+          class:grid-cols-3={showDiskField}
+          class:grid-cols-2={!showDiskField}
+        >
+          <div class="space-y-1.5">
+            <Label for="cpu" class="text-xs font-normal text-muted-foreground">CPU cores</Label>
+            <Input
+              id="cpu"
+              type="number"
+              min="1"
+              step="1"
+              placeholder="No limit"
+              bind:value={resourceFields.cpu}
+              oninput={() => (sizeEdited = true)}
+            />
+          </div>
+          <div class="space-y-1.5">
+            <Label for="memory" class="text-xs font-normal text-muted-foreground"
+              >Memory (GiB)</Label
+            >
+            <Input
+              id="memory"
+              type="number"
+              min="0.5"
+              step="0.5"
+              placeholder="No limit"
+              bind:value={resourceFields.memoryGiB}
+              oninput={() => (sizeEdited = true)}
+            />
+          </div>
+          {#if showDiskField}
+            <div class="space-y-1.5">
+              <Label for="disk" class="text-xs font-normal text-muted-foreground">Disk (GiB)</Label>
+              <Input
+                id="disk"
+                type="number"
+                min="0.5"
+                step="0.5"
+                placeholder="No limit"
+                bind:value={resourceFields.diskGiB}
+                oninput={() => (sizeEdited = true)}
+              />
+            </div>
+          {/if}
+        </div>
+        {#if parsedResources.error}
+          <p class="text-xs text-destructive">{parsedResources.error}</p>
+        {:else}
+          <p class="text-xs text-muted-foreground">{sizeHint}</p>
+        {/if}
+      </div>
+
       <div class="space-y-2">
         <Label>Image</Label>
         <div class="space-y-2 rounded-md border border-border p-3">
@@ -522,8 +682,7 @@
             <div class="flex-1">
               <div class="font-medium">Run install script at startup</div>
               <div class="text-xs text-muted-foreground">
-                Start from a base image and install the agent on first boot
-                (~15s for Claude).
+                Start from a base image and install the agent on first boot (~15s for Claude).
               </div>
             </div>
           </label>
@@ -601,8 +760,8 @@
         </div>
         {#if !useFolder}
           <p class="text-xs text-muted-foreground">
-            No folder. The agent starts in an empty <code>/workspace</code>. Turn on
-            "Use a folder" to mount your code.
+            No folder. The agent starts in an empty <code>/workspace</code>. Turn on "Use a folder"
+            to mount your code.
           </p>
         {:else}
           <p class="text-xs text-muted-foreground">
@@ -665,9 +824,14 @@
         </div>
       {/if}
 
-      {#if dockerLoaded && !dockerReachable}
-        <div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground">
-          {dockerMessage || "Docker isn't running."} Start it to create a session.
+      {#if dockerLoaded && runtimeBlocked}
+        <div
+          class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
+        >
+          {runtimeBlocked}
+          {#if !noRuntimeUsable}
+            Pick another runtime above to create a session now.
+          {/if}
         </div>
       {:else if pulling}
         <!-- Live download progress. Determinate once the daemon reports
@@ -700,8 +864,8 @@
         >
           <Download class="mt-0.5 size-3.5 shrink-0" />
           <span>
-            This agent image isn't downloaded yet. It downloads once when you create
-            the session, then is reused.
+            This agent image isn't downloaded yet. It downloads once when you create the session,
+            then is reused.
           </span>
         </div>
       {/if}
@@ -712,12 +876,13 @@
         </Button>
         <Button
           onclick={submit}
-          disabled={submitting
-            || pulling
-            || !name.trim()
-            || !dockerReachable
-            || (imageStrategy === 'official' && !selectedAgent?.official_image)
-            || (imageStrategy === 'custom' && !customImage.trim())}
+          disabled={submitting ||
+            pulling ||
+            !name.trim() ||
+            !!runtimeBlocked ||
+            (imageStrategy === 'official' && !selectedAgent?.official_image) ||
+            (imageStrategy === 'custom' && !customImage.trim()) ||
+            !!parsedResources.error}
         >
           {#if pulling}
             Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}
@@ -732,13 +897,17 @@
       </div>
 
       <details class="group rounded-md border border-border">
-        <summary class="flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm font-medium hover:bg-secondary/50">
+        <summary
+          class="flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm font-medium hover:bg-secondary/50"
+        >
           <span>Or run from CLI</span>
           <span class="text-xs text-muted-foreground group-open:hidden">show</span>
           <span class="hidden text-xs text-muted-foreground group-open:inline">hide</span>
         </summary>
         <div class="border-t border-border p-3">
-          <div class="flex items-start gap-2 rounded-md border border-border bg-secondary p-2.5 font-mono text-xs">
+          <div
+            class="flex items-start gap-2 rounded-md border border-border bg-secondary p-2.5 font-mono text-xs"
+          >
             <code class="flex-1 overflow-x-auto whitespace-pre">{command}</code>
             <Button size="icon" variant="ghost" onclick={copyCommand} aria-label="Copy command">
               {#if copied}
@@ -749,8 +918,8 @@
             </Button>
           </div>
           <p class="mt-2 text-xs text-muted-foreground">
-            Run on the machine you want to host the session. The new session appears in
-            the dashboard once it's running.
+            Run on the machine you want to host the session. The new session appears in the
+            dashboard once it's running.
           </p>
         </div>
       </details>

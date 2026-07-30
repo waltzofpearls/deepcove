@@ -7,7 +7,7 @@
 // banner clears promptly once it's back, and slow when healthy.
 
 import { api } from '$lib/api/client';
-import type { DockerStatus } from '$lib/api/types';
+import type { DockerStatus, RuntimesInfo } from '$lib/api/types';
 import { usePolling } from '$lib/polling';
 
 const HEALTHY_MS = 30_000;
@@ -16,6 +16,9 @@ const UNHEALTHY_MS = 5_000;
 // Optimistic default: assume reachable until the first poll says
 // otherwise, so we don't flash a "Docker down" banner on load.
 let docker = $state<DockerStatus>({ reachable: true, version: '', message: '' });
+// Null until the first poll, so the New Session form can tell "not asked yet" from "docker only" and
+// avoid flashing a runtime picker that then disappears.
+let runtimes = $state<RuntimesInfo | null>(null);
 let loaded = $state(false);
 
 let subscriberCount = 0;
@@ -23,62 +26,66 @@ let stopPolling: (() => void) | undefined;
 let abortCtrl: AbortController | undefined;
 
 async function check(signal?: AbortSignal): Promise<void> {
-	try {
-		const p = await api.preflight(undefined, signal);
-		docker = p.docker;
-		loaded = true;
-	} catch {
-		// A failed preflight fetch itself (the deepcove server, not
-		// Docker) keeps the last known state. The banner reacts only to
-		// docker.reachable, and the sessions store surfaces server-down.
-		if (signal?.aborted) return;
-	}
+  try {
+    const p = await api.preflight(undefined, signal);
+    docker = p.docker;
+    runtimes = p.runtimes ?? null;
+    loaded = true;
+  } catch {
+    // A failed preflight fetch itself (the deepcove server, not
+    // Docker) keeps the last known state. The banner reacts only to
+    // docker.reachable, and the sessions store surfaces server-down.
+    if (signal?.aborted) return;
+  }
 }
 
 function startIfIdle(): void {
-	if (stopPolling) return;
-	abortCtrl = new AbortController();
-	const signal = abortCtrl.signal;
-	stopPolling = usePolling(
-		() => check(signal),
-		() => (docker.reachable ? HEALTHY_MS : UNHEALTHY_MS),
-	);
+  if (stopPolling) return;
+  abortCtrl = new AbortController();
+  const signal = abortCtrl.signal;
+  stopPolling = usePolling(
+    () => check(signal),
+    () => (docker.reachable ? HEALTHY_MS : UNHEALTHY_MS),
+  );
 }
 
 function stopIfDone(): void {
-	if (subscriberCount > 0) return;
-	abortCtrl?.abort();
-	abortCtrl = undefined;
-	stopPolling?.();
-	stopPolling = undefined;
+  if (subscriberCount > 0) return;
+  abortCtrl?.abort();
+  abortCtrl = undefined;
+  stopPolling?.();
+  stopPolling = undefined;
 }
 
 export const preflight = {
-	get docker(): DockerStatus {
-		return docker;
-	},
-	get loaded(): boolean {
-		return loaded;
-	},
-	get dockerReachable(): boolean {
-		return docker.reachable;
-	},
+  get docker(): DockerStatus {
+    return docker;
+  },
+  get runtimes(): RuntimesInfo | null {
+    return runtimes;
+  },
+  get loaded(): boolean {
+    return loaded;
+  },
+  get dockerReachable(): boolean {
+    return docker.reachable;
+  },
 
-	// subscribe registers interest; returns a cleanup for use in a
-	// Svelte $effect: `$effect(() => preflight.subscribe())`.
-	subscribe(): () => void {
-		subscriberCount++;
-		startIfIdle();
-		return () => {
-			subscriberCount--;
-			stopIfDone();
-		};
-	},
+  // subscribe registers interest; returns a cleanup for use in a
+  // Svelte $effect: `$effect(() => preflight.subscribe())`.
+  subscribe(): () => void {
+    subscriberCount++;
+    startIfIdle();
+    return () => {
+      subscriberCount--;
+      stopIfDone();
+    };
+  },
 
-	// refresh forces an immediate re-check, used by the banner's Retry
-	// button so the user gets instant feedback rather than waiting for
-	// the next poll tick.
-	refresh(): Promise<void> {
-		return check();
-	},
+  // refresh forces an immediate re-check, used by the banner's Retry
+  // button so the user gets instant feedback rather than waiting for
+  // the next poll tick.
+  refresh(): Promise<void> {
+    return check();
+  },
 };

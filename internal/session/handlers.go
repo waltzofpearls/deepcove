@@ -14,6 +14,8 @@ import (
 func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	mux.HandleFunc("GET /api/preflight", s.handlePreflight)
+	mux.HandleFunc("GET /api/runtimes", s.handleRuntimes)
+	mux.HandleFunc("DELETE /api/runtimes/{runtime}/sandboxes/{handle}", s.handleDestroySandbox)
 	mux.HandleFunc("GET /api/fs/list", s.handleFsList)
 	mux.HandleFunc("GET /api/images/exists", s.handleImageExists)
 	mux.HandleFunc("POST /api/images/pull", s.handlePullImage)
@@ -321,11 +323,14 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // to friendly copy + actions; unknown/absent codes fall back to the raw message. Stable strings;
 // don't rename without updating the client.
 const (
-	codeInvalidInput      = "invalid_input"
-	codeDockerUnreachable = "docker_unreachable"
-	codeImageNotFound     = "image_not_found"
-	codeNotFound          = "not_found"
-	codeConflict          = "conflict"
+	codeInvalidInput = "invalid_input"
+	// codeRuntimeUnavailable covers any runtime whose backend cannot host a session, whichever one it
+	// is. It replaced a Docker specific code: naming one runtime in the protocol made every other one
+	// look like a special case, and told a VM user to go start Docker.
+	codeRuntimeUnavailable = "runtime_unavailable"
+	codeImageNotFound      = "image_not_found"
+	codeNotFound           = "not_found"
+	codeConflict           = "conflict"
 )
 
 func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
@@ -336,10 +341,18 @@ func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
 // raw daemon string for the cases it can act on. Non-sentinel errors (validation, unknown agent,
 // and, today, internal failures) default to 400, matching the prior create-handler behavior.
 func writeSandboxError(w http.ResponseWriter, err error) {
+	var unavailable ErrRuntimeUnavailable
 	switch {
+	// The node knew up front that this runtime cannot host a session, so it says which one and why
+	// instead of relaying a backend's connection error.
+	case errors.As(err, &unavailable):
+		writeErrorCode(w, http.StatusServiceUnavailable, codeRuntimeUnavailable, unavailable.Reason)
+	// Raised by a driver rather than by the availability check above, so which runtime it was is no
+	// longer in hand: this is the backend dying between the check and the call. Generic wording beats
+	// naming the wrong runtime.
 	case errors.Is(err, sandbox.ErrUnavailable):
-		writeErrorCode(w, http.StatusServiceUnavailable, codeDockerUnreachable,
-			"Docker isn't reachable. Start Docker and try again.")
+		writeErrorCode(w, http.StatusServiceUnavailable, codeRuntimeUnavailable,
+			"This runtime's backend isn't reachable. Check that it's running, then try again.")
 	case errors.Is(err, sandbox.ErrImageNotFound):
 		writeErrorCode(w, http.StatusUnprocessableEntity, codeImageNotFound, err.Error())
 	case errors.Is(err, ErrNotFound) || errors.Is(err, sandbox.ErrNotFound):

@@ -26,13 +26,7 @@
        "New session" button drops its text label to icon-only. -->
   <div class="flex h-14 items-center justify-between gap-2 px-4">
     <div class="flex shrink-0 items-center gap-2">
-      <Button
-        variant="ghost"
-        size="icon"
-        class="md:hidden"
-        onclick={onMenu}
-        aria-label="Open menu"
-      >
+      <Button variant="ghost" size="icon" class="md:hidden" onclick={onMenu} aria-label="Open menu">
         <Menu class="size-5" />
       </Button>
       <a href="/" class="flex items-center text-foreground" aria-label="deepcove home">
