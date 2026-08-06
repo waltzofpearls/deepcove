@@ -22,6 +22,17 @@ ui/build/index.html:
 .PHONY: build
 build: ui-build ## Build the deepcove binary for the host (builds UI first)
 	CGO_ENABLED=1 go build -ldflags '$(LDFLAGS_NATIVE)' -o deepcove ./cmd/deepcove
+	@$(MAKE) --no-print-directory sign-if-darwin BIN=deepcove
+
+# Running a VM needs the com.apple.security.virtualization entitlement, so the binary that hosts
+# sessions has to be codesigned or the Apple VF runtime fails at session create time. Ad-hoc signing is
+# enough for local use; set CODESIGN_IDENTITY for a real identity. No-op off macOS.
+.PHONY: sign-if-darwin
+sign-if-darwin:
+	@if [ "$$(go env GOOS)" = "darwin" ]; then \
+		codesign -f --entitlements build/virtualization.entitlements -s "$${CODESIGN_IDENTITY:--}" $(BIN) \
+			&& echo "signed $(BIN) for virtualization (identity: $${CODESIGN_IDENTITY:-ad-hoc})"; \
+	fi
 
 # Darwin builds use the host toolchain — macOS does not support fully
 # static binaries (libSystem.dylib is mandatory), so the artifact is
@@ -37,6 +48,7 @@ build-darwin-arm64: ui/build/index.html ## Build a darwin/arm64 binary into dist
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -ldflags '$(LDFLAGS_NATIVE)' \
 		-o dist/darwin-arm64/deepcove ./cmd/deepcove
+	@$(MAKE) --no-print-directory sign-if-darwin BIN=dist/darwin-arm64/deepcove
 
 # Cross-compiles to darwin/amd64 from Apple Silicon. Xcode's clang
 # ships with the x86_64 SDK stubs by default (universal binary support),
@@ -149,8 +161,13 @@ lint-go: ui/build/index.html ## Run Go linters (go vet + golangci-lint; UI stub 
 	CGO_ENABLED=1 golangci-lint run ./...
 
 .PHONY: lint-js
-lint-js: ## Run the frontend linter (svelte-check, incl. .ts type-checking)
+lint-js: ## Run the frontend linters (prettier + svelte-check, incl. .ts type-checking)
+	cd ui && npm run format:check
 	cd ui && npm run check
+
+.PHONY: format
+format: ## Reformat the frontend (gofmt covers Go, and golangci-lint already enforces it)
+	cd ui && npm run format
 
 # --- Apple VF runtime (macOS only) -----------------------------------------
 # The guest init is a static pure-Go Linux binary baked into the session image. GUEST_ARCH defaults to

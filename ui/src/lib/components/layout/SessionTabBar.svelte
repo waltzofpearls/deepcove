@@ -56,7 +56,7 @@
                     // tabs don't size-shift when active state flips).
                     isCurrent(s.id)
                       ? 'border-transparent bg-secondary text-foreground'
-                      : 'border-border bg-secondary/40 text-muted-foreground hover:bg-secondary/70 hover:text-foreground'
+                      : 'border-border bg-secondary/40 text-muted-foreground hover:bg-secondary/70 hover:text-foreground',
                   )}
                 >
                   <StatusIndicator status={s.status} />

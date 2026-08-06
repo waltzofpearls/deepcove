@@ -113,7 +113,7 @@
           if ((e as Error)?.name !== 'AbortError') previewError = true;
         }
       },
-      () => preferences.pollIntervalMs
+      () => preferences.pollIntervalMs,
     );
     return () => {
       ac.abort();
@@ -272,7 +272,8 @@
       </div>
     </div>
     <div class="flex shrink-0 items-center gap-1.5">
-      <span class="text-xs text-muted-foreground">Active {ageOf(session.last_activity_at)} ago</span>
+      <span class="text-xs text-muted-foreground">Active {ageOf(session.last_activity_at)} ago</span
+      >
       <!-- relative z-20 raises just the menu above the full-card nav
            link; the rest of the footer stays below it so a click there
            still opens the session. -->
@@ -320,8 +321,7 @@
     <AlertDialogHeader>
       <AlertDialogTitle>Destroy session?</AlertDialogTitle>
       <AlertDialogDescription>
-        This permanently removes “{session.name}” and its container. This can't be
-        undone.
+        This permanently removes “{session.name}” and its container. This can't be undone.
       </AlertDialogDescription>
     </AlertDialogHeader>
     <AlertDialogFooter>

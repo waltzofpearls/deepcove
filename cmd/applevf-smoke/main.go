@@ -24,6 +24,7 @@ import (
 
 	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/applevf"
 )
 
@@ -41,13 +42,15 @@ func run() error {
 	scratch := flag.String("scratch", "", "path to a writable scratch disk (optional)")
 	image := flag.String("image", "", "OCI reference to build a base image from, injecting the guest init")
 	guestInit := flag.String("guest-init", "dist/guest/deepcove-guest-init", "guest init binary to inject when --image is set")
-	launch := flag.String("launch", "/bin/sh", "agent launch command baked into the image when --image is set")
+	launch := flag.String("launch", "sleep infinity", "shell command the guest runs as its session entrypoint")
 	out := flag.String("out", "dist/guest/smoke-rootfs.ext4", "where to write the ext4 base built from --image")
 	cmdline := flag.String("cmdline", "", "kernel command line (default boots the deepcove guest init)")
 	cpu := flag.Uint("cpu", 2, "vCPU count")
 	memMiB := flag.Uint64("mem", 1024, "memory in MiB")
+	diskMiB := flag.Uint64("disk", 0, "cap the guest's writable layer, in MiB (0 leaves it at the tmpfs default)")
 	execCmd := flag.String("exec", "", "after boot, run this command in the guest over vsock and print the result")
 	execTTY := flag.Bool("exec-tty", false, "run the --exec command on a pseudo terminal")
+	execStdin := flag.String("exec-stdin", "", "feed this file to the --exec command's stdin, closing it at EOF")
 	credsFile := flag.String("creds", "", "JSON file backing the credential broker (enables it)")
 	agent := flag.String("agent", "", "agent name whose credentials the guest brokers with the host")
 	flag.Parse()
@@ -59,7 +62,7 @@ func run() error {
 	// --image builds the ext4 base (pull, flatten, inject the guest init) then boots it.
 	if *image != "" {
 		fmt.Fprintf(os.Stderr, "applevf-smoke: building base image from %s -> %s\n", *image, *out)
-		if err := applevf.BuildSmokeImage(context.Background(), *image, *out, *guestInit, *launch, *agent); err != nil {
+		if err := applevf.BuildSmokeImage(context.Background(), *image, *out, *guestInit); err != nil {
 			return fmt.Errorf("build base image: %w", err)
 		}
 		*base = *out
@@ -73,7 +76,10 @@ func run() error {
 		Cmdline:      *cmdline,
 		CPUCount:     *cpu,
 		MemoryBytes:  *memMiB << 20,
+		OverlayBytes: int64(*diskMiB) << 20,
 		CredStore:    credStore(*credsFile),
+		Entrypoint:   []string{"/bin/sh", "-c", *launch},
+		Agent:        *agent,
 	})
 	if err != nil {
 		return err
@@ -86,7 +92,7 @@ func run() error {
 	go func() { _, _ = io.Copy(console, os.Stdin) }()
 
 	if *execCmd != "" {
-		if err := runExec(handle, *execCmd, *execTTY); err != nil {
+		if err := runExec(handle, *execCmd, *execTTY, *execStdin); err != nil {
 			fmt.Fprintln(os.Stderr, "applevf-smoke: exec failed:", err)
 		}
 	}
@@ -98,11 +104,27 @@ func run() error {
 	return handle.Stop()
 }
 
+// feedStdin streams a file into the running command and closes stdin, so a command reading to EOF can
+// finish. Runs inline rather than in a goroutine: the harness has nothing else to do until it is sent.
+func feedStdin(proc sandbox.Process, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open --exec-stdin: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	w := proc.Stdin()
+	if _, err := io.Copy(w, f); err != nil {
+		return fmt.Errorf("write stdin to the guest: %w", err)
+	}
+	return w.Close()
+}
+
 // runExec proves the vsock exec path end to end: dial the guest's exec service, run a command, stream its
 // output, and report the exit status.
-func runExec(handle applevf.SmokeMachine, command string, tty bool) error {
+func runExec(handle applevf.SmokeMachine, command string, tty bool, stdinPath string) error {
 	fmt.Fprintf(os.Stderr, "\napplevf-smoke: exec %q (tty=%v)\n", command, tty)
-	proc, err := handle.Exec(guestexec.ExecRequest{
+	proc, err := handle.Exec(context.Background(), guestexec.ExecRequest{
 		Argv: []string{"/bin/sh", "-c", command},
 		Tty:  tty, Cols: 100, Rows: 30,
 	})
@@ -110,6 +132,14 @@ func runExec(handle applevf.SmokeMachine, command string, tty bool) error {
 		return err
 	}
 	defer func() { _ = proc.Close() }()
+
+	// Feeding stdin and closing it is what a file upload does, so the harness needs to be able to do it
+	// too. Not being able to is why a runtime that silently dropped stdin looked healthy here.
+	if stdinPath != "" {
+		if err := feedStdin(proc, stdinPath); err != nil {
+			return err
+		}
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)

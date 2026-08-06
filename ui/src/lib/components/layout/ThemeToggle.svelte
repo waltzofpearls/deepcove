@@ -1,7 +1,12 @@
 <script lang="ts">
   import { mode, setMode, userPrefersMode } from 'mode-watcher';
   import { Button } from '$lib/components/ui/button';
-  import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '$lib/components/ui/tooltip';
+  import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+  } from '$lib/components/ui/tooltip';
   import Sun from '@lucide/svelte/icons/sun';
   import Moon from '@lucide/svelte/icons/moon';
   import Monitor from '@lucide/svelte/icons/monitor';

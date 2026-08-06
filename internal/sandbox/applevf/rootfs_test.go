@@ -86,13 +86,13 @@ func TestCreateRootfsInjectsFiles(t *testing.T) {
 	}
 
 	imagePath := filepath.Join(dir, "rootfs.img")
-	stats, err := createRootfs(imagePath, buildTar(t, entries), guestInjection(initBin, launch, launch))
+	stats, err := createRootfs(imagePath, buildTar(t, entries), baseInjection(initBin))
 	if err != nil {
 		t.Fatalf("createRootfs: %v", err)
 	}
-	// One OCI file (hostname) plus the injected init binary and launch script.
-	if stats.Files != 4 {
-		t.Errorf("Files = %d, want 4 (1 OCI + 3 injected)", stats.Files)
+	// One OCI file (hostname) plus the injected init binary. Nothing per session is baked in.
+	if stats.Files != 2 {
+		t.Errorf("Files = %d, want 2 (1 OCI + the init binary)", stats.Files)
 	}
 	// One OCI dir (/etc) plus the injected overlay mount point.
 	if stats.Dirs != 2 {
@@ -104,8 +104,11 @@ func TestCreateRootfsInjectsFiles(t *testing.T) {
 // Regression: the base image is mounted read only, so the guest init cannot mkdir its overlay mount
 // point at runtime. It died with "mkdir /rom: read-only file system" and panicked the guest. Every
 // bootable image must therefore carry that directory already.
-func TestGuestInjectionBakesOverlayMountPoint(t *testing.T) {
-	inj := guestInjection("/host/init", "/host/launch", "/host/agent")
+//
+// It must also carry NOTHING per session: the base is cached per image digest and shared by every
+// session using that image, so a per session file baked here would leak between sessions.
+func TestBaseInjectionBakesOverlayMountPointAndNothingPerSession(t *testing.T) {
+	inj := baseInjection("/host/init")
 
 	var dirs []string
 	for _, d := range inj.Dirs {
@@ -119,10 +122,11 @@ func TestGuestInjectionBakesOverlayMountPoint(t *testing.T) {
 	for _, f := range inj.Files {
 		files = append(files, f.Target)
 	}
-	for _, want := range []string{guestinit.InitPath, guestinit.LaunchScriptPath} {
-		if !slices.Contains(files, want) {
-			t.Errorf("injected files = %v, must contain %q", files, want)
-		}
+	if !slices.Contains(files, guestinit.InitPath) {
+		t.Errorf("injected files = %v, must contain the init binary %q", files, guestinit.InitPath)
+	}
+	if len(files) != 1 {
+		t.Errorf("injected files = %v; only the init binary belongs in a shared base image", files)
 	}
 }
 

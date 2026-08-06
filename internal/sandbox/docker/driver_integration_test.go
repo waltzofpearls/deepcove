@@ -24,11 +24,11 @@ import (
 // regressions alongside basic lifecycle.
 func TestDriver_Lifecycle(t *testing.T) {
 	tests := []struct {
-		name             string
-		spec             sandbox.SandboxSpec
-		execCmd          []string
+		name               string
+		spec               sandbox.SandboxSpec
+		execCmd            []string
 		wantStdoutContains []string
-		wantExitCode     int
+		wantExitCode       int
 	}{
 		{
 			name: "echo with env propagation",
@@ -57,7 +57,7 @@ func TestDriver_Lifecycle(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 
-			d, err := New()
+			d, err := New("integration-test")
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -129,7 +129,7 @@ func TestProcess_Close(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			d, err := New()
+			d, err := New("integration-test")
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -171,7 +171,7 @@ func TestProcess_Close(t *testing.T) {
 // errors.Is. Add a row here when implementing a new stub or when
 // promoting a stub to a real implementation.
 func TestDriver_NotSupported(t *testing.T) {
-	d, err := New()
+	d, err := New("integration-test")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestDriver_NotSupported(t *testing.T) {
 // Add a row when adding new lifecycle methods to keep the contract
 // honest.
 func TestDriver_NotFound(t *testing.T) {
-	d, err := New()
+	d, err := New("integration-test")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

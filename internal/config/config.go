@@ -19,7 +19,7 @@ type Config struct {
 	// Cluster is this node's cluster label (SPEC §5.12), also settable with the `--cluster` flag on
 	// `deepcove start` and later in the web UI. Empty falls back to the persisted value, then "default".
 	Cluster string `env:"DEEPCOVE_CLUSTER"`
-	ViteURL  string `env:"VITE_URL, default=http://localhost:5173"`
+	ViteURL string `env:"VITE_URL, default=http://localhost:5173"`
 
 	// Transport forces the SPA's runtime transport ("direct" or "wasm"), and
 	// WasmTarget is the deepcove node's tailnet URL the in-browser node dials in
@@ -27,6 +27,20 @@ type Config struct {
 	// automatic reachability-based choice) lands; empty = direct, no target.
 	Transport  string `env:"TRANSPORT"`
 	WasmTarget string `env:"WASM_TARGET"`
+
+	// VMKernel and VMGuestInit point at the artifacts the Apple VF runtime needs: the guest Linux
+	// kernel and the init binary baked into every session image. The runtime is offered only when both
+	// exist, so a node without them simply keeps Docker as its only runtime rather than failing.
+	//
+	// Provisioning them automatically (embedding the init, fetching the kernel on demand) is still to
+	// come; until then these are paths you point at yourself, defaulting to where the Makefile writes.
+	VMKernel    string `env:"DEEPCOVE_VM_KERNEL"`
+	VMGuestInit string `env:"DEEPCOVE_VM_GUEST_INIT"`
+
+	// DefaultRuntime overrides which runtime a session gets when the create request does not choose
+	// one ("docker", "applevf"). Empty prefers the VM runtime wherever it is available, falling back to
+	// Docker on nodes that cannot provide VMs.
+	DefaultRuntime string `env:"DEEPCOVE_DEFAULT_RUNTIME"`
 
 	// Computed values, should not read from env
 	Hostname string

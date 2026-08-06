@@ -114,7 +114,10 @@ func TestBaseImageNewDigestRebuilds(t *testing.T) {
 }
 
 func TestNewImageStoreWiresRemoteDefaults(t *testing.T) {
-	store := newImageStore(t.TempDir())
+	store, err := newImageStore(t.TempDir(), injection{})
+	if err != nil {
+		t.Fatalf("newImageStore: %v", err)
+	}
 	if store.resolveDigest == nil || store.pull == nil {
 		t.Fatal("newImageStore must wire the remote resolveDigest and pull defaults")
 	}
@@ -192,5 +195,81 @@ func assertExt4(t *testing.T, path string) {
 	const magicOffset = 0x438
 	if len(img) < magicOffset+2 || img[magicOffset] != 0x53 || img[magicOffset+1] != 0xEF {
 		t.Fatalf("not an ext4 image (magic missing) at %s", path)
+	}
+}
+
+// The cache key must cover the guest init's bytes. Keying only on the OCI digest meant a rebuilt init was
+// never picked up: the image holding the OLD one stayed a cache hit, so sessions silently booted stale
+// init code. That is how credential persistence appeared broken long after it was fixed.
+func TestCachePathChangesWithTheInjectedInit(t *testing.T) {
+	dir := t.TempDir()
+	initV1 := filepath.Join(dir, "init-v1")
+	if err := os.WriteFile(initV1, []byte("guest init version one"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storeV1, err := newImageStore(dir, baseInjection(initV1))
+	if err != nil {
+		t.Fatalf("newImageStore v1: %v", err)
+	}
+
+	const digest = "sha256:abc123"
+	pathV1 := storeV1.cachePath(digest)
+
+	// Rebuild the init with different content at the SAME path, exactly what `make guest-init` does.
+	if err := os.WriteFile(initV1, []byte("guest init version TWO, now with a watcher"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storeV2, err := newImageStore(dir, baseInjection(initV1))
+	if err != nil {
+		t.Fatalf("newImageStore v2: %v", err)
+	}
+	pathV2 := storeV2.cachePath(digest)
+
+	if pathV1 == pathV2 {
+		t.Errorf("a rebuilt guest init reused the cache path %q; it must produce a new one", pathV1)
+	}
+	// Identical content must still hit the same path, or every restart would rebuild every image.
+	storeAgain, err := newImageStore(dir, baseInjection(initV1))
+	if err != nil {
+		t.Fatalf("newImageStore again: %v", err)
+	}
+	if got := storeAgain.cachePath(digest); got != pathV2 {
+		t.Errorf("unchanged init produced %q, want the stable %q", got, pathV2)
+	}
+}
+
+// A stale variant is a few hundred MB of ext4, so rebuilds must not accumulate them.
+func TestPruneStaleVariantsKeepsOnlyTheCurrentBuild(t *testing.T) {
+	dir := t.TempDir()
+	initPath := filepath.Join(dir, "init")
+	if err := os.WriteFile(initPath, []byte("current"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newImageStore(dir, baseInjection(initPath))
+	if err != nil {
+		t.Fatalf("newImageStore: %v", err)
+	}
+
+	const digest = "sha256:abc123"
+	current := store.cachePath(digest)
+	stale := filepath.Join(dir, store.cachePrefix(digest)+"-initdeadbeef0000.ext4")
+	other := filepath.Join(dir, "sha256-somethingelse-"+store.platform.Architecture+"-initcafe.ext4")
+	for _, f := range []string{current, stale, other} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store.pruneStaleVariants(digest)
+
+	if _, err := os.Stat(current); err != nil {
+		t.Errorf("the current image was deleted: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("a stale variant of the same image survived pruning")
+	}
+	// A different image's cache must be untouched: it is still valid for its own sessions.
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("pruning removed an unrelated image: %v", err)
 	}
 }

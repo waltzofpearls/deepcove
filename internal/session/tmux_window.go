@@ -73,7 +73,7 @@ func (s *Service) ListTmuxWindows(ctx context.Context, id string) (*TmuxWindowsR
 	// names with spaces anyway (validated as [a-z0-9-]+), so the
 	// only window we can't fully control is the agent's "main",
 	// which we name ourselves in the sandbox entrypoint.
-	out, err := s.execTmux(ctx, sess.ContainerID,
+	out, err := s.execTmux(ctx, sess,
 		"list-windows", "-t", AgentTmuxWindowName,
 		"-F", "#{window_index} #{window_name} #{window_active}")
 	if err != nil {
@@ -138,7 +138,7 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 	if name == "shell" {
 		args = append(args, "sh", "-c", "cat /etc/deepcove-motd 2>/dev/null; exec sh")
 	}
-	out, err := s.execTmux(ctx, sess.ContainerID, args...)
+	out, err := s.execTmux(ctx, sess, args...)
 	if err != nil {
 		return nil, fmt.Errorf("session: new-window: %w", err)
 	}
@@ -160,7 +160,7 @@ func (s *Service) SelectTmuxWindow(ctx context.Context, id, name string) error {
 	if sess.Status != StatusRunning {
 		return ErrSessionNotRunning
 	}
-	if _, err := s.execTmux(ctx, sess.ContainerID,
+	if _, err := s.execTmux(ctx, sess,
 		"select-window", "-t", AgentTmuxWindowName+":"+name); err != nil {
 		if isTmuxWindowNotFound(err) {
 			return ErrTmuxWindowNotFound
@@ -184,7 +184,7 @@ func (s *Service) DeleteTmuxWindow(ctx context.Context, id, name string) error {
 	if sess.Status != StatusRunning {
 		return ErrSessionNotRunning
 	}
-	if _, err := s.execTmux(ctx, sess.ContainerID,
+	if _, err := s.execTmux(ctx, sess,
 		"kill-window", "-t", AgentTmuxWindowName+":"+name); err != nil {
 		if isTmuxWindowNotFound(err) {
 			return ErrTmuxWindowNotFound
@@ -207,12 +207,16 @@ func (s *Service) DeleteTmuxWindow(ctx context.Context, id, name string) error {
 // blocks the demuxer pump trying to write to the unbuffered
 // stderr pipe; Wait then never returns and the whole call hangs.
 // Concurrent drain is the standard fix.
-func (s *Service) execTmux(ctx context.Context, containerID string, args ...string) ([]byte, error) {
+func (s *Service) execTmux(ctx context.Context, sess *Session, args ...string) ([]byte, error) {
 	execCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return nil, err
+	}
 	cmd := append([]string{"tmux"}, args...)
-	proc, err := s.sandbox.Exec(execCtx, sandbox.Handle(containerID), sandbox.ExecSpec{
+	proc, err := runtime.Exec(execCtx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
 		Cmd: cmd,
 		Tty: false,
 	})

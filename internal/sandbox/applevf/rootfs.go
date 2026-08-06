@@ -91,18 +91,20 @@ func writeRootfs(w io.ReadWriteSeeker, tr *tar.Reader, inject injection) (buildS
 	return stats, nil
 }
 
-// guestInjection is everything a bootable session image needs on top of the OCI content: the guest init
-// binary, the agent launch script it reads, and the overlay mount point. The mount point must be baked
-// in because the base is mounted read only, so init has nowhere to mkdir until its tmpfs is mounted.
-func guestInjection(initBinary, launchScript, agentFile string) injection {
+// baseInjection is what every session image needs regardless of which session uses it: the guest init
+// binary, and the overlay mount point (which must be baked in because the base is mounted read only, so
+// init has nowhere to mkdir until its tmpfs exists).
+//
+// Deliberately nothing per session. The base image is cached per image digest and shared by every
+// session using that image, so anything session specific (the entrypoint, the agent) is served over
+// vsock at boot instead. See internal/guestcfg.
+func baseInjection(initBinary string) injection {
 	return injection{
 		Dirs: []injectedDir{
 			{Target: guestinit.OverlayMountDir, Mode: 0o755},
 		},
 		Files: []injectedFile{
 			{Target: guestinit.InitPath, Source: initBinary, Mode: 0o755},
-			{Target: guestinit.LaunchScriptPath, Source: launchScript, Mode: 0o644},
-			{Target: guestinit.AgentPath, Source: agentFile, Mode: 0o644},
 		},
 	}
 }

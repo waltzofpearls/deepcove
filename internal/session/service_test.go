@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
+
 	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
@@ -33,6 +35,8 @@ func openTestDB(t *testing.T) *sql.DB {
 			mounts           TEXT NOT NULL DEFAULT '[]',
 			env              TEXT NOT NULL DEFAULT '{}',
 			setup_script     TEXT NOT NULL DEFAULT '',
+			runtime          TEXT NOT NULL DEFAULT 'docker',
+			resources        TEXT NOT NULL DEFAULT '{}',
 			container_id     TEXT,
 			created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -53,8 +57,22 @@ func newTestService(t *testing.T) (*Service, *fakeSandbox, string, *sql.DB) {
 	db := openTestDB(t)
 	fake := newFakeSandbox()
 	dataDir := t.TempDir()
-	svc := NewService(NewDuckDBSessionRepository(db), fake, nil)
+	svc := newServiceWithRuntime(t, NewDuckDBSessionRepository(db), fake)
 	return svc, fake, dataDir, db
+}
+
+// newServiceWithRuntime wires a service with one registered runtime, standing in for what the CLI does
+// at startup now that the service no longer assumes a runtime of its own.
+func newServiceWithRuntime(t *testing.T, repo SessionRepository, sb sandbox.Sandbox) *Service {
+	t.Helper()
+	svc := NewService(repo, nil)
+	svc.RegisterRuntime(RuntimeDocker, sb)
+	// SetDefaultRuntime, not SelectDefaultRuntime: the latter probes for a reachable runtime, and a test
+	// asserting an exact driver call sequence should not carry that probe.
+	if err := svc.SetDefaultRuntime(RuntimeDocker); err != nil {
+		t.Fatalf("SetDefaultRuntime: %v", err)
+	}
+	return svc
 }
 
 // mustCreate is a setup helper for tests that need a pre-existing
@@ -116,7 +134,7 @@ func TestService_Create(t *testing.T) {
 		{
 			name:             "happy path with known agent",
 			req:              CreateRequest{Agent: "claude", Env: map[string]string{"FOO": "bar"}},
-			wantCallSequence: "Create,Start",
+			wantCallSequence: "Ping,Create,Start",
 			wantLive:         1,
 			wantRows:         1,
 			wantStatus:       StatusRunning,
@@ -127,7 +145,7 @@ func TestService_Create(t *testing.T) {
 			// placeholder so the diff is small when that happens.
 			name:             "happy path with explicit name override",
 			req:              CreateRequest{Agent: "claude", Name: "explicit-name"},
-			wantCallSequence: "Create,Start",
+			wantCallSequence: "Ping,Create,Start",
 			wantLive:         1,
 			wantRows:         1,
 			wantStatus:       StatusRunning,
@@ -151,7 +169,7 @@ func TestService_Create(t *testing.T) {
 			req:              CreateRequest{Agent: "claude"},
 			startErr:         errors.New("boom"),
 			wantErrContains:  "boom",
-			wantCallSequence: "Create,Start,Destroy",
+			wantCallSequence: "Ping,Create,Start,Destroy",
 			wantLive:         0,
 			wantRows:         0,
 		},
@@ -160,7 +178,7 @@ func TestService_Create(t *testing.T) {
 			req:              CreateRequest{Agent: "claude"},
 			createErr:        errors.New("daemon-down"),
 			wantErrContains:  "daemon-down",
-			wantCallSequence: "Create",
+			wantCallSequence: "Ping,Create",
 			wantLive:         0,
 			wantRows:         0,
 		},
@@ -392,12 +410,12 @@ func TestService_Stop(t *testing.T) {
 
 func TestService_Destroy(t *testing.T) {
 	tests := []struct {
-		name           string
-		setupID        func(t *testing.T, svc *Service) string
-		wantErrIs      error
-		wantWorkspace  bool // true = workspace should remain after Destroy (e.g. setup didn't create one)
-		wantRowsAfter  int
-		wantLiveAfter  int
+		name          string
+		setupID       func(t *testing.T, svc *Service) string
+		wantErrIs     error
+		wantWorkspace bool // true = workspace should remain after Destroy (e.g. setup didn't create one)
+		wantRowsAfter int
+		wantLiveAfter int
 	}{
 		{
 			name: "existing session is fully removed",

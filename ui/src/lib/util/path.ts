@@ -6,9 +6,9 @@
 //   "/x"         → { dir: '/',       prefix: 'x' }
 //   "rel"        → { dir: undefined, prefix: 'rel' } (no slash yet)
 export function splitPath(v: string): { dir: string | undefined; prefix: string } {
-	if (!v) return { dir: undefined, prefix: '' };
-	if (v.endsWith('/')) return { dir: v, prefix: '' };
-	const idx = v.lastIndexOf('/');
-	if (idx < 0) return { dir: undefined, prefix: v };
-	return { dir: v.slice(0, idx) || '/', prefix: v.slice(idx + 1) };
+  if (!v) return { dir: undefined, prefix: '' };
+  if (v.endsWith('/')) return { dir: v, prefix: '' };
+  const idx = v.lastIndexOf('/');
+  if (idx < 0) return { dir: undefined, prefix: v };
+  return { dir: v.slice(0, idx) || '/', prefix: v.slice(idx + 1) };
 }

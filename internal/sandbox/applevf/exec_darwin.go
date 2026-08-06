@@ -3,6 +3,7 @@
 package applevf
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -21,8 +22,8 @@ const execDialRetry = 200 * time.Millisecond
 
 // Exec runs a command inside the VM and returns it as a sandbox.Process, the same interface the Docker
 // driver returns, so the session layer does not care which runtime is underneath.
-func (m *machine) Exec(spec guestexec.ExecRequest) (sandbox.Process, error) {
-	conn, err := m.dialExec()
+func (m *machine) Exec(ctx context.Context, spec guestexec.ExecRequest) (sandbox.Process, error) {
+	conn, err := m.dialExec(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +36,11 @@ func (m *machine) Exec(spec guestexec.ExecRequest) (sandbox.Process, error) {
 }
 
 // dialExec connects to the guest's exec service over vsock, retrying while the guest finishes booting.
-func (m *machine) dialExec() (*vz.VirtioSocketConnection, error) {
+//
+// It honours ctx so a caller's deadline actually means something. Without that a short lived call (the
+// bootstrap poll allows 3s) could block here for the full retry window, time out upstream, and be
+// reported as a failure the caller then papers over with a default.
+func (m *machine) dialExec(ctx context.Context) (*vz.VirtioSocketConnection, error) {
 	device, err := m.socketDevice()
 	if err != nil {
 		return nil, err
@@ -49,7 +54,11 @@ func (m *machine) dialExec() (*vz.VirtioSocketConnection, error) {
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("applevf: connect to the guest exec service on vsock port %d: %w", guestexec.Port, err)
 		}
-		time.Sleep(execDialRetry)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(execDialRetry):
+		}
 	}
 }
 

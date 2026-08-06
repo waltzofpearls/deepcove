@@ -11,22 +11,13 @@ package guestinit
 
 import (
 	"errors"
-	"strings"
+	"strconv"
 	"syscall"
 )
 
 // InitPath is where the init binary is baked into the rootfs, and what the kernel command line's
 // init= points at. Kept in sync with defaultCmdline in the applevf package.
 const InitPath = "/sbin/deepcove-init"
-
-// LaunchScriptPath is the shell fragment (written into the image at build time) that starts the agent.
-// Init runs it as the tmux "main" session's command, mirroring the Docker entrypoint. Exported so the
-// image builder knows where to inject it.
-const LaunchScriptPath = "/etc/deepcove/agent-launch"
-
-// AgentPath holds the agent name, which tells the guest which credential bundle to broker with the host.
-// Absent means this session brokers nothing (the work profile case).
-const AgentPath = "/etc/deepcove/agent"
 
 // OverlayMountDir is baked into the image as an empty directory at build time, because the base is
 // mounted read only and init therefore cannot mkdir anything at runtime. Init mounts a tmpfs here, which
@@ -40,13 +31,6 @@ const (
 	upperDir = OverlayMountDir + "/upper"
 	workDir  = OverlayMountDir + "/work"
 	newRoot  = OverlayMountDir + "/newroot"
-)
-
-// tmuxSession and tmuxWindow match the Docker runtime so session/attach.go and session/preview.go, which
-// target "main", work identically over the VF runtime.
-const (
-	tmuxSession = "main"
-	tmuxWindow  = "main"
 )
 
 // overlaySpec names the three overlayfs directories. mountData renders the -o option string.
@@ -64,12 +48,6 @@ func defaultOverlay() overlaySpec {
 
 func (o overlaySpec) mountData() string {
 	return "lowerdir=" + o.Lower + ",upperdir=" + o.Upper + ",workdir=" + o.Work
-}
-
-// tmuxLaunch is the argv that starts the agent in a detached tmux session named "main", the exact shape
-// the Docker runtime uses. cmd is the shell command that runs the agent (from launchScriptPath).
-func tmuxLaunch(cmd string) []string {
-	return []string{"tmux", "new-session", "-d", "-s", tmuxSession, "-n", tmuxWindow, cmd}
 }
 
 // pseudoMount is one kernel filesystem the guest must mount before anything else works.
@@ -167,19 +145,31 @@ func credentialPaths() []string {
 	}
 }
 
-// Config is the per boot input to Run, populated by the init binary's main from files baked into the
-// image. LaunchCmd is the agent command run under tmux; empty falls back to an interactive shell so a
-// misconfigured image still yields a usable console rather than a panic.
+// tmpfsSizeOption renders the mount option that caps a tmpfs, or "" to leave it at the default. The
+// writable overlay is memory backed, so this is what stops a runaway write inside a session from
+// exhausting the guest's RAM.
+func tmpfsSizeOption(bytes int64) string {
+	if bytes <= 0 {
+		return ""
+	}
+	return "size=" + strconv.FormatInt(bytes, 10)
+}
+
+// overlayCapLabel describes the writable layer cap for the boot log, so an out of space failure later is
+// easy to connect back to the setting.
+func overlayCapLabel(bytes int64) string {
+	if bytes <= 0 {
+		return "default (half the guest's RAM)"
+	}
+	return strconv.FormatInt(bytes>>20, 10) + "MiB"
+}
+
+// Config is what the guest resolves for itself at boot, from the configuration the HOST serves over
+// vsock. It is not read from the image: an earlier design baked a launch script and an agent name into
+// the rootfs, but the host now supplies both, so those files stopped being written and everything that
+// read them was dead.
 type Config struct {
-	LaunchCmd string
 	// Agent names which credential bundle to broker with the host. Empty means this session brokers
 	// nothing, which is the work profile case where the gateway supplies credentials instead.
 	Agent string
-}
-
-func (c Config) launchCommand() string {
-	if strings.TrimSpace(c.LaunchCmd) == "" {
-		return "/bin/sh"
-	}
-	return c.LaunchCmd
 }

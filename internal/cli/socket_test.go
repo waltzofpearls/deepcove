@@ -11,8 +11,8 @@ func TestLocalAllowedHosts(t *testing.T) {
 		want []string
 	}{
 		{"127.0.0.1:8080", []string{"127.0.0.1"}},
-		{"0.0.0.0:8080", nil},  // wildcard contributes nothing; only loopback trusted
-		{"[::]:8080", nil},     // ipv6 wildcard
+		{"0.0.0.0:8080", nil}, // wildcard contributes nothing; only loopback trusted
+		{"[::]:8080", nil},    // ipv6 wildcard
 		{"deepcove.lan:8080", []string{"deepcove.lan"}},
 		{"127.0.0.1", []string{"127.0.0.1"}}, // no port
 	}

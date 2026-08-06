@@ -51,7 +51,7 @@
     }
   });
   const showConnectNudge = $derived(
-    transport.mode === 'direct' && connectSkipped && !connect.connected
+    transport.mode === 'direct' && connectSkipped && !connect.connected,
   );
   function dismissNudge() {
     setConnectSkipped(false);
@@ -99,7 +99,7 @@
   const visible = $derived(
     preferences.clusterFilter === 'all'
       ? filtered
-      : filtered.filter((s) => clusterOf(s) === preferences.clusterFilter)
+      : filtered.filter((s) => clusterOf(s) === preferences.clusterFilter),
   );
   // Sessions grouped by cluster (name-sorted) for the "all clusters" overview.
   const grouped = $derived.by(() => {
@@ -149,7 +149,9 @@
        doesn't jump when cards arrive. -->
   <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
     {#each Array(16) as _, i (i)}
-      <div class="flex aspect-[4/3] animate-pulse flex-col overflow-hidden rounded-lg border border-border bg-card">
+      <div
+        class="flex aspect-[4/3] animate-pulse flex-col overflow-hidden rounded-lg border border-border bg-card"
+      >
         <div class="flex-1 bg-secondary/40"></div>
         <div class="flex items-center gap-2 border-t border-border px-3 py-2.5">
           <div class="size-2.5 rounded-full bg-secondary"></div>
@@ -168,8 +170,8 @@
       </div>
       <h2 class="text-lg font-semibold">Run a coding agent in its own sandbox</h2>
       <p class="mt-1.5 text-sm text-muted-foreground">
-        Each session is an isolated container running Claude Code, reachable from
-        this dashboard. Create one to get started.
+        Each session is an isolated container running Claude Code, reachable from this dashboard.
+        Create one to get started.
       </p>
 
       {#if preflight.loaded && !preflight.dockerReachable}
@@ -259,9 +261,7 @@
   </div>
 
   {#if filtered.length === 0}
-    <div class="p-8 text-center text-sm text-muted-foreground">
-      No sessions match your filters.
-    </div>
+    <div class="p-8 text-center text-sm text-muted-foreground">No sessions match your filters.</div>
   {:else if showClusters && preferences.clusterFilter === 'all'}
     <!-- Grouped by cluster: a header per cluster, then that cluster's sessions. -->
     {#each grouped as [cluster, group] (cluster)}

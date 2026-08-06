@@ -9,7 +9,10 @@
 // the real identity layer plugs in via request context once tsnet/WhoIs lands.
 package session
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Status enumerates the lifecycle states tracked in the sessions
 // table. The state machine is small on purpose: created → running →
@@ -27,19 +30,24 @@ const (
 // Mounts only holds USER-supplied mounts; the scratch workspace and agent-home volume
 // are implementation details and stay out of the API.
 type Session struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	Agent          string            `json:"agent"`
-	Image          string            `json:"image"`
-	OwnerEmail     string            `json:"owner_email"`
-	Status         Status            `json:"status"`
-	Env            map[string]string `json:"env"`
-	Mounts         []MountRequest    `json:"mounts"`
-	SetupScript    string            `json:"setup_script"`
-	ContainerID    string            `json:"container_id,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
-	LastActivityAt time.Time         `json:"last_activity_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Agent       string            `json:"agent"`
+	Image       string            `json:"image"`
+	OwnerEmail  string            `json:"owner_email"`
+	Status      Status            `json:"status"`
+	Env         map[string]string `json:"env"`
+	Mounts      []MountRequest    `json:"mounts"`
+	SetupScript string            `json:"setup_script"`
+	// Runtime is the sandbox runtime hosting this session ("docker", "applevf"). Persisted because a
+	// node can offer several, so stop, destroy, and exec must route back to the driver that created it.
+	Runtime string `json:"runtime"`
+	// Resources caps this session's CPU, memory, and disk. Zero fields mean the runtime's defaults.
+	Resources      Resources `json:"resources"`
+	ContainerID    string    `json:"container_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	LastActivityAt time.Time `json:"last_activity_at"`
 
 	// Host is the node this session lives on. Set only by ListAggregated (fan-out); never persisted.
 	// nil on the single-session endpoints.
@@ -54,6 +62,10 @@ type CreateRequest struct {
 	Mounts      []MountRequest    `json:"mounts,omitempty"`
 	Image       string            `json:"image,omitempty"`
 	SetupScript string            `json:"setup_script,omitempty"`
+	// Runtime picks which sandbox runtime hosts the session. Empty means the node default.
+	Runtime string `json:"runtime,omitempty"`
+	// Resources caps the session. Omitted or zero fields fall back to the runtime's defaults.
+	Resources Resources `json:"resources,omitempty"`
 	// NodeID targets which node hosts the session (a node's StableNodeID). Empty, or this node's id,
 	// means create here; another node's id proxies the create to that node over the tailnet. The
 	// session lives on the node that creates it.
@@ -79,4 +91,48 @@ type MountRequest struct {
 // stopped/errored sessions so `session ps` matches the Docker convention (only running unless -a).
 type ListFilter struct {
 	IncludeAll bool
+}
+
+// Resources is the per session cap on CPU, memory, and disk.
+//
+// Units are human facing (whole cores, MiB) rather than the byte counts the sandbox layer uses, because
+// these come straight from a form field. Zero means "no explicit limit", which each runtime resolves to
+// its own default.
+type Resources struct {
+	// CPU is the number of cores. Fractional values suit containers; a VM rounds to whole vCPUs, since
+	// you cannot give a virtual machine half a processor.
+	CPU float64 `json:"cpu,omitempty"`
+	// MemoryMB is the memory cap. For a VM this is the RAM the guest is given, not a ceiling it may
+	// exceed, so it is worth setting deliberately.
+	MemoryMB int64 `json:"memory_mb,omitempty"`
+	// DiskMB caps the session's writable layer.
+	//
+	// Docker ignores it (disk quotas are not portable across its storage drivers). For a VM it sizes the
+	// writable overlay, which today is a tmpfs and therefore comes OUT OF the guest's memory: disk and
+	// memory share one budget, and setting disk close to memory will starve the agent. It still earns
+	// its place, because an uncapped overlay lets a runaway write consume all of the guest's RAM.
+	DiskMB int64 `json:"disk_mb,omitempty"`
+}
+
+// Bounds on a request. These are sanity rails rather than policy: they exist so a mistyped value fails
+// here, as a 400 naming the field, instead of deep inside a hypervisor that was asked for ten terabytes
+// of RAM. A node that genuinely cannot honour a plausible request still fails at Create.
+const (
+	maxCPUCores = 64
+	maxMB       = 512 << 10 // 512 GiB
+)
+
+// Validate rejects a request that cannot be honoured. Zero always passes: it means "no explicit limit",
+// which is what every session had before these caps existed.
+func (r Resources) Validate() error {
+	if r.CPU < 0 || r.CPU > maxCPUCores {
+		return fmt.Errorf("cpu must be between 0 and %d, got %v", maxCPUCores, r.CPU)
+	}
+	if r.MemoryMB < 0 || r.MemoryMB > maxMB {
+		return fmt.Errorf("memory_mb must be between 0 and %d, got %d", maxMB, r.MemoryMB)
+	}
+	if r.DiskMB < 0 || r.DiskMB > maxMB {
+		return fmt.Errorf("disk_mb must be between 0 and %d, got %d", maxMB, r.DiskMB)
+	}
+	return nil
 }

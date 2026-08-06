@@ -47,7 +47,10 @@
   $effect(() => {
     if (discoveryRequired()) return; // discover mode auto-updates via the discovery store (netmap poll)
     const ac = new AbortController();
-    const stop = usePolling(() => loadDirect(ac.signal), () => preferences.pollIntervalMs);
+    const stop = usePolling(
+      () => loadDirect(ac.signal),
+      () => preferences.pollIntervalMs,
+    );
     return () => {
       ac.abort();
       stop();
@@ -85,7 +88,7 @@
     (nodes ?? [])
       .map((n) => n.stable_node_id)
       .sort()
-      .join(',')
+      .join(','),
   );
   $effect(() => {
     // Key on nodeIdsKey (a stable string), not the `nodes` array, whose reference churns every netmap tick.
@@ -104,12 +107,14 @@
           /* keep last-known; the next tick retries */
         }
       },
-      () => (clustersLoaded ? CLUSTER_REFRESH_MS : CLUSTER_RETRY_MS)
+      () => (clustersLoaded ? CLUSTER_REFRESH_MS : CLUSTER_RETRY_MS),
     );
   });
   const clusterFor = (n: NodeInfo): string => nodeClusterLabel(clusterMap, n.stable_node_id);
   // Gate on clustersLoaded so nodes don't flash unknown/grouping before the first fetch.
-  const nodeClustersInView = $derived(clustersLoaded ? [...new Set((nodes ?? []).map(clusterFor))] : []);
+  const nodeClustersInView = $derived(
+    clustersLoaded ? [...new Set((nodes ?? []).map(clusterFor))] : [],
+  );
   const showNodeClusters = $derived(nodeClustersInView.length > 1);
   const groupedNodes = $derived.by(() => {
     const m = new Map<string, NodeInfo[]>();
@@ -155,7 +160,13 @@
     </a>
     <h1 class="text-lg font-semibold">Nodes</h1>
     <div class="flex-1"></div>
-    <Button variant="ghost" size="icon" onclick={refreshNow} disabled={refreshing} aria-label="Refresh">
+    <Button
+      variant="ghost"
+      size="icon"
+      onclick={refreshNow}
+      disabled={refreshing}
+      aria-label="Refresh"
+    >
       <RefreshCw class="size-4 {refreshing ? 'animate-spin' : ''}" />
     </Button>
   </div>
@@ -180,8 +191,8 @@
         <div class="space-y-1">
           <h2 class="text-sm font-semibold">It's just this machine right now</h2>
           <p class="text-sm text-muted-foreground">
-            deepcove is running locally. Connect to your tailnet to bring your other machines into one
-            cluster and see them all here.
+            deepcove is running locally. Connect to your tailnet to bring your other machines into
+            one cluster and see them all here.
           </p>
         </div>
       </div>
@@ -294,7 +305,9 @@
               <div class="min-w-0 flex-1">
                 <span class="truncate font-medium">{machineName(node.dns_name)}</span>
                 {#if node.dns_name}
-                  <div class="truncate font-mono text-xs text-muted-foreground">{node.dns_name}</div>
+                  <div class="truncate font-mono text-xs text-muted-foreground">
+                    {node.dns_name}
+                  </div>
                 {/if}
               </div>
               <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
@@ -306,7 +319,8 @@
         </ul>
         {#if !webRunning}
           <p class="mt-2 text-xs text-muted-foreground">
-            This browser isn't on your tailnet yet. Use the <span class="font-medium">Web node</span>
+            This browser isn't on your tailnet yet. Use the <span class="font-medium">Web node</span
+            >
             chip in the top bar to sign in.
           </p>
         {/if}

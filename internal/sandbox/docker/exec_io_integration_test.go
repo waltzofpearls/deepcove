@@ -48,9 +48,9 @@ func TestExec_TTY_Roundtrip(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		input            []byte
-		wantSubstr       string // bytes we expect to see in the response (kernel echo + cat write)
+		name       string
+		input      []byte
+		wantSubstr string // bytes we expect to see in the response (kernel echo + cat write)
 	}{
 		{name: "ascii line", input: []byte("hello-cat\n"), wantSubstr: "hello-cat"},
 		{name: "another line", input: []byte("second-line\n"), wantSubstr: "second-line"},

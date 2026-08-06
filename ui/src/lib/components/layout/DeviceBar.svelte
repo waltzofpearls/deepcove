@@ -87,7 +87,7 @@
       !sessionConnected &&
       !webConnected &&
       !sessionConnecting &&
-      !webConnecting
+      !webConnecting,
   );
 
   // Live web-node details. Loaded whenever the web node is connected (not just while the dialog is
@@ -233,8 +233,8 @@
           {/snippet}
         </TooltipTrigger>
         <TooltipContent class="max-w-xs text-center">
-          Put deepcove on your tailnet to reach your sessions from anywhere, and to run them across more
-          than one machine. It's optional, since sessions on this machine work without it.
+          Put deepcove on your tailnet to reach your sessions from anywhere, and to run them across
+          more than one machine. It's optional, since sessions on this machine work without it.
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -258,7 +258,8 @@
             <div class="text-xs font-medium text-muted-foreground">Session node</div>
           {/if}
         </div>
-        <span class="size-2 shrink-0 rounded-full {dotClass(sessionConnected, sessionConnecting)}"></span>
+        <span class="size-2 shrink-0 rounded-full {dotClass(sessionConnected, sessionConnecting)}"
+        ></span>
       </button>
     {/if}
 
@@ -291,7 +292,9 @@
       {#if sessionConnected}
         <DialogHeader>
           <DialogTitle class="font-mono text-xl">{sessionShortName || 'Session node'}</DialogTitle>
-          <DialogDescription>The backend that runs your sessions, on your tailnet.</DialogDescription>
+          <DialogDescription
+            >The backend that runs your sessions, on your tailnet.</DialogDescription
+          >
         </DialogHeader>
         <dl class="space-y-3 text-sm">
           <div class="flex justify-between gap-4">
@@ -330,7 +333,9 @@
           {/if}
         </dl>
         {#if connect.status?.url}
-          <div class="flex items-center gap-2 rounded-md border border-border bg-secondary p-2 font-mono text-xs">
+          <div
+            class="flex items-center gap-2 rounded-md border border-border bg-secondary p-2 font-mono text-xs"
+          >
             <a
               href={connect.status.url}
               target="_blank"
@@ -355,7 +360,8 @@
         <div class="flex items-center gap-3 pt-1">
           {#if actionBusy}
             <div class="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 class="size-4 animate-spin" /> {actionLabel}
+              <Loader2 class="size-4 animate-spin" />
+              {actionLabel}
             </div>
           {:else}
             <Button size="sm" variant="outline" onclick={disconnectSession}>Disconnect</Button>
@@ -437,8 +443,9 @@
           {/if}
         </dl>
         <p class="text-sm text-muted-foreground">
-          This browser is its own Tailscale device, active while this tab is open. Clearing its saved
-          credentials makes the next session sign in fresh; this tab stays connected until you close it.
+          This browser is its own Tailscale device, active while this tab is open. Clearing its
+          saved credentials makes the next session sign in fresh; this tab stays connected until you
+          close it.
         </p>
         <div class="pt-1">
           {#if webCleared}
@@ -455,8 +462,8 @@
         <DialogHeader>
           <DialogTitle>Web node</DialogTitle>
           <DialogDescription>
-            Your browser, as its own device on your tailnet. Sign in so this browser can reach sessions
-            running on your other machines.
+            Your browser, as its own device on your tailnet. Sign in so this browser can reach
+            sessions running on your other machines.
           </DialogDescription>
         </DialogHeader>
         {#if auth.phase === 'needs_login'}

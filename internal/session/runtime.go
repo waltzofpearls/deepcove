@@ -1,0 +1,172 @@
+package session
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
+)
+
+// Runtime names. These are persisted on the session row and sent over the wire, so treat them as a
+// stable vocabulary rather than internal identifiers.
+const (
+	// RuntimeDocker runs each session in a container sharing the host kernel. The default everywhere.
+	RuntimeDocker = "docker"
+	// RuntimeAppleVF runs each session in its own Linux VM via Apple Virtualization.framework. macOS
+	// only, and only when the guest kernel and init are present.
+	RuntimeAppleVF = "applevf"
+)
+
+// ErrUnknownRuntime means a session names a runtime this node does not offer. That is a real situation
+// rather than a bug: a session created on a Mac with the VM runtime is unusable on a node without it, and
+// the user needs to be told that rather than shown a confusing driver error.
+type ErrUnknownRuntime struct {
+	Runtime string
+}
+
+func (e ErrUnknownRuntime) Error() string {
+	return fmt.Sprintf("session: this node does not provide the %q runtime", e.Runtime)
+}
+
+// RegisterRuntime adds a runtime under name. The runtime passed to NewService is already registered as
+// the default, so this is for the additional ones a node happens to support.
+func (s *Service) RegisterRuntime(name string, sb sandbox.Sandbox) {
+	if sb == nil {
+		return
+	}
+	s.runtimes[name] = sb
+}
+
+// SelectDefaultRuntime decides which runtime a create request gets when it names none.
+//
+// An empty preference takes the first runtime this node actually provides, in runtimeOrder, which puts
+// the strongest isolation first. That is the whole policy: no runtime is named here, so adding one only
+// means placing it in that order. A non-empty preference (DEEPCOVE_DEFAULT_RUNTIME) must be a runtime
+// this node provides, and is reported as an error rather than silently ignored.
+func (s *Service) SelectDefaultRuntime(ctx context.Context, preferred string) error {
+	if preferred != "" {
+		if _, ok := s.runtimes[preferred]; !ok {
+			return ErrUnknownRuntime{Runtime: preferred}
+		}
+		s.defaultRuntime = preferred
+		return nil
+	}
+	available := s.Runtimes()
+	if len(available) == 0 {
+		return fmt.Errorf("session: this node provides no runtimes")
+	}
+
+	// Prefer one that can actually host a session today. Registering a driver only says this node knows
+	// how to talk to that backend; Docker in particular can be installed but not running, and defaulting
+	// to it would greet the user with a failure they did not choose.
+	unavailable := s.unavailableRuntimes(ctx)
+	for _, name := range available {
+		if _, dead := unavailable[name]; !dead {
+			s.defaultRuntime = name
+			return nil
+		}
+	}
+	// Nothing is reachable. Still pick one so the node has a coherent default to report; creating a
+	// session is refused separately, with the reason, rather than silently attempted.
+	s.defaultRuntime = available[0]
+	return nil
+}
+
+// SetDefaultRuntime changes which runtime a create request gets when it does not ask for one. It
+// refuses a runtime this node does not provide, so a misconfigured default degrades to the existing one
+// rather than failing every create.
+func (s *Service) SetDefaultRuntime(name string) error {
+	if _, ok := s.runtimes[name]; !ok {
+		return ErrUnknownRuntime{Runtime: name}
+	}
+	s.defaultRuntime = name
+	return nil
+}
+
+// runtimeOrder is the order runtimes are offered in, strongest isolation first. Map iteration is random,
+// so without this the picker reshuffles between restarts and there is no stable "first" option to land
+// on. A runtime not named here sorts last, alphabetically, rather than disappearing.
+var runtimeOrder = []string{RuntimeAppleVF, RuntimeDocker}
+
+// Runtimes lists the runtimes this node provides, so the UI can offer them and the create path can
+// validate a requested one. The order is deliberate and stable; see runtimeOrder.
+func (s *Service) Runtimes() []string {
+	out := make([]string, 0, len(s.runtimes))
+	for name := range s.runtimes {
+		out = append(out, name)
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		ra, rb := slices.Index(runtimeOrder, a), slices.Index(runtimeOrder, b)
+		if ra < 0 {
+			ra = len(runtimeOrder)
+		}
+		if rb < 0 {
+			rb = len(runtimeOrder)
+		}
+		if ra != rb {
+			return ra - rb
+		}
+		return strings.Compare(a, b)
+	})
+	return out
+}
+
+// DefaultRuntime is what a create request gets when it does not ask for one.
+func (s *Service) DefaultRuntime() string { return s.defaultRuntime }
+
+// runtimeNamed resolves a runtime by name, falling back to the default when name is empty. An empty name
+// covers both a create request that did not choose one and a session row written before the runtime
+// column existed.
+func (s *Service) runtimeNamed(name string) (sandbox.Sandbox, error) {
+	if name == "" {
+		name = s.defaultRuntime
+	}
+	sb, ok := s.runtimes[name]
+	if !ok {
+		return nil, ErrUnknownRuntime{Runtime: name}
+	}
+	return sb, nil
+}
+
+// runtimeFor resolves the driver hosting an existing session. Every operation on a live session goes
+// through here, because a node can offer several runtimes and the session must go back to the one that
+// created it.
+func (s *Service) runtimeFor(sess *Session) (sandbox.Sandbox, error) {
+	return s.runtimeNamed(sess.Runtime)
+}
+
+// ErrRuntimeUnavailable means the runtime exists on this node but cannot host a session right now, which
+// is a different situation from a runtime this node has never heard of: the user does not need to pick
+// something else, they need to start the backend.
+type ErrRuntimeUnavailable struct {
+	Runtime string
+	Reason  string
+}
+
+func (e ErrRuntimeUnavailable) Error() string { return e.Reason }
+
+// runtimeUnavailable reports why one runtime cannot host a session, or "" when it can.
+//
+// Probes only the runtime asked about. Checking a single runtime by probing all of them would make every
+// create wait on backends it is not going to use.
+func (s *Service) runtimeUnavailable(ctx context.Context, name string) string {
+	if name == "" {
+		name = s.defaultRuntime
+	}
+	driver, ok := s.runtimes[name]
+	if !ok {
+		return "" // an unknown runtime is reported by runtimeNamed, not here
+	}
+	pinger, ok := driver.(sandbox.Pinger)
+	if !ok {
+		return "" // cannot report liveness, so assume usable rather than block on a signal we lack
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, preflightPingTimeout)
+	defer cancel()
+	if _, err := pinger.Ping(pingCtx); err != nil {
+		return unavailableReason(name)
+	}
+	return ""
+}

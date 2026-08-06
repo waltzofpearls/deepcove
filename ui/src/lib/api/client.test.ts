@@ -2,52 +2,52 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { api, ApiError } from './client';
 
 function okResponse(body: unknown): Response {
-	return { ok: true, status: 200, json: async () => body } as unknown as Response;
+  return { ok: true, status: 200, json: async () => body } as unknown as Response;
 }
 function errResponse(status: number, body: unknown): Response {
-	return { ok: false, status, statusText: 'err', json: async () => body } as unknown as Response;
+  return { ok: false, status, statusText: 'err', json: async () => body } as unknown as Response;
 }
 
 afterEach(() => {
-	vi.unstubAllGlobals();
+  vi.unstubAllGlobals();
 });
 
 describe('api.fsList', () => {
-	it('encodes the path into the query and returns parsed JSON', async () => {
-		const fetchMock = vi.fn(async () => okResponse({ path: '/x', parent: '', entries: [] }));
-		vi.stubGlobal('fetch', fetchMock);
+  it('encodes the path into the query and returns parsed JSON', async () => {
+    const fetchMock = vi.fn(async () => okResponse({ path: '/x', parent: '', entries: [] }));
+    vi.stubGlobal('fetch', fetchMock);
 
-		const res = await api.fsList('/x');
+    const res = await api.fsList('/x');
 
-		expect(fetchMock).toHaveBeenCalledWith('/api/fs/list?path=%2Fx', { signal: undefined });
-		expect(res).toEqual({ path: '/x', parent: '', entries: [] });
-	});
+    expect(fetchMock).toHaveBeenCalledWith('/api/fs/list?path=%2Fx', { signal: undefined });
+    expect(res).toEqual({ path: '/x', parent: '', entries: [] });
+  });
 });
 
 describe('api.suggestName', () => {
-	it('builds the URL and unwraps the name', async () => {
-		const fetchMock = vi.fn(async () => okResponse({ name: 'claude-proud_shannon' }));
-		vi.stubGlobal('fetch', fetchMock);
+  it('builds the URL and unwraps the name', async () => {
+    const fetchMock = vi.fn(async () => okResponse({ name: 'claude-proud_shannon' }));
+    vi.stubGlobal('fetch', fetchMock);
 
-		const name = await api.suggestName('claude');
+    const name = await api.suggestName('claude');
 
-		expect(fetchMock).toHaveBeenCalledWith('/api/sessions/suggest-name?agent=claude', undefined);
-		expect(name).toBe('claude-proud_shannon');
-	});
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/suggest-name?agent=claude', undefined);
+    expect(name).toBe('claude-proud_shannon');
+  });
 });
 
 describe('request error handling', () => {
-	it('throws an ApiError carrying status, message, and code from the {error,code} envelope', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async () => errResponse(422, { error: 'no image', code: 'image_not_found' })),
-		);
+  it('throws an ApiError carrying status, message, and code from the {error,code} envelope', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => errResponse(422, { error: 'no image', code: 'image_not_found' })),
+    );
 
-		const err = await api.suggestName('x').catch((e) => e);
+    const err = await api.suggestName('x').catch((e) => e);
 
-		expect(err).toBeInstanceOf(ApiError);
-		expect(err.status).toBe(422);
-		expect(err.message).toBe('no image');
-		expect(err.code).toBe('image_not_found');
-	});
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(422);
+    expect(err.message).toBe('no image');
+    expect(err.code).toBe('image_not_found');
+  });
 });

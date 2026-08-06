@@ -7,21 +7,21 @@ import { browser } from '$app/environment';
 const KEY = 'deepcove_setup_complete';
 
 export function isSetupDone(): boolean {
-	if (!browser) return true;
-	try {
-		return localStorage.getItem(KEY) === '1';
-	} catch {
-		return true;
-	}
+  if (!browser) return true;
+  try {
+    return localStorage.getItem(KEY) === '1';
+  } catch {
+    return true;
+  }
 }
 
 export function markSetupDone(): void {
-	if (!browser) return;
-	try {
-		localStorage.setItem(KEY, '1');
-	} catch {
-		/* storage unavailable, so the wizard just won't be remembered */
-	}
+  if (!browser) return;
+  try {
+    localStorage.setItem(KEY, '1');
+  } catch {
+    /* storage unavailable, so the wizard just won't be remembered */
+  }
 }
 
 // Tracks whether the user finished the wizard WITHOUT connecting the session node, so the dashboard can
@@ -29,20 +29,20 @@ export function markSetupDone(): void {
 const SKIPPED_KEY = 'deepcove_connect_skipped';
 
 export function isConnectSkipped(): boolean {
-	if (!browser) return false;
-	try {
-		return localStorage.getItem(SKIPPED_KEY) === '1';
-	} catch {
-		return false;
-	}
+  if (!browser) return false;
+  try {
+    return localStorage.getItem(SKIPPED_KEY) === '1';
+  } catch {
+    return false;
+  }
 }
 
 export function setConnectSkipped(skipped: boolean): void {
-	if (!browser) return;
-	try {
-		if (skipped) localStorage.setItem(SKIPPED_KEY, '1');
-		else localStorage.removeItem(SKIPPED_KEY);
-	} catch {
-		/* ignore */
-	}
+  if (!browser) return;
+  try {
+    if (skipped) localStorage.setItem(SKIPPED_KEY, '1');
+    else localStorage.removeItem(SKIPPED_KEY);
+  } catch {
+    /* ignore */
+  }
 }

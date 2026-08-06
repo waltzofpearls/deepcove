@@ -95,12 +95,16 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 	if err != nil {
 		return fmt.Errorf("session: marshal mounts: %w", err)
 	}
+	resourcesJSON, err := json.Marshal(sess.Resources)
+	if err != nil {
+		return fmt.Errorf("session: marshal resources: %w", err)
+	}
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, container_id, created_at, updated_at, last_activity_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources, container_id, created_at, updated_at, last_activity_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
-		string(sess.Status), string(mountsJSON), string(envJSON), sess.SetupScript, sess.ContainerID,
+		string(sess.Status), string(mountsJSON), string(envJSON), sess.SetupScript, sess.Runtime, string(resourcesJSON), sess.ContainerID,
 		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
 	)
 	if err != nil {
@@ -111,7 +115,7 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 
 func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*Session, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script,
+		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources,
 		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, owner)
@@ -127,7 +131,7 @@ func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*S
 
 func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includeAll bool) ([]*Session, error) {
 	query := `
-		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script,
+		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources,
 		       container_id, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
@@ -257,19 +261,33 @@ func scanRow(r rowScanner) (*Session, error) {
 		mountsJSON     sql.NullString
 		envJSON        sql.NullString
 		setupScript    sql.NullString
+		runtime        sql.NullString
+		resourcesJSON  sql.NullString
 		containerID    sql.NullString
 		status         string
 		lastActivityAt sql.NullTime
 	)
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &mountsJSON, &envJSON, &setupScript, &containerID,
+		&status, &mountsJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &containerID,
 		&sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
 		return nil, err
 	}
 	if setupScript.Valid {
 		sess.SetupScript = setupScript.String
+	}
+	// runtime is nullable for rows written before the column existed; the service treats "" as the
+	// node default runtime.
+	if runtime.Valid {
+		sess.Runtime = runtime.String
+	}
+	// resources is nullable for rows written before the column existed; zero fields read back as "use
+	// the runtime's defaults", which is what those sessions already got.
+	if resourcesJSON.Valid && strings.TrimSpace(resourcesJSON.String) != "" && resourcesJSON.String != "null" {
+		if err := json.Unmarshal([]byte(resourcesJSON.String), &sess.Resources); err != nil {
+			return nil, fmt.Errorf("session: unmarshal resources: %w", err)
+		}
 	}
 	// last_activity_at is nullable on disk (DuckDB ALTER limitation
 	// means we can't enforce NOT NULL); fall back to created_at when

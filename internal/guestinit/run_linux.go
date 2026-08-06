@@ -11,9 +11,15 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 	"github.com/waltzofpearls/deepcove/internal/guestctl"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
 )
+
+// tmuxSession is the session name the HOST's entrypoint creates. It matches the Docker runtime so
+// session/attach.go and session/preview.go, which target "main", work identically over the VF runtime.
+// The guest no longer creates the session, so this exists only to name it accurately in the boot log.
+const tmuxSession = "main"
 
 // Run is the guest PID 1. It brings up the pseudo filesystems, overlays a writable tmpfs on the read
 // only root, pivots into the merged root, launches the agent under tmux, then reaps orphans forever as
@@ -22,15 +28,16 @@ import (
 // Run never returns while the VM is alive, and never exits on a recoverable failure. PID 1 exiting makes
 // the kernel panic with "Attempted to kill init", which buries the real cause under a stack trace, so any
 // failure instead logs loudly and drops to a console shell that keeps the guest inspectable.
-func Run(cfg Config) error {
+func Run() error {
 	logf("deepcove guest init starting")
-	if err := bringUp(cfg); err != nil {
+	cfg, err := bringUp()
+	if err != nil {
 		logf("ERROR: %v", err)
 		logf("dropping to a console shell; the guest stays up so you can investigate")
 		holdConsole()
 		return nil
 	}
-	logf("agent launched under tmux session %q", tmuxSession)
+	logf("session entrypoint started; agent will appear in tmux session %q", tmuxSession)
 	serveExec()
 	serveControl(cfg)
 	reapForever()
@@ -73,29 +80,41 @@ func serveControl(cfg Config) {
 }
 
 // bringUp is the boot sequence proper: pseudo filesystems, the overlay root, the pivot, then the agent.
-func bringUp(cfg Config) error {
+func bringUp() (Config, error) {
 	// Set init's own environment first. exec.Command resolves a bare binary name against the CURRENT
 	// process's PATH (not cmd.Env), so this has to happen before anything is launched, and children then
 	// inherit it for free.
 	for k, v := range defaultEnv() {
 		if err := os.Setenv(k, v); err != nil {
-			return fmt.Errorf("set %s: %w", k, err)
+			return Config{}, fmt.Errorf("set %s: %w", k, err)
 		}
 	}
 	if err := mountPseudo(); err != nil {
-		return err
+		return Config{}, err
 	}
 	logf("pseudo filesystems mounted")
-	if err := setupOverlayRoot(); err != nil {
-		return err
+
+	// Fetch the session's configuration before building the overlay, because it carries the overlay's
+	// size cap. vsock only needs /dev, which is mounted above, so this works well before networking.
+	hostCfg, err := fetchConfig()
+	if err != nil {
+		return Config{}, fmt.Errorf("fetch session config: %w", err)
 	}
-	logf("overlay root assembled")
+	// The single place the guest's own config is resolved. It used to be built by main from files baked
+	// into the image and then mutated HERE, on a by-value copy, so the caller kept the stale one: that is
+	// why the shutdown credential handback saw an empty agent and quietly did nothing.
+	cfg := Config{Agent: hostCfg.Agent}
+
+	if err := setupOverlayRoot(hostCfg.OverlayBytes); err != nil {
+		return Config{}, err
+	}
+	logf("overlay root assembled (writable layer cap: %s)", overlayCapLabel(hostCfg.OverlayBytes))
 	if err := pivotInto(newRoot); err != nil {
-		return err
+		return Config{}, err
 	}
 	// Re-mount the pseudo filesystems inside the new root; the pivot left them behind on the old root.
 	if err := mountPseudo(); err != nil {
-		return err
+		return Config{}, err
 	}
 	logf("pivoted into overlay root")
 
@@ -109,8 +128,38 @@ func bringUp(cfg Config) error {
 	if err := fetchCredentials(cfg); err != nil {
 		logf("WARNING: could not restore credentials: %v", err)
 	}
+	// Keep the host in step with logins that happen inside this VM, so a session created later starts
+	// already authenticated instead of prompting again.
+	go watchCredentials(cfg)
 
-	return launchAgent(cfg)
+	return cfg, runEntrypoint(hostCfg)
+}
+
+// runEntrypoint runs the session's entrypoint, the same script the Docker runtime uses: it performs the
+// agent setup (installing tmux and the agent when the image lacks them) and then starts the agent in a
+// tmux session named "main". Running the identical script is what keeps attach and preview working the
+// same on both runtimes.
+func runEntrypoint(hostCfg guestcfg.Config) error {
+	argv := hostCfg.Entrypoint
+	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv comes from the trusted host side
+	cmd.Env = append(os.Environ(), envList(hostCfg.Env)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+
+	// The entrypoint ends in `sleep infinity` to hold the container open, which a VM does not need:
+	// init stays alive on its own. Run it in the background and let init get on with serving vsock.
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start entrypoint: %w", err)
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+func envList(env map[string]string) []string {
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 // holdConsole hands the console to an interactive shell so a broken image can be debugged from the VM
@@ -152,8 +201,8 @@ func mountPseudo() error {
 // any directory until it has a writable filesystem, and the tmpfs is what provides one. The tmpfs upper
 // keeps the session throwaway and needs no mkfs in the guest; a persistent scratch block device is a
 // later refinement.
-func setupOverlayRoot() error {
-	if err := unix.Mount("tmpfs", OverlayMountDir, "tmpfs", 0, ""); err != nil {
+func setupOverlayRoot(sizeBytes int64) error {
+	if err := unix.Mount("tmpfs", OverlayMountDir, "tmpfs", 0, tmpfsSizeOption(sizeBytes)); err != nil {
 		return fmt.Errorf("mount tmpfs on %s (is it baked into the image?): %w", OverlayMountDir, err)
 	}
 	for _, d := range []string{upperDir, workDir, newRoot} {
@@ -185,18 +234,6 @@ func pivotInto(root string) error {
 		return fmt.Errorf("detach oldroot: %w", err)
 	}
 	return os.Remove("/oldroot")
-}
-
-// launchAgent starts the agent in a detached tmux session named "main", the same shape the Docker
-// runtime uses so attach and preview work unchanged.
-func launchAgent(cfg Config) error {
-	argv := tmuxLaunch(cfg.launchCommand())
-	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv is built from vetted image config
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("launch agent under tmux: %w", err)
-	}
-	return nil
 }
 
 // reapForever is the PID 1 duty: adopt and reap orphaned children so the guest never accumulates

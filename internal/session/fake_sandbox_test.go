@@ -185,13 +185,13 @@ func newScriptedProcess(stdout, stderr string, exit int) *scriptedProcess {
 
 var _ sandbox.Process = (*scriptedProcess)(nil)
 
-func (p *scriptedProcess) Stdout() io.ReadCloser           { return io.NopCloser(p.stdout) }
-func (p *scriptedProcess) Stderr() io.ReadCloser           { return io.NopCloser(p.stderr) }
-func (p *scriptedProcess) Stdin() io.WriteCloser           { return nopWriteCloser{} }
+func (p *scriptedProcess) Stdout() io.ReadCloser                 { return io.NopCloser(p.stdout) }
+func (p *scriptedProcess) Stderr() io.ReadCloser                 { return io.NopCloser(p.stderr) }
+func (p *scriptedProcess) Stdin() io.WriteCloser                 { return nopWriteCloser{} }
 func (p *scriptedProcess) Wait(ctx context.Context) (int, error) { return p.exit, nil }
-func (p *scriptedProcess) Signal(s os.Signal) error        { return sandbox.ErrNotSupported }
-func (p *scriptedProcess) Resize(cols, rows uint16) error  { return nil }
-func (p *scriptedProcess) Close() error                    { return nil }
+func (p *scriptedProcess) Signal(s os.Signal) error              { return sandbox.ErrNotSupported }
+func (p *scriptedProcess) Resize(cols, rows uint16) error        { return nil }
+func (p *scriptedProcess) Close() error                          { return nil }
 
 type nopWriteCloser struct{}
 

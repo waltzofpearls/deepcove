@@ -17,7 +17,6 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/config"
 	"github.com/waltzofpearls/deepcove/internal/connect"
 	"github.com/waltzofpearls/deepcove/internal/db"
-	dockerdrv "github.com/waltzofpearls/deepcove/internal/sandbox/docker"
 	"github.com/waltzofpearls/deepcove/internal/session"
 	"github.com/waltzofpearls/deepcove/internal/ui"
 	"golang.org/x/sync/errgroup"
@@ -74,27 +73,35 @@ func cmdStart(ctx context.Context, args []string) error {
 	clusterStore := session.NewClusterStore(sqlDB, clusterName)
 	logger.Info("cluster", "name", clusterStore.Name())
 
-	// Sandbox driver: Docker is the v1 backend. $HOME is the one host root sharable with sandboxes;
-	// it covers the common case where the user mounts a project under their home dir (~/projects/foo,
-	// ~/code, etc.). System dirs (/etc, /usr, /var, ...) stay blocked because they aren't under $HOME.
-	// Power users who need to mount outside $HOME will get a config flag override as a follow-up. The
-	// sandbox layer's mount-source validator enforces this.
-	var allowedRoots []string
-	if home, herr := os.UserHomeDir(); herr == nil && home != "" {
-		allowedRoots = append(allowedRoots, home)
-	}
-	sandbox, err := dockerdrv.New(dockerdrv.WithAllowedMountRoots(allowedRoots...))
-	if err != nil {
-		return fmt.Errorf("sandbox: %w", err)
-	}
-	defer func() { _ = sandbox.Close() }()
-
 	// Persistence: domain-owned SessionRepository over the shared DuckDB handle. Each domain package
 	// owns its own CRUD wrapper (cohesion by bounded context); `internal/db` is just the connection
 	// lifecycle.
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
-	sessionSvc := session.NewService(sessionRepo, sandbox, logger)
+	sessionSvc := session.NewService(sessionRepo, logger)
 	sessionSvc.SetClusterStore(clusterStore)
+
+	closeRuntimes, err := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger)
+	if err != nil {
+		return err
+	}
+	defer closeRuntimes()
+
+	// Chosen once, after everything has registered, so the answer does not depend on registration order.
+	if err := sessionSvc.SelectDefaultRuntime(ctx, cfg.DefaultRuntime); err != nil {
+		logger.Warn("requested default runtime is unavailable on this node", "requested", cfg.DefaultRuntime, "err", err)
+		if err := sessionSvc.SelectDefaultRuntime(ctx, ""); err != nil {
+			return fmt.Errorf("session: %w", err)
+		}
+	}
+	logger.Info("runtimes available", "runtimes", sessionSvc.Runtimes(), "default", sessionSvc.DefaultRuntime())
+
+	// Bring the session table back in line with what the runtimes are actually hosting. This matters most
+	// for VM sessions: their runtime's registry lived in the previous process, so every one of them is
+	// gone while its row still says "running". Left alone, the session page waits forever on a bootstrap
+	// probe nothing will answer. Must run AFTER the runtimes are registered, or there is nothing to ask.
+	if err := sessionSvc.Reconcile(ctx); err != nil {
+		logger.Warn("could not reconcile sessions with their runtimes", "err", err)
+	}
 
 	mux := http.NewServeMux()
 	if err := api.New(

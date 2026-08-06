@@ -7,11 +7,6 @@
   let { class: className = 'size-4' }: { class?: string } = $props();
 </script>
 
-<svg
-  class={className}
-  viewBox="0 0 100 100"
-  xmlns="http://www.w3.org/2000/svg"
-  aria-hidden="true"
->
+<svg class={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <polygon class="fill-primary" points="50,4 89.84,27 89.84,73 50,96 10.16,73 10.16,27" />
 </svg>
