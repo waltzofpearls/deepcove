@@ -19,7 +19,7 @@ import (
 // It is deliberately quiet about failure: a node that cannot run VMs still runs sessions in containers,
 // which is a working node rather than a broken one. So an unavailable VM runtime is a zero entry, not an
 // error, with the reason logged for a user who expected it to be there.
-func newVMRuntime(cfg *config.Config, store credbroker.Store, logger *slog.Logger) runtimeEntry {
+func newVMRuntime(cfg *config.Config, allowedRoots []string, store credbroker.Store, logger *slog.Logger) runtimeEntry {
 	kernel := firstExisting(cfg.VMKernel, defaultKernelPaths()...)
 	if kernel == "" {
 		logger.Info("apple vf runtime unavailable: no guest kernel found",
@@ -33,8 +33,9 @@ func newVMRuntime(cfg *config.Config, store credbroker.Store, logger *slog.Logge
 		return runtimeEntry{}
 	}
 
-	driver, err := applevf.New(kernel, guestInit, filepath.Join(cfg.DataDir, "vm-images"),
-		applevf.WithCredentialStore(store), applevf.WithLogger(logger))
+	driver, err := applevf.New(kernel, guestInit, cfg.DataDir,
+		applevf.WithCredentialStore(store), applevf.WithLogger(logger),
+		applevf.WithAllowedMountRoots(allowedRoots...))
 	if err != nil {
 		logger.Warn("apple vf runtime unavailable", "err", err)
 		return runtimeEntry{}

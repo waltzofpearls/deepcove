@@ -30,11 +30,15 @@
   let showSuggest = $state(false);
   let focused = $state(false);
   let activeIndex = $state(-1);
+  // The value the user just chose from the dropdown. The suggestion effect watches `value`, so without
+  // this, picking an entry immediately refetches and reopens the list showing what was just picked.
+  let picked = $state('');
 
   // Debounced autocomplete, best-effort: any error just yields no suggestions.
   $effect(() => {
     const v = value;
     if (!focused) return;
+    if (v === picked) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       const { dir, prefix } = splitPath(v);
@@ -63,6 +67,7 @@
   });
 
   function pick(entry: FsEntry) {
+    picked = entry.path;
     value = entry.path;
     showSuggest = false;
   }
@@ -92,6 +97,7 @@
       {placeholder}
       autocomplete="off"
       spellcheck={false}
+      oninput={() => (picked = '')}
       onfocus={() => (focused = true)}
       onblur={() => {
         focused = false;

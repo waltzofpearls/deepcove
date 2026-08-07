@@ -3,7 +3,7 @@
 // enough that the cost of a generator (tygo etc) outweighs the drift
 // risk. Keep this file 1:1 with internal/session/session.go JSON tags.
 
-export type SessionStatus = 'created' | 'running' | 'stopped' | 'errored';
+export type SessionStatus = 'created' | 'running' | 'starting' | 'stopped' | 'errored';
 
 export interface Session {
   id: string;

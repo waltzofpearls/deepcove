@@ -37,6 +37,9 @@ var (
 	ErrTmuxWindowNameInvalid  = errors.New("tmux window: invalid name (must match [a-z0-9-]+, max 32 chars)")
 	ErrTmuxWindowNameReserved = errors.New("tmux window: name 'main' is reserved")
 	ErrSessionNotRunning      = errors.New("tmux window: session is not running")
+	// ErrSessionStarting means the sandbox is up but its entrypoint has not finished installing the
+	// agent and tmux yet, so anything that talks to tmux has nothing to talk to. Retrying later works.
+	ErrSessionStarting = errors.New("session is still starting; try again in a moment")
 )
 
 // TmuxWindow is one tmux window in a session.
@@ -77,7 +80,7 @@ func (s *Service) ListTmuxWindows(ctx context.Context, id string) (*TmuxWindowsR
 		"list-windows", "-t", AgentTmuxWindowName,
 		"-F", "#{window_index} #{window_name} #{window_active}")
 	if err != nil {
-		return nil, fmt.Errorf("session: list tmux windows: %w", err)
+		return nil, s.tmuxFailure(ctx, sess, fmt.Errorf("session: list tmux windows: %w", err))
 	}
 	return parseTmuxWindowsList(string(out)), nil
 }
@@ -257,6 +260,24 @@ func (s *Service) execTmux(ctx context.Context, sess *Session, args ...string) (
 			args[0], exit, strings.TrimSpace(string(stderrBuf)))
 	}
 	return stdoutBuf, nil
+}
+
+// tmuxFailure explains a failed tmux call. Until the entrypoint has installed tmux and created the
+// session there is nothing to talk to, and the raw exec failure ("exit -1") tells the user nothing.
+// A VM makes this easy to hit: its setup takes far longer than a container's.
+//
+// Only on failure, and only on the paths a user drives (listing windows, and creating one through it),
+// so the normal path and the attach path do not pay for the extra round trip.
+func (s *Service) tmuxFailure(ctx context.Context, sess *Session, err error) error {
+	// tmux answered and said the window does not exist. That is a real answer, and callers map it to a
+	// typed error, so it must survive.
+	if isTmuxWindowNotFound(err) {
+		return err
+	}
+	if b, berr := s.Bootstrap(ctx, sess.ID); berr == nil && b.Status == BootstrapInstalling {
+		return ErrSessionStarting
+	}
+	return err
 }
 
 // isTmuxWindowNotFound matches tmux's error text for a missing target

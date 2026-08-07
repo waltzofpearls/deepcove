@@ -195,6 +195,11 @@ type Sandbox interface {
 // translate this into their own native representation (container
 // config, microVM JSON, etc).
 type SandboxSpec struct {
+	// SessionID is the caller's stable identity for this sandbox, unchanged when the sandbox itself is
+	// recreated. Drivers use it to name storage that must outlive a single sandbox, such as the VM
+	// runtime's per session home disk. Empty means the driver keeps no such storage.
+	SessionID string
+
 	// Image is the canonical OCI image reference. Container drivers
 	// pull it; microVM drivers materialize it to a rootfs at create
 	// time (e.g. via skopeo + umoci or firecracker-containerd).

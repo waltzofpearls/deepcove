@@ -300,6 +300,8 @@ func writeTmuxWindowError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrSessionNotRunning):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrSessionStarting):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrTmuxWindowNameInvalid), errors.Is(err, ErrTmuxWindowNameReserved):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:

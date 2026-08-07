@@ -45,8 +45,17 @@ type AttachControlMessage struct {
 // terminals on different windows) is built on. Absent or empty means legacy behavior (follow the
 // session's globally-current window).
 func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
+	// Registered before anything else so its release runs last, after the cleanup below. A stop cancels
+	// this context and waits here, which is what keeps the sandbox and the database around for it.
+	ctx, release, ok := s.beginAttach(r.Context())
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "node is shutting down")
+		return
+	}
+	defer release()
+
 	id := r.PathValue("id")
-	sess, err := s.Get(r.Context(), id)
+	sess, err := s.Get(ctx, id)
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
@@ -86,7 +95,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// SIGHUP the child on connection close (left tmux client
 	// processes piling up inside the container after each toggle).
 	viewSession := "view-" + uuid.NewString()[:8]
-	setupCtx, cancelSetup := context.WithTimeout(r.Context(), 3*time.Second)
+	setupCtx, cancelSetup := context.WithTimeout(ctx, 3*time.Second)
 	if _, err := s.execTmux(setupCtx, sess,
 		"new-session", "-d", "-s", viewSession, "-t", AgentTmuxWindowName,
 	); err != nil {
@@ -119,10 +128,6 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("attach: ws accept failed", "id", id, "err", err)
 		return
 	}
-	// Drop close-frame deadline so a hung peer doesn't block other
-	// streams forever. We rely on the request context for
-	// shutdown propagation.
-	ctx := r.Context()
 	defer func() { _ = ws.CloseNow() }()
 
 	// `-u` forces UTF-8 client mode. Without it, tmux substitutes non-ASCII bytes with
@@ -267,4 +272,66 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 	// or the request context is cancelled by the caller.
 	<-ctx.Done()
 	_ = ws.Close(websocket.StatusNormalClosure, "")
+}
+
+// attachStream is one live terminal stream, tracked only so a stop can end it.
+type attachStream struct{ cancel context.CancelFunc }
+
+// beginAttach registers a terminal stream.
+//
+//	ctx      ends when the request does or when the node starts shutting down
+//	release  call when the stream and its cleanup are done
+//	ok       false once a stop has begun, so no new stream starts against runtimes that are going away
+func (s *Service) beginAttach(parent context.Context) (ctx context.Context, release func(), ok bool) {
+	ctx, cancel := context.WithCancel(parent)
+	stream := &attachStream{cancel: cancel}
+
+	s.attached.mu.Lock()
+	if s.attached.closing {
+		s.attached.mu.Unlock()
+		cancel()
+		return nil, nil, false
+	}
+	if s.attached.streams == nil {
+		s.attached.streams = make(map[*attachStream]struct{})
+	}
+	s.attached.streams[stream] = struct{}{}
+	s.attached.wg.Add(1)
+	s.attached.mu.Unlock()
+
+	return ctx, func() {
+		s.attached.mu.Lock()
+		delete(s.attached.streams, stream)
+		s.attached.mu.Unlock()
+		cancel()
+		s.attached.wg.Done()
+	}, true
+}
+
+// CloseAttachStreams ends every terminal stream and waits for them to finish. Called on shutdown
+// before the runtimes and the database close, so each stream's cleanup (killing its tmux session, the
+// last activity write) still has something to talk to.
+func (s *Service) CloseAttachStreams(timeout time.Duration) {
+	s.attached.mu.Lock()
+	s.attached.closing = true
+	live := len(s.attached.streams)
+	for stream := range s.attached.streams {
+		stream.cancel()
+	}
+	s.attached.mu.Unlock()
+	if live == 0 {
+		return
+	}
+
+	s.logger.Info("closing terminal streams", "streams", live)
+	done := make(chan struct{})
+	go func() {
+		s.attached.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		s.logger.Warn("gave up waiting for terminal streams to close", "streams", live)
+	}
 }

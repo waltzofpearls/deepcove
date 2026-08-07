@@ -38,17 +38,32 @@ var agents = map[string]AgentInfo{
 		DefaultImage:  "alpine:3.20",
 		OfficialImage: "ghcr.io/waltzofpearls/deepcove-claude:latest",
 		DefaultSetup: `apk add --no-cache curl bash tmux libgcc libstdc++ ripgrep
-command -v claude >/dev/null 2>&1 || curl -fsSL https://claude.ai/install.sh | bash
+# Check the install path as well as PATH: with a persistent home the binary is already there from a
+# previous boot, but $HOME/.local/bin is not on PATH this early, so a PATH-only test reinstalls it.
+command -v claude >/dev/null 2>&1 || [ -x "$HOME/.local/bin/claude" ] || curl -fsSL https://claude.ai/install.sh | bash
 [ -x /root/.local/bin/claude ] && ln -sf /root/.local/bin/claude /usr/local/bin/claude`,
 		LaunchCmd: `export PATH="$HOME/.local/bin:$PATH"
+# Pick up the previous conversation when there is one, decided once per boot.
+#
+# A container keeps its agent process across a deepcove restart, so it never notices. A VM does not: it
+# is rebuilt from scratch, and the agent would start blank even though its history is sitting on the
+# session's persistent home. --continue resumes the most recent conversation in the working directory.
+#
+# Cleared after the agent exits, so a resume that cannot work falls back to a fresh session on the next
+# attempt instead of failing the same way forever.
+resume=""
+if ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1; then
+  resume="--continue"
+fi
 # Consecutive out-of-memory kills. An OOM is deterministic: the session's memory does not grow between
 # attempts, so retrying forever just burns CPU and scrolls the explanation out of view. Reset on any
 # other exit, so an unlucky one-off spike still gets retried.
 ooms=0
 while true; do
   cd "${DEEPCOVE_WORKDIR:-/workspace}"
-  claude
+  claude $resume
   ec=$?
+  resume=""
   echo ""
   # 137 is SIGKILL, and in a VM with no swap that is almost always the kernel reclaiming memory. Say so
   # instead of printing a bare number: "code 137" sends you hunting through deepcove, when the answer is

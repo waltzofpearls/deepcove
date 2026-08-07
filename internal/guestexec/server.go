@@ -22,7 +22,25 @@ import (
 //
 // It is not gated to Linux because the pieces it uses work on any Unix, which lets the full host against
 // guest round trip be tested on the development machine rather than only inside a VM.
-func Serve(conn net.Conn) error {
+func Serve(conn net.Conn) error { return serveWith(conn, nil) }
+
+// ChildWaiter is how a host that is PID 1 keeps ownership of child processes.
+//
+// An init must reap orphans with wait4(-1), which collects the status of ANY child, including the ones
+// started here. cmd.Wait then loses the race and returns ECHILD ("no child processes"), so the exec
+// reports a bogus -1 and the caller cannot tell what happened. Handing both operations to the reaper
+// makes it the only waiter, and it routes each status back to whoever started the process.
+type ChildWaiter interface {
+	// Start runs start (which must launch cmd) with reaping held off, then tracks cmd's pid. Holding
+	// reaping across both closes the window where a short lived child exits before it is tracked.
+	Start(cmd *exec.Cmd, start func() error) error
+	// Wait returns the exit code the waiter collected for cmd.
+	Wait(cmd *exec.Cmd) (int, error)
+}
+
+// serveWith is Serve with an explicit waiter. A nil waiter waits normally, which is right for anything
+// that is not PID 1, including the tests that drive this over a pipe.
+func serveWith(conn net.Conn, waiter ChildWaiter) error {
 	defer func() { _ = conn.Close() }()
 
 	req, err := ReadRequest(conn)
@@ -39,19 +57,24 @@ func Serve(conn net.Conn) error {
 
 	var writeMu sync.Mutex
 	if req.Tty {
-		return serveTTY(conn, &writeMu, cmd, req)
+		return serveTTY(conn, &writeMu, cmd, req, waiter)
 	}
-	return servePipes(conn, &writeMu, cmd)
+	return servePipes(conn, &writeMu, cmd, waiter)
 }
 
 // serveTTY runs the command on a pseudo terminal. A TTY merges stderr into stdout exactly as a real
 // terminal does, so everything comes back as stdout frames and Stderr stays empty on the host.
-func serveTTY(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd, req ExecRequest) error {
+func serveTTY(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd, req ExecRequest, waiter ChildWaiter) error {
 	size := &pty.Winsize{Cols: req.Cols, Rows: req.Rows}
 	if size.Cols == 0 || size.Rows == 0 {
 		size = &pty.Winsize{Cols: 80, Rows: 24} // a sane default beats a 0x0 terminal
 	}
-	ptmx, err := pty.StartWithSize(cmd, size)
+	var ptmx *os.File
+	err := startChild(waiter, cmd, func() error {
+		var perr error
+		ptmx, perr = pty.StartWithSize(cmd, size)
+		return perr
+	})
 	if err != nil {
 		return writeExit(conn, writeMu, -1, fmt.Errorf("guestexec: start with pty: %w", err))
 	}
@@ -72,7 +95,7 @@ func serveTTY(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd, req ExecRequest
 		relay(conn, writeMu, FrameStdout, ptmx)
 	}()
 
-	code := exitCodeOf(cmd.Wait())
+	code, _ := waitChild(waiter, cmd)
 	// The child is gone. Linux returns EIO from the pty master at this point, but macOS can block there
 	// forever, so set a short deadline instead: it still lets already buffered output drain, then ends
 	// the relay on both platforms.
@@ -86,7 +109,7 @@ func serveTTY(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd, req ExecRequest
 const ptyDrainGrace = 200 * time.Millisecond
 
 // servePipes runs the command without a terminal, keeping stdout and stderr separate.
-func servePipes(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd) error {
+func servePipes(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd, waiter ChildWaiter) error {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return writeExit(conn, writeMu, -1, fmt.Errorf("guestexec: stdin pipe: %w", err))
@@ -104,7 +127,7 @@ func servePipes(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd) error {
 	// the real work running, still holding the output pipes open, which stalls this exec until it ends.
 	// The TTY path does not need this: pty.StartWithSize already puts the child in a new session.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	if err := startChild(waiter, cmd, cmd.Start); err != nil {
 		return writeExit(conn, writeMu, -1, fmt.Errorf("guestexec: start: %w", err))
 	}
 
@@ -123,7 +146,13 @@ func servePipes(conn net.Conn, writeMu *sync.Mutex, cmd *exec.Cmd) error {
 	go func() { defer wg.Done(); relay(conn, writeMu, FrameStderr, stderr) }()
 	wg.Wait()
 
-	return writeExit(conn, writeMu, exitCodeOf(cmd.Wait()), nil)
+	// A non nil error here means the command never ran to completion. Dropping it left the host with a
+	// bare "-1" and nothing to go on.
+	code, err := waitChild(waiter, cmd)
+	if err != nil {
+		return writeExit(conn, writeMu, code, fmt.Errorf("guestexec: wait: %w", err))
+	}
+	return writeExit(conn, writeMu, code, nil)
 }
 
 // childIO is how the control loop reaches the running child: where to write host stdin, how to give it
@@ -228,6 +257,28 @@ func writeExit(conn net.Conn, writeMu *sync.Mutex, code int, cause error) error 
 		return err
 	}
 	return cause
+}
+
+// startChild launches cmd, through the waiter when one owns child processes.
+func startChild(waiter ChildWaiter, cmd *exec.Cmd, start func() error) error {
+	if waiter != nil {
+		return waiter.Start(cmd, start)
+	}
+	return start()
+}
+
+// waitChild collects cmd's exit code. The error is non nil only when the outcome could not be
+// determined, never for a command that simply exited non zero.
+func waitChild(waiter ChildWaiter, cmd *exec.Cmd) (int, error) {
+	if waiter != nil {
+		return waiter.Wait(cmd)
+	}
+	err := cmd.Wait()
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		return exitCodeOf(err), err
+	}
+	return exitCodeOf(err), nil
 }
 
 // exitCodeOf turns the error from Wait into a status: 0 for success, the child's code when it exited non

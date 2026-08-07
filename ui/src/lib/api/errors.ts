@@ -50,3 +50,8 @@ export function friendlyError(e: unknown): FriendlyError {
     raw: e instanceof Error ? e.message : String(e),
   };
 }
+
+// A fetch that never reached the server throws TypeError, not ApiError. Show that plainly.
+export function unreachableMessage(e: unknown): string | null {
+  return e instanceof TypeError ? "Can't reach deepcove. Retrying..." : null;
+}

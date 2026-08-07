@@ -14,7 +14,7 @@ import (
 // ListenAndServe runs the guest side exec service: it accepts vsock connections from the host and serves
 // one exec per connection. It blocks until ctx is cancelled or the listener fails, so the guest init
 // starts it in its own goroutine.
-func ListenAndServe(ctx context.Context) error {
+func ListenAndServe(ctx context.Context, waiter ChildWaiter) error {
 	listener, err := vsock.Listen(Port, nil)
 	if err != nil {
 		return fmt.Errorf("guestexec: listen on vsock port %d: %w", Port, err)
@@ -36,6 +36,6 @@ func ListenAndServe(ctx context.Context) error {
 			return fmt.Errorf("guestexec: accept: %w", err)
 		}
 		// One exec per connection, each independent, so a slow command never blocks the next.
-		go func() { _ = Serve(conn) }()
+		go func() { _ = serveWith(conn, waiter) }()
 	}
 }

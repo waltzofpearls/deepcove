@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -85,6 +86,9 @@ func cmdStart(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeRuntimes()
+	// Defers unwind in reverse, so this runs before the runtimes and the database close. Terminal
+	// streams survive the HTTP drain (their connection is hijacked) and need both to clean up.
+	defer sessionSvc.CloseAttachStreams(attachCloseGrace)
 
 	// Chosen once, after everything has registered, so the answer does not depend on registration order.
 	if err := sessionSvc.SelectDefaultRuntime(ctx, cfg.DefaultRuntime); err != nil {
@@ -95,12 +99,16 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	logger.Info("runtimes available", "runtimes", sessionSvc.Runtimes(), "default", sessionSvc.DefaultRuntime())
 
-	// Bring the session table back in line with what the runtimes are actually hosting. This matters most
-	// for VM sessions: their runtime's registry lived in the previous process, so every one of them is
-	// gone while its row still says "running". Left alone, the session page waits forever on a bootstrap
-	// probe nothing will answer. Must run AFTER the runtimes are registered, or there is nothing to ask.
-	if err := sessionSvc.Reconcile(ctx); err != nil {
+	// Bring the session table back in line with what the runtimes are actually hosting, then restart what
+	// was running. VM sessions died with the previous process, so without this they all sit stopped.
+	// Must run AFTER the runtimes are registered, or there is nothing to ask.
+	lost, err := sessionSvc.Reconcile(ctx)
+	if err != nil {
 		logger.Warn("could not reconcile sessions with their runtimes", "err", err)
+	}
+	if len(lost) > 0 {
+		// In the background: each VM takes seconds to boot, and the node should serve requests meanwhile.
+		go sessionSvc.RestartSessions(ctx, lost)
 	}
 
 	mux := http.NewServeMux()
@@ -188,16 +196,45 @@ func cmdStart(ctx context.Context, args []string) error {
 		}
 		return nil
 	})
-	// gctx is cancelled by the shutdown signal (ctx) or by either listener failing, so both
-	// servers always get drained. On a clean signal shutdown the listeners return ErrServerClosed
-	// (filtered to nil above); on a drain timeout the Shutdown error surfaces. If a listener
-	// failed, its error was recorded first, so errgroup keeps it as the root cause over any
-	// teardown error here.
+	// gctx is cancelled by the shutdown signal (ctx) or by either listener failing, so both servers
+	// always get drained. If a listener failed, its error was recorded first, so errgroup keeps it as
+	// the root cause over any teardown error here.
 	g.Go(func() error {
 		<-gctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return errors.Join(srv.Shutdown(shutdownCtx), sockSrv.Shutdown(shutdownCtx))
+		return drainServers(shutdownGrace, logger, srv, sockSrv)
 	})
 	return g.Wait()
+}
+
+// shutdownGrace is how long in flight requests get to finish when stopping.
+const shutdownGrace = 2 * time.Second
+
+// attachCloseGrace bounds the wait for terminal streams to clean up: a tmux kill plus a last activity
+// write, both of which have their own shorter timeouts.
+const attachCloseGrace = 5 * time.Second
+
+// drainServers stops servers, then closes anything still connected.
+//
+// The close matters: net/http treats a connection that has not sent a request yet as busy for its first
+// 5 seconds, and browsers keep spare connections open, so a graceful drain alone times out and makes a
+// normal stop look like it failed. Nothing is in flight on those, so closing them loses no work.
+func drainServers(grace time.Duration, logger *slog.Logger, servers ...*http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+
+	errs := make([]error, 0, len(servers))
+	for _, srv := range servers {
+		errs = append(errs, srv.Shutdown(ctx))
+	}
+	err := errors.Join(errs...)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	logger.Info("closing remaining connections after the drain window")
+	errs = errs[:0]
+	for _, srv := range servers {
+		errs = append(errs, srv.Close())
+	}
+	return errors.Join(errs...)
 }

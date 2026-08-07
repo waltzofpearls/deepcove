@@ -6,18 +6,18 @@
   //   - binary frames in both directions for terminal I/O
   //   - text frames carry JSON control messages (resize today)
   //
-  // Reconnect behaviour: if the WebSocket closes within a few seconds
-  // of opening, we assume the container is still starting up (typical
-  // after a stop → start cycle where the entrypoint Cmd re-runs apk
-  // + tmux setup) and silently retry a handful of times with a short
-  // backoff. After the budget is exhausted, surface "disconnected"
-  // so the user can decide.
+  // Reconnect behaviour: a socket that closes within a few seconds of opening means the container is
+  // still starting up (typical after a stop → start cycle where the entrypoint re-runs apk + tmux
+  // setup), so retry quickly a handful of times. A socket that worked and then dropped means the
+  // server went away, so wait for the session to be up again and attach from scratch. See
+  // $lib/util/reconnect.
 
   import '@xterm/xterm/css/xterm.css';
   import { untrack } from 'svelte';
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { api } from '$lib/api/client';
   import { wheelSteps } from '$lib/util/wheel';
+  import { reconnectAction } from '$lib/util/reconnect';
   import type { DeepcoveSocket } from '$lib/api/transport';
   import type { BootstrapStatus, SessionHost } from '$lib/api/types';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -113,6 +113,7 @@
     let lastRows = 0;
     let disposed = false;
     let attempts = 0;
+    let everConnected = false;
     // Aborts any in-flight bootstrap fetch when this effect tears down. Each
     // leaked fetch holds a keep-alive connection slot until the server
     // responds, and only takes a few to push past Firefox's per-origin
@@ -146,6 +147,20 @@
       ws.send(JSON.stringify({ type: 'resize', cols, rows }));
     };
 
+    // reattach waits for the session to be usable again, then opens a new stream. The bootstrap poll
+    // does double duty: it holds until setup finishes, and its fetch refreshes the local token, which
+    // a restart invalidates.
+    async function reattach() {
+      attempts = 0;
+      const final = await pollBootstrap();
+      if (disposed) return;
+      if (final === 'errored') {
+        status = 'closed';
+        return;
+      }
+      connect();
+    }
+
     function connect() {
       if (disposed) return;
       status = 'connecting';
@@ -163,6 +178,7 @@
         // settling AFTER the new one opens can clobber status.
         if (disposed) return;
         everOpened = true;
+        everConnected = true;
         attempts = 0;
         status = 'open';
         sendResize();
@@ -180,19 +196,27 @@
         // clobbered the new run's `'open'` and showed a spurious
         // "disconnected" overlay over a working terminal.
         if (disposed) return;
-        const lifetime = Date.now() - openedAt;
-        // Retry if the connection died young, usually because the server
-        // failed to exec `tmux attach` while the container is
-        // mid-startup.
-        if (attempts < maxReconnectAttempts && (!everOpened || lifetime < earlyCloseThresholdMs)) {
+        const action = reconnectAction({
+          everOpened,
+          everConnected,
+          lifetimeMs: Date.now() - openedAt,
+          attempts,
+          maxAttempts: maxReconnectAttempts,
+          earlyCloseThresholdMs,
+        });
+        if (action === 'give-up') {
+          status = 'closed';
+          return;
+        }
+        status = 'connecting';
+        if (action === 'retry') {
           attempts++;
-          status = 'connecting';
           // Backoff: 500ms, 700ms, 900ms, ... up to ~2s.
           const delay = Math.min(500 + attempts * 200, 2000);
           reconnectTimer = setTimeout(connect, delay);
           return;
         }
-        status = 'closed';
+        void reattach();
       };
       ws.onmessage = (e) => {
         if (e.data instanceof ArrayBuffer) term?.write(new Uint8Array(e.data));

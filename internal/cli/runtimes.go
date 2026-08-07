@@ -27,14 +27,15 @@ type runtimeEntry struct {
 // reads in one place and every runtime joins it the same way. Which one becomes the default is decided
 // afterwards by the caller, from the session package's preference order.
 func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker.Store, logger *slog.Logger) (func(), error) {
-	container, err := newContainerRuntime(cfg)
+	roots := allowedMountRoots()
+	container, err := newContainerRuntime(cfg, roots)
 	if err != nil {
 		return nil, err
 	}
 	entries := []runtimeEntry{container}
 	// The VM runtime is platform specific and depends on artifacts being present, so it declines by
 	// returning a zero entry rather than failing the node.
-	if vm := newVMRuntime(cfg, store, logger); vm.driver != nil {
+	if vm := newVMRuntime(cfg, roots, store, logger); vm.driver != nil {
 		entries = append(entries, vm)
 	}
 
@@ -50,18 +51,23 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 	}, nil
 }
 
+// allowedMountRoots are the host directories a session may mount from, applied to every runtime.
+//
+// $HOME covers the common case of a project under the home dir (~/projects/foo, ~/code). System dirs
+// (/etc, /usr, /var, ...) stay blocked because they are not under it. Power users who need to mount
+// outside $HOME will get a config flag override as a follow-up. The sandbox layer's mount-source
+// validator enforces this.
+func allowedMountRoots() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	return []string{home}
+}
+
 // newContainerRuntime builds the Docker runtime. It is not privileged, just the one runtime available
 // wherever a daemon is, so it is always offered and its reachability is judged at use time.
-func newContainerRuntime(cfg *config.Config) (runtimeEntry, error) {
-	// $HOME is the one host root sharable with sandboxes; it covers the common case where the user
-	// mounts a project under their home dir (~/projects/foo, ~/code, etc). System dirs (/etc, /usr,
-	// /var, ...) stay blocked because they are not under $HOME. Power users who need to mount outside
-	// $HOME will get a config flag override as a follow-up. The sandbox layer's mount-source validator
-	// enforces this.
-	var allowedRoots []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		allowedRoots = append(allowedRoots, home)
-	}
+func newContainerRuntime(cfg *config.Config, allowedRoots []string) (runtimeEntry, error) {
 	// Scoping containers to this instance's data directory is what keeps "leaked" meaningful: a sandbox
 	// with no session row owning it, answerable only against the database this node actually uses.
 	driver, err := dockerdrv.New(dockerdrv.NodeScope(cfg.DataDir), dockerdrv.WithAllowedMountRoots(allowedRoots...))

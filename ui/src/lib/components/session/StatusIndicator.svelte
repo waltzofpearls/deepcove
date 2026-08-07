@@ -9,6 +9,8 @@
     switch (status) {
       case 'running':
         return 'bg-[var(--color-success)]';
+      case 'starting':
+        return 'bg-[var(--color-warning)] animate-pulse';
       case 'stopped':
         return 'bg-muted-foreground';
       case 'errored':

@@ -414,3 +414,20 @@ func TestService_DeleteTmuxWindow(t *testing.T) {
 		})
 	}
 }
+
+// A tmux call that fails while the entrypoint is still installing must say the session is starting, not
+// surface a raw exec status the user cannot act on.
+func TestTmuxFailureDuringSetup(t *testing.T) {
+	svc, fake, _, _ := newTestService(t)
+	ctx := context.Background()
+	sess := mustCreate(t, svc, "claude")
+
+	// tmux is not there yet, so the call fails the way a real one does mid setup. The bootstrap probe
+	// that follows also finds nothing, which is exactly what "still installing" looks like.
+	fake.execResponses = append(fake.execResponses, execResponse{exit: -1})
+
+	_, err := svc.ListTmuxWindows(ctx, sess.ID)
+	if !errors.Is(err, ErrSessionStarting) {
+		t.Fatalf("error = %v, want ErrSessionStarting", err)
+	}
+}

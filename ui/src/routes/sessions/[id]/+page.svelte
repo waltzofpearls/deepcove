@@ -32,7 +32,9 @@
   import EditMountsDialog from '$lib/components/session/EditMountsDialog.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import HardDrive from '@lucide/svelte/icons/hard-drive';
+  import Loader2 from '@lucide/svelte/icons/loader-2';
   import Maximize from '@lucide/svelte/icons/maximize';
   import Minimize from '@lucide/svelte/icons/minimize';
   import Pause from '@lucide/svelte/icons/pause';
@@ -187,14 +189,21 @@
       noScroll: true,
     });
   }
-  // Cached last preview, used to show a dimmed snapshot + Stopped
-  // overlay when the session isn't running, instead of a bare
-  // "attach is unavailable" message.
+  // Cached last preview, so a session that is not running shows a dimmed snapshot of where it got to
+  // rather than an empty pane.
   let preview = $state<SessionPreview | null>(null);
   let previewHtml = $state('');
   // $state so the convert effect re-fires when createConverter()
   // resolves. See SessionCard.svelte for the same reasoning.
   let converter = $state<Awaited<ReturnType<typeof createConverter>> | undefined>(undefined);
+
+  // Why there is no terminal, in the user's terms. A stopped session is often on its way back (the
+  // node restarts what it was running), so this states the rule instead of ordering a Start.
+  const statusHint = $derived(
+    session?.status === 'errored'
+      ? 'Start it again, or destroy and recreate it.'
+      : 'The terminal opens when the session is running.',
+  );
 
   $effect(() => {
     // Deps: id and hostKey. Wait for the first poll to land (sessions.loading flips false) so a remote
@@ -232,6 +241,19 @@
     return () => {
       ac.abort();
     };
+  });
+
+  // Keep the loaded session's status in step with the list poll. The fetch above runs once per id, so
+  // without this a deepcove restart (the session goes stopped, then running again) never reaches the
+  // view: it keeps rendering a terminal whose stream is long dead.
+  $effect(() => {
+    const polled = listed;
+    if (!polled) return;
+    untrack(() => {
+      if (session && session.id === polled.id && session.status !== polled.status) {
+        session = { ...session, status: polled.status };
+      }
+    });
   });
 
   $effect(() => {
@@ -604,11 +626,17 @@
       <div
         class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2"
       >
-        <Pause class="size-16 text-muted-foreground" />
+        {#if session.status === 'errored'}
+          <CircleAlert class="size-16 text-destructive" />
+        {:else if session.status === 'starting'}
+          <Loader2 class="size-16 animate-spin text-muted-foreground" />
+        {:else}
+          <Pause class="size-16 text-muted-foreground" />
+        {/if}
         <span class="text-sm uppercase tracking-wider text-muted-foreground">
           {session.status}
         </span>
-        <span class="text-xs text-muted-foreground">attach is unavailable</span>
+        <span class="text-xs text-muted-foreground">{statusHint}</span>
       </div>
     {/if}
   </div>
