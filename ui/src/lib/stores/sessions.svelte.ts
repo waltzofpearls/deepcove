@@ -22,6 +22,7 @@
 //   {/if}
 
 import { ApiError, api } from '$lib/api/client';
+import { unreachableMessage } from '$lib/api/errors';
 import { hostForSession, isRemoteSession, sessionHostLabel } from '$lib/api/sessions';
 import { discoveryRequired } from '$lib/api/transport';
 import type { Session, SessionHost } from '$lib/api/types';
@@ -44,6 +45,9 @@ let stopPolling: (() => void) | undefined;
 
 let abortCtrl: AbortController | undefined;
 
+// How soon to retry after a failed poll.
+const retryIntervalMs = 1_000;
+
 async function poll(signal: AbortSignal): Promise<void> {
   try {
     // Dashboard mode: the browser is the aggregator, so fan out across the discovered nodes
@@ -57,7 +61,7 @@ async function poll(signal: AbortSignal): Promise<void> {
     error = null;
   } catch (e) {
     if (signal.aborted) return;
-    error = e instanceof ApiError ? e.message : String(e);
+    error = e instanceof ApiError ? e.message : (unreachableMessage(e) ?? String(e));
   } finally {
     loading = false;
   }
@@ -69,7 +73,8 @@ function startIfIdle(): void {
   const signal = abortCtrl.signal;
   stopPolling = usePolling(
     () => poll(signal),
-    () => preferences.pollIntervalMs,
+    // Retry sooner while failing, so a restart is picked up quickly instead of after a full cycle.
+    () => (error ? retryIntervalMs : preferences.pollIntervalMs),
   );
 }
 

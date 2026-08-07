@@ -71,6 +71,14 @@ func bootVM(spec vmSpec) (*machine, error) {
 	}
 	config.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{socket})
 
+	shares, err := sharedDirectories(spec)
+	if err != nil {
+		return nil, err
+	}
+	if len(shares) > 0 {
+		config.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
+	}
+
 	console, consoleCloser, err := serialConsole(config)
 	if err != nil {
 		return nil, err
@@ -197,4 +205,27 @@ func (m *machine) Stop() error {
 		_ = c.Close()
 	}
 	return err
+}
+
+// sharedDirectories builds one virtio-fs device per share. Each gets its own device rather than a single
+// multi-directory share, so a mount that fails to attach cannot take the others with it.
+func sharedDirectories(spec vmSpec) ([]vz.DirectorySharingDeviceConfiguration, error) {
+	out := make([]vz.DirectorySharingDeviceConfiguration, 0, len(spec.Shares))
+	for _, s := range spec.Shares {
+		dir, err := vz.NewSharedDirectory(s.HostPath, s.ReadOnly)
+		if err != nil {
+			return nil, fmt.Errorf("share %s: %w", s.HostPath, err)
+		}
+		single, err := vz.NewSingleDirectoryShare(dir)
+		if err != nil {
+			return nil, fmt.Errorf("share %s: %w", s.HostPath, err)
+		}
+		device, err := vz.NewVirtioFileSystemDeviceConfiguration(s.Tag)
+		if err != nil {
+			return nil, fmt.Errorf("virtio-fs device %s: %w", s.Tag, err)
+		}
+		device.SetDirectoryShare(single)
+		out = append(out, device)
+	}
+	return out, nil
 }

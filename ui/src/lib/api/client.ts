@@ -45,8 +45,15 @@ async function requestRaw<T>(
   path: string,
   init?: RequestInit,
   t: Transport = transport,
+  reseeded = false,
 ): Promise<{ data: T; resp: Response }> {
   const resp = await t.fetch(BASE + path, init);
+  // The local token changes on every restart, so an open tab's cookie goes stale and API calls 401.
+  // Any non-/api response sets a fresh one. Direct mode only; the tailnet listener uses identity.
+  if (resp.status === 401 && !reseeded && t.mode === 'direct') {
+    await reseedLocalToken(t);
+    return requestRaw<T>(path, init, t, true);
+  }
   if (!resp.ok) {
     // API errors come back as {"error": "...", "code": "..."} per
     // writeError/writeErrorCode on the Go side. Fall back to the
@@ -65,6 +72,15 @@ async function requestRaw<T>(
   // 204 No Content means the caller doesn't get a body. Cast to satisfy T.
   if (resp.status === 204) return { data: undefined as T, resp };
   return { data: (await resp.json()) as T, resp };
+}
+
+// Fetch any non-/api path just to pick up a fresh cookie. Errors are ignored; the retry reports them.
+async function reseedLocalToken(t: Transport): Promise<void> {
+  try {
+    await t.fetch('/', { cache: 'no-store' });
+  } catch {
+    /* server still coming back up */
+  }
 }
 
 // request is the body-only common case; requestRaw also returns the Response (for a header).

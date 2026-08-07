@@ -27,6 +27,16 @@ type vmSpec struct {
 
 	CPUCount    uint
 	MemoryBytes uint64
+
+	// Shares are host directories exposed over virtio-fs, one device each. The guest mounts them by tag.
+	Shares []vmShare
+}
+
+// vmShare is one host directory shared into the guest.
+type vmShare struct {
+	Tag      string
+	HostPath string
+	ReadOnly bool
 }
 
 func (s vmSpec) validate() error {

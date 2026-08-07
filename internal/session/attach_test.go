@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -327,4 +328,51 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestCloseAttachStreams(t *testing.T) {
+	newService := func() *Service { return &Service{logger: slog.New(slog.DiscardHandler)} }
+
+	t.Run("ends a live stream and waits for its cleanup", func(t *testing.T) {
+		svc := newService()
+		ctx, release, ok := svc.beginAttach(context.Background())
+		if !ok {
+			t.Fatal("beginAttach refused the first stream")
+		}
+
+		cleaned := make(chan struct{})
+		go func() {
+			<-ctx.Done() // the stop cancels us, like a real stream's bridge returning
+			time.Sleep(50 * time.Millisecond)
+			close(cleaned)
+			release()
+		}()
+
+		svc.CloseAttachStreams(2 * time.Second)
+		select {
+		case <-cleaned:
+		default:
+			t.Fatal("CloseAttachStreams returned before the stream finished cleaning up")
+		}
+	})
+
+	t.Run("refuses new streams once stopping", func(t *testing.T) {
+		svc := newService()
+		svc.CloseAttachStreams(time.Second)
+		if _, _, ok := svc.beginAttach(context.Background()); ok {
+			t.Fatal("beginAttach accepted a stream during shutdown")
+		}
+	})
+
+	t.Run("gives up on a stream that never finishes", func(t *testing.T) {
+		svc := newService()
+		if _, _, ok := svc.beginAttach(context.Background()); !ok {
+			t.Fatal("beginAttach refused the first stream")
+		}
+		start := time.Now()
+		svc.CloseAttachStreams(100 * time.Millisecond)
+		if waited := time.Since(start); waited > time.Second {
+			t.Fatalf("waited %v for a stuck stream, expected to give up at the timeout", waited)
+		}
+	})
 }

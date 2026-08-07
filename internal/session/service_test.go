@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -623,10 +624,12 @@ func TestService_Create_PersistsMounts(t *testing.T) {
 }
 
 func TestService_Destroy_DoesNotRemoveSharedAgentVolume(t *testing.T) {
-	// The agent-home volume is shared across all sessions of the same agent; it holds
-	// the user's login credentials and the installed agent binary. Destroying one
-	// claude session must not clobber the volume; another claude session created later
-	// expects to still be logged in.
+	// The agent-home volume is shared across all sessions of the same agent; it holds the user's login
+	// and the installed agent binary. Destroying one claude session must not clobber it, because another
+	// claude session created later expects to still be logged in.
+	//
+	// Per SESSION storage is a different thing and does go: the VM runtime keeps a home disk named after
+	// the session, and nothing else will ever claim it.
 	svc, fake, _, _ := newTestService(t)
 	sess := mustCreate(t, svc, "claude")
 
@@ -634,8 +637,11 @@ func TestService_Destroy_DoesNotRemoveSharedAgentVolume(t *testing.T) {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	if len(fake.removedStorage) != 0 {
-		t.Errorf("RemoveStorage should NOT be called on session destroy (shared volume); got %v", fake.removedStorage)
+	if slices.Contains(fake.removedStorage, agentHomeVolumeName("claude")) {
+		t.Errorf("the shared agent volume was removed: %v", fake.removedStorage)
+	}
+	if !slices.Contains(fake.removedStorage, sess.ID) {
+		t.Errorf("per session storage was not removed; got %v, want it to contain %q", fake.removedStorage, sess.ID)
 	}
 }
 
@@ -991,4 +997,60 @@ func TestAgents(t *testing.T) {
 			t.Errorf("agent %q not in list", tc.agent)
 		})
 	}
+}
+
+// TestStartingStatus covers the in-flight status: it is reported while a start runs, it never
+// overwrites a running row, and it disappears when the start finishes.
+func TestStartingStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		row      Status
+		inFlight bool
+		want     Status
+	}{
+		{name: "a stopped session with a start in flight reads as starting", row: StatusStopped, inFlight: true, want: StatusStarting},
+		{name: "a new session with a start in flight reads as starting", row: StatusCreated, inFlight: true, want: StatusStarting},
+		{name: "a running session is never relabelled", row: StatusRunning, inFlight: true, want: StatusRunning},
+		{name: "no start in flight leaves the row alone", row: StatusStopped, inFlight: false, want: StatusStopped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &Service{}
+			if tc.inFlight {
+				if _, ok := svc.beginStarting("s1"); !ok {
+					t.Fatal("beginStarting refused the first start")
+				}
+			}
+			sess := &Session{ID: "s1", Status: tc.row}
+			svc.reportStarting(sess)
+			if sess.Status != tc.want {
+				t.Errorf("status: got %q, want %q", sess.Status, tc.want)
+			}
+		})
+	}
+
+	t.Run("a second start is refused while one is in flight", func(t *testing.T) {
+		svc := &Service{}
+		done, ok := svc.beginStarting("s1")
+		if !ok {
+			t.Fatal("beginStarting refused the first start")
+		}
+		if _, ok := svc.beginStarting("s1"); ok {
+			t.Fatal("beginStarting allowed two starts of one session")
+		}
+		// A different session is unaffected.
+		if _, ok := svc.beginStarting("s2"); !ok {
+			t.Fatal("beginStarting refused an unrelated session")
+		}
+
+		done()
+		if _, ok := svc.beginStarting("s1"); !ok {
+			t.Fatal("beginStarting still refused after the start finished")
+		}
+		sess := &Session{ID: "s1", Status: StatusStopped}
+		svc.reportStarting(sess)
+		if sess.Status != StatusStarting {
+			t.Errorf("status after restarting: got %q, want %q", sess.Status, StatusStarting)
+		}
+	})
 }

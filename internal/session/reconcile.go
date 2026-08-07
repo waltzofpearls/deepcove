@@ -17,15 +17,15 @@ import (
 // The pair of operations here closes that gap. Reconcile tells the truth at startup, and rebuilding a
 // vanished sandbox on Start makes the session usable again instead of only diagnosable.
 
-// Reconcile marks a session stopped when its runtime no longer has the sandbox the row points at.
+// Reconcile marks a session stopped when its runtime no longer has the sandbox the row points at, and
+// returns those sessions. They were running a moment ago, so the caller can bring them back.
 //
-// Only runtimes that can enumerate their sandboxes are considered, because "the driver cannot tell us" and
-// "the sandbox is gone" must not be confused: guessing on a driver that cannot list would stop sessions
-// that are running perfectly well.
-func (s *Service) Reconcile(ctx context.Context) error {
+// Only runtimes that can enumerate their sandboxes are considered. "The driver cannot tell us" is not
+// "the sandbox is gone", and guessing would stop sessions that are running fine.
+func (s *Service) Reconcile(ctx context.Context) ([]*Session, error) {
 	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// One listing per runtime rather than one per session.
@@ -50,6 +50,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	}
 
 	now := time.Now().UTC()
+	var lost []*Session
 	for _, sess := range sessions {
 		if sess.Status != StatusRunning {
 			continue
@@ -59,12 +60,28 @@ func (s *Service) Reconcile(ctx context.Context) error {
 			continue
 		}
 		if err := s.repo.MarkStopped(ctx, placeholderOwner, sess.ID, now); err != nil {
-			return fmt.Errorf("session: reconcile %s: %w", sess.ID, err)
+			return nil, fmt.Errorf("session: reconcile %s: %w", sess.ID, err)
 		}
 		s.logger.Info("session marked stopped: its sandbox is gone",
 			"id", sess.ID, "name", sess.Name, "runtime", sess.Runtime, "handle", sess.ContainerID)
+		lost = append(lost, sess)
 	}
-	return nil
+	return lost, nil
+}
+
+// RestartSessions starts sessions again, one at a time. Used at boot to bring back what the previous
+// process was running: a VM dies with that process, so otherwise every VM session needs a manual Start.
+//
+// Sequential on purpose. Booting VMs in parallel spikes memory right when the node is starting up.
+// A session that fails to come back is logged and left stopped; one bad session must not block the rest.
+func (s *Service) RestartSessions(ctx context.Context, sessions []*Session) {
+	for _, sess := range sessions {
+		if err := s.Start(ctx, sess.ID); err != nil {
+			s.logger.Warn("could not restart session", "id", sess.ID, "name", sess.Name, "err", err)
+			continue
+		}
+		s.logger.Info("session restarted", "id", sess.ID, "name", sess.Name)
+	}
 }
 
 // rebuildSandbox creates a fresh sandbox for a session whose old one no longer exists, and points the row

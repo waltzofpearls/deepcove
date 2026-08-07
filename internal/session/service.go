@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -99,6 +100,21 @@ type Service struct {
 	//     after a stop/start cycle).
 	// In-memory only; rebuilt on service restart.
 	previewCache *previewCache
+
+	// Live terminal streams. Their WebSocket is hijacked, so http.Server's shutdown neither closes them
+	// nor cancels their request context: this is the only handle a stop has on them.
+	attached struct {
+		mu      sync.Mutex
+		closing bool
+		streams map[*attachStream]struct{}
+		wg      sync.WaitGroup
+	}
+
+	// Sessions with a start in flight, for StatusStarting.
+	starting struct {
+		mu  sync.Mutex
+		ids map[string]bool
+	}
 }
 
 // NewService constructs a Service.
@@ -218,12 +234,56 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 // doing?" as the top card, not "what did I most recently spawn?" The activity column is bumped on
 // every attach connect / 30s tick / disconnect, so it tracks user engagement, not creation order.
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Session, error) {
-	return s.repo.List(ctx, placeholderOwner, filter.IncludeAll)
+	sessions, err := s.repo.List(ctx, placeholderOwner, filter.IncludeAll)
+	if err != nil {
+		return nil, err
+	}
+	for _, sess := range sessions {
+		s.reportStarting(sess)
+	}
+	return sessions, nil
 }
 
 // Get returns the session with the given id, or ErrNotFound.
 func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
-	return s.repo.Get(ctx, placeholderOwner, id)
+	sess, err := s.repo.Get(ctx, placeholderOwner, id)
+	if err != nil {
+		return nil, err
+	}
+	s.reportStarting(sess)
+	return sess, nil
+}
+
+// beginStarting marks a start as in flight so reads report it while the sandbox boots. ok is false
+// when one is already running, which makes a second Start a no-op instead of two boots of one session.
+func (s *Service) beginStarting(id string) (done func(), ok bool) {
+	s.starting.mu.Lock()
+	defer s.starting.mu.Unlock()
+	if s.starting.ids[id] {
+		return nil, false
+	}
+	if s.starting.ids == nil {
+		s.starting.ids = make(map[string]bool)
+	}
+	s.starting.ids[id] = true
+	return func() {
+		s.starting.mu.Lock()
+		delete(s.starting.ids, id)
+		s.starting.mu.Unlock()
+	}, true
+}
+
+// reportStarting overlays the in flight status on a row that still says stopped.
+func (s *Service) reportStarting(sess *Session) {
+	if sess == nil || sess.Status == StatusRunning {
+		return
+	}
+	s.starting.mu.Lock()
+	inFlight := s.starting.ids[sess.ID]
+	s.starting.mu.Unlock()
+	if inFlight {
+		sess.Status = StatusStarting
+	}
 }
 
 // maxSessionNameLen bounds the user-set display name. The name is
@@ -269,6 +329,11 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if sess.Status == StatusRunning {
 		return nil
 	}
+	done, ok := s.beginStarting(id)
+	if !ok {
+		return nil // already starting, from a click that raced the restart on boot
+	}
+	defer done()
 	runtime, err := s.runtimeFor(sess)
 	if err != nil {
 		return err
@@ -299,7 +364,9 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if sess.Status == StatusStopped {
+	// Starting is a no-op for the same reason stopped is: there is nothing running to stop yet. This is
+	// also what happened before the status existed, when a booting session still read as stopped.
+	if sess.Status == StatusStopped || sess.Status == StatusStarting {
 		return nil
 	}
 	runtime, err := s.runtimeFor(sess)
@@ -338,7 +405,12 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if err := runtime.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 		return fmt.Errorf("session: sandbox destroy: %w", err)
 	}
-	// Don't remove the agent-home volume; it's shared (see agentHomeVolumeName).
+	// Storage the runtime keeps for this session goes with it. The container runtime's agent-home volume
+	// is shared between sessions and stays; the VM runtime's home disk belongs to this session alone.
+	if err := runtime.RemoveStorage(ctx, sess.ID); err != nil &&
+		!errors.Is(err, sandbox.ErrNotSupported) && !errors.Is(err, sandbox.ErrNotFound) {
+		s.logger.Warn("could not remove session storage", "id", id, "err", err)
+	}
 	if err := s.repo.Delete(ctx, placeholderOwner, id); err != nil {
 		return fmt.Errorf("session: delete row: %w", err)
 	}
@@ -455,6 +527,8 @@ func (s *Service) buildSandboxSpec(
 	mergedEnv["DEEPCOVE_WORKDIR"] = workdirFor(userMounts)
 
 	return sandbox.SandboxSpec{
+		// Stable across sandbox recreates, which is what lets a runtime keep per session storage.
+		SessionID: sess.ID,
 		Image:     sess.Image,
 		Agent:     sess.Agent,
 		Resources: toSandboxResources(sess.Resources),
@@ -495,6 +569,27 @@ echo installing > /etc/deepcove-bootstrap-status
 {
   set -e
   echo "[deepcove] Starting setup at $(date -u +%%H:%%M:%%SZ)"
+  # Persistent home, VM runtime only. The disk arrives raw because the base image ships no mkfs, so it
+  # is formatted here where packages are already being installed. Only the first boot gets this far:
+  # afterwards the guest init mounts it before this script runs. Every step is best effort, since a
+  # session without a persistent home still works, it just starts fresh.
+  # Trying the mount IS the test for whether the disk is formatted. blkid is no use here: it exits 0 on
+  # a raw device, so asking it produced a confident "already formatted" and the format never ran.
+  if [ -n "$DEEPCOVE_HOME_DEVICE" ] && ! grep -q " $DEEPCOVE_HOME_TARGET " /proc/mounts; then
+    if ! mount "$DEEPCOVE_HOME_DEVICE" "$DEEPCOVE_HOME_TARGET" 2>/dev/null; then
+      echo "[deepcove] Preparing persistent home on $DEEPCOVE_HOME_DEVICE"
+      apk add --no-cache e2fsprogs >/dev/null 2>&1 || true
+      mkfs.ext4 -q -F "$DEEPCOVE_HOME_DEVICE" || true
+      # Copy the current home onto the new disk first. Mounting over it would hide the login the guest
+      # already restored, and the agent would ask you to sign in again.
+      mkdir -p /tmp/deepcove-home
+      if mount "$DEEPCOVE_HOME_DEVICE" /tmp/deepcove-home 2>/dev/null; then
+        cp -a "$DEEPCOVE_HOME_TARGET"/. /tmp/deepcove-home/ 2>/dev/null || true
+        umount /tmp/deepcove-home 2>/dev/null || true
+      fi
+      mount "$DEEPCOVE_HOME_DEVICE" "$DEEPCOVE_HOME_TARGET" 2>/dev/null || true
+    fi
+  fi
 %s
   echo "[deepcove] Setup complete"
 } >> /var/log/deepcove-bootstrap.log 2>&1

@@ -39,6 +39,24 @@ type Config struct {
 	// of half the guest's RAM. Worth setting: an uncapped overlay lets a runaway write consume the
 	// guest's memory, because the writable layer IS memory today.
 	OverlayBytes int64 `json:"overlay_bytes,omitempty"`
+	// Mounts are host directories shared into this VM over virtio-fs. The guest mounts each by tag.
+	Mounts []Mount `json:"mounts,omitempty"`
+	// HomeDevice is the block device holding the agent's home, kept across restarts so a session resumes
+	// where it left off. Empty means this VM has no persistent home and everything lives in the overlay.
+	//
+	// The host attaches it raw. Whoever finds it unformatted formats it, which is the entrypoint rather
+	// than the guest init: formatting needs tools the base image does not ship, and the entrypoint is
+	// already installing packages at that point.
+	HomeDevice string `json:"home_device,omitempty"`
+	// HomeTarget is where HomeDevice is mounted, matching the agent's home in the container runtime.
+	HomeTarget string `json:"home_target,omitempty"`
+}
+
+// Mount is one virtio-fs share: the tag the host announced, and where the guest should mount it.
+type Mount struct {
+	Tag      string `json:"tag"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
 // Serve answers one configuration request.

@@ -23,8 +23,11 @@ type Status string
 const (
 	StatusCreated Status = "created"
 	StatusRunning Status = "running"
-	StatusStopped Status = "stopped"
-	StatusErrored Status = "errored"
+	// StatusStarting is never stored. It is reported while a start is in flight, because a VM takes
+	// long enough to boot that the row would otherwise read "stopped" for half a minute.
+	StatusStarting Status = "starting"
+	StatusStopped  Status = "stopped"
+	StatusErrored  Status = "errored"
 )
 
 // Mounts only holds USER-supplied mounts; the scratch workspace and agent-home volume

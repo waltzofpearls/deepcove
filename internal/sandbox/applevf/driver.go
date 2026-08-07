@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +28,14 @@ import (
 // the guest to power off over the control channel, and Destroy releases everything.
 type Driver struct {
 	images    *imageStore
+	disks     string
 	kernel    string
 	guestInit string
 	creds     credbroker.Store
 	logger    *slog.Logger
+	// allowedRoots bounds which host directories may be shared into a VM, the same gate the container
+	// runtime applies. Empty means no host path may be mounted.
+	allowedRoots []string
 
 	mu       sync.Mutex
 	machines map[sandbox.Handle]*session
@@ -53,6 +60,12 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(d *Driver) { d.logger = logger }
 }
 
+// WithAllowedMountRoots sets the host directories whose contents may be shared into a VM. Mount sources
+// outside these roots are rejected at Create.
+func WithAllowedMountRoots(roots ...string) Option {
+	return func(d *Driver) { d.allowedRoots = roots }
+}
+
 // WithCredentialStore enables the credential broker, which lets sessions of the same agent share one
 // login without sharing a disk. Without it a session starts with no stored credentials.
 func WithCredentialStore(store credbroker.Store) Option {
@@ -60,16 +73,16 @@ func WithCredentialStore(store credbroker.Store) Option {
 }
 
 // New builds a Driver. kernelPath is the guest kernel (a Kata style build with virtio and overlayfs
-// compiled in), guestInitPath is the compiled Linux init binary baked into every image, and imageDir is
-// where built base images are cached.
-func New(kernelPath, guestInitPath, imageDir string, opts ...Option) (*Driver, error) {
+// compiled in), guestInitPath is the compiled Linux init binary baked into every image, and stateDir is
+// where this runtime keeps what it owns: cached base images, and the per session home disks.
+func New(kernelPath, guestInitPath, stateDir string, opts ...Option) (*Driver, error) {
 	if kernelPath == "" {
 		return nil, fmt.Errorf("applevf: a guest kernel path is required")
 	}
 	if guestInitPath == "" {
 		return nil, fmt.Errorf("applevf: a guest init binary path is required")
 	}
-	images, err := newImageStore(imageDir, baseInjection(guestInitPath))
+	images, err := newImageStore(filepath.Join(stateDir, "vm-images"), baseInjection(guestInitPath))
 	if err != nil {
 		return nil, fmt.Errorf("applevf: %w", err)
 	}
@@ -77,6 +90,7 @@ func New(kernelPath, guestInitPath, imageDir string, opts ...Option) (*Driver, e
 		// Only the constant parts go in the shared, digest cached base image. The per session entrypoint
 		// is served over vsock at boot instead, so sessions using the same image still share one build.
 		images:    images,
+		disks:     filepath.Join(stateDir, "vm-disks"),
 		kernel:    kernelPath,
 		guestInit: guestInitPath,
 		machines:  map[sandbox.Handle]*session{},
@@ -99,7 +113,7 @@ var (
 // Create resolves the session's image into a cached read only ext4 base and records the spec. The VM is
 // not booted until Start, mirroring the Docker driver's create then start split.
 func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.Handle, error) {
-	if err := sandbox.ValidateSpec(spec, nil); err != nil {
+	if err := sandbox.ValidateSpec(spec, d.allowedRoots); err != nil {
 		return "", err
 	}
 	if len(spec.Cmd) == 0 {
@@ -128,12 +142,19 @@ func (d *Driver) Start(ctx context.Context, h sandbox.Handle) error {
 		return fmt.Errorf("applevf: sandbox %s is already started: %w", h, sandbox.ErrConflict)
 	}
 
+	shares, guestMounts := hostShares(s.spec.Mounts)
+	home, err := d.homeDisk(s.spec)
+	if err != nil {
+		return err
+	}
 	m, err := bootVM(vmSpec{
-		KernelPath:  d.kernel,
-		Cmdline:     defaultCmdline().String(),
-		BaseImage:   s.baseImage,
-		CPUCount:    cpuCount(s.spec.Resources),
-		MemoryBytes: memoryBytes(s.spec.Resources),
+		KernelPath:   d.kernel,
+		Cmdline:      defaultCmdline().String(),
+		BaseImage:    s.baseImage,
+		ScratchImage: home,
+		CPUCount:     cpuCount(s.spec.Resources),
+		MemoryBytes:  memoryBytes(s.spec.Resources),
+		Shares:       shares,
 	})
 	if err != nil {
 		return err
@@ -144,6 +165,9 @@ func (d *Driver) Start(ctx context.Context, h sandbox.Handle) error {
 		Agent:        s.spec.Agent,
 		Env:          s.spec.Env,
 		OverlayBytes: s.spec.Resources.Disk,
+		Mounts:       guestMounts,
+		HomeDevice:   homeDeviceIf(home),
+		HomeTarget:   homeMountTarget(s.spec.Mounts),
 	}); err != nil {
 		_ = m.Stop()
 		return err
@@ -208,6 +232,28 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 
 // DefaultResources implements sandbox.ResourceDefaulter: what a session gets when it names no size.
 func (d *Driver) DefaultResources() sandbox.Resources { return actualResources(sandbox.Resources{}) }
+
+// hostShares turns the spec's mounts into virtio-fs shares and the matching guest side mount list.
+//
+// Volume mounts are skipped. Their Source names a driver managed volume rather than a host path, and a VM
+// has no equivalent: the agent's home comes from the credential broker instead.
+func hostShares(mounts []sandbox.Mount) ([]vmShare, []guestcfg.Mount) {
+	var shares []vmShare
+	var guest []guestcfg.Mount
+	for _, m := range mounts {
+		if !filepath.IsAbs(m.Source) {
+			continue
+		}
+		tag := shareTag(len(shares))
+		shares = append(shares, vmShare{Tag: tag, HostPath: m.Source, ReadOnly: m.ReadOnly})
+		guest = append(guest, guestcfg.Mount{Tag: tag, Target: m.Target, ReadOnly: m.ReadOnly})
+	}
+	return shares, guest
+}
+
+// shareTag names the nth share. Short and positional: virtio-fs tags are length limited, and the guest
+// only has to match what the host announced.
+func shareTag(i int) string { return "dcshare" + strconv.Itoa(i) }
 
 // actualResources reports what the VM was really given rather than what was requested, since the driver
 // substitutes its own defaults for zero and rounds CPU up to whole cores.
@@ -377,10 +423,71 @@ func (d *Driver) Restore(context.Context, sandbox.Handle, sandbox.SnapshotID) er
 	return sandbox.ErrNotSupported
 }
 
-// RemoveStorage has nothing to remove: this runtime has no named volumes. Agent state that must outlive
-// a session goes through the credential broker instead.
-func (d *Driver) RemoveStorage(context.Context, string) error {
-	return sandbox.ErrNotSupported
+// homeDiskBytes is how big a session's home disk is. Sparse, so the file only occupies what the agent
+// actually writes; this is the ceiling, not an allocation.
+const homeDiskBytes = 16 << 30
+
+// homeDisk returns the path of this session's home disk, creating it the first time. Raw and unformatted:
+// the base image ships no mkfs, so the entrypoint formats it on first boot, where package installation
+// is already happening.
+//
+// Named by session rather than by sandbox, so recreating the sandbox keeps the agent's home.
+func (d *Driver) homeDisk(spec sandbox.SandboxSpec) (string, error) {
+	if spec.SessionID == "" || homeMountTarget(spec.Mounts) == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(d.disks, 0o700); err != nil {
+		return "", fmt.Errorf("applevf: create disk dir: %w", err)
+	}
+	path := filepath.Join(d.disks, spec.SessionID+".img")
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		return path, nil
+	case !os.IsNotExist(err):
+		return "", fmt.Errorf("applevf: stat home disk: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("applevf: create home disk: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Truncate(homeDiskBytes); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("applevf: size home disk: %w", err)
+	}
+	return path, nil
+}
+
+// homeDeviceIf names the guest device a home disk appears as, or "" when there is none. It is the second
+// virtio block device, because the read only base is always the first.
+func homeDeviceIf(path string) string {
+	if path == "" {
+		return ""
+	}
+	return "/dev/vdb"
+}
+
+// homeMountTarget is where the agent's home belongs, taken from the volume mount the session layer adds
+// for exactly that purpose. A spec without one gets no persistent home.
+func homeMountTarget(mounts []sandbox.Mount) string {
+	for _, m := range mounts {
+		if m.Type == sandbox.MountVolume {
+			return m.Target
+		}
+	}
+	return ""
+}
+
+// RemoveStorage deletes a session's home disk. Called when the session itself goes, never when its
+// sandbox is merely recreated, which is the whole reason the disk is named by session.
+func (d *Driver) RemoveStorage(_ context.Context, name string) error {
+	if name == "" {
+		return nil
+	}
+	if err := os.Remove(filepath.Join(d.disks, name+".img")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("applevf: remove home disk: %w", err)
+	}
+	return nil
 }
 
 // Close stops every running VM. Used when the process shuts down.

@@ -192,9 +192,6 @@ func TestUnsupportedOperations(t *testing.T) {
 	if err := d.Restore(ctx, "h", "snap"); !errors.Is(err, sandbox.ErrNotSupported) {
 		t.Errorf("Restore = %v, want ErrNotSupported", err)
 	}
-	if err := d.RemoveStorage(ctx, "vol"); !errors.Is(err, sandbox.ErrNotSupported) {
-		t.Errorf("RemoveStorage = %v, want ErrNotSupported", err)
-	}
 	if err := d.CopyIn(ctx, "h", "/a", "/b"); !errors.Is(err, sandbox.ErrNotSupported) {
 		t.Errorf("CopyIn = %v, want ErrNotSupported", err)
 	}
@@ -329,3 +326,133 @@ func TestStreamStdinWithoutAWriter(t *testing.T) {
 type noStdinProcess struct{ sandbox.Process }
 
 func (noStdinProcess) Stdin() io.WriteCloser { return nil }
+
+// Mounts become virtio-fs shares. Volume mounts have no VM equivalent and must be dropped, not shared.
+func TestHostShares(t *testing.T) {
+	shares, guest := hostShares([]sandbox.Mount{
+		{Source: "deepcove-agent-claude", Target: "/root"}, // a volume, not a host path
+		{Source: "/Users/me/code", Target: "/workspace"},
+		{Source: "/Users/me/notes", Target: "/notes", ReadOnly: true},
+	})
+
+	if len(shares) != 2 || len(guest) != 2 {
+		t.Fatalf("got %d shares / %d guest mounts, want 2 each (the volume is skipped)", len(shares), len(guest))
+	}
+	if shares[0].HostPath != "/Users/me/code" || shares[0].ReadOnly {
+		t.Errorf("share[0] = %+v", shares[0])
+	}
+	if !shares[1].ReadOnly {
+		t.Error("share[1] should be read only")
+	}
+	// Tags must line up between the host device and what the guest is told to mount.
+	for i := range shares {
+		if shares[i].Tag != guest[i].Tag {
+			t.Errorf("tag mismatch at %d: host %q, guest %q", i, shares[i].Tag, guest[i].Tag)
+		}
+	}
+	if shares[0].Tag == shares[1].Tag {
+		t.Error("every share needs its own tag")
+	}
+	if guest[0].Target != "/workspace" {
+		t.Errorf("guest[0].Target = %q, want /workspace", guest[0].Target)
+	}
+}
+
+// No mounts must not produce an empty device list that the VM config would still be handed.
+func TestHostSharesWithNoMounts(t *testing.T) {
+	shares, guest := hostShares(nil)
+	if shares != nil || guest != nil {
+		t.Errorf("got %v / %v, want nil for no mounts", shares, guest)
+	}
+}
+
+// The home disk is named by session, so recreating the sandbox keeps the agent's home. Creating it twice
+// must reuse the same file rather than start over.
+func TestHomeDiskIsPerSessionAndReused(t *testing.T) {
+	d := &Driver{disks: t.TempDir()}
+	spec := sandbox.SandboxSpec{
+		SessionID: "sess-1",
+		Mounts:    []sandbox.Mount{{Source: "vol", Target: "/root", Type: sandbox.MountVolume}},
+	}
+
+	first, err := d.homeDisk(spec)
+	if err != nil {
+		t.Fatalf("homeDisk: %v", err)
+	}
+	if first == "" {
+		t.Fatal("no disk created for a spec with a volume mount")
+	}
+	// Something the agent wrote. A second call must not wipe it.
+	if err := os.WriteFile(first, []byte("state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := d.homeDisk(spec)
+	if err != nil {
+		t.Fatalf("homeDisk again: %v", err)
+	}
+	if second != first {
+		t.Errorf("second call returned %q, want the same disk %q", second, first)
+	}
+	if body, _ := os.ReadFile(first); string(body) != "state" {
+		t.Error("the existing disk was recreated, losing its contents")
+	}
+}
+
+func TestHomeDiskSkippedWithoutASession(t *testing.T) {
+	d := &Driver{disks: t.TempDir()}
+	vol := []sandbox.Mount{{Source: "vol", Target: "/root", Type: sandbox.MountVolume}}
+
+	// No session id: nothing stable to name storage after.
+	if got, err := d.homeDisk(sandbox.SandboxSpec{Mounts: vol}); err != nil || got != "" {
+		t.Errorf("got %q, %v; want no disk without a session id", got, err)
+	}
+	// No volume mount: this spec does not ask for a persistent home.
+	if got, err := d.homeDisk(sandbox.SandboxSpec{SessionID: "s"}); err != nil || got != "" {
+		t.Errorf("got %q, %v; want no disk without a volume mount", got, err)
+	}
+}
+
+func TestRemoveStorageDeletesTheDisk(t *testing.T) {
+	d := &Driver{disks: t.TempDir()}
+	spec := sandbox.SandboxSpec{
+		SessionID: "sess-2",
+		Mounts:    []sandbox.Mount{{Source: "vol", Target: "/root", Type: sandbox.MountVolume}},
+	}
+	path, err := d.homeDisk(spec)
+	if err != nil {
+		t.Fatalf("homeDisk: %v", err)
+	}
+
+	if err := d.RemoveStorage(context.Background(), "sess-2"); err != nil {
+		t.Fatalf("RemoveStorage: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("the disk survived RemoveStorage")
+	}
+	// Removing again is how a repeated destroy behaves, and must not be an error.
+	if err := d.RemoveStorage(context.Background(), "sess-2"); err != nil {
+		t.Errorf("second RemoveStorage: %v", err)
+	}
+}
+
+func TestHomeMountTarget(t *testing.T) {
+	cases := []struct {
+		name   string
+		mounts []sandbox.Mount
+		want   string
+	}{
+		{"the volume mount names the home", []sandbox.Mount{
+			{Source: "/host/code", Target: "/workspace"},
+			{Source: "vol", Target: "/root", Type: sandbox.MountVolume},
+		}, "/root"},
+		{"bind mounts alone are not a home", []sandbox.Mount{{Source: "/host/code", Target: "/workspace"}}, ""},
+		{"no mounts", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := homeMountTarget(tc.mounts); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

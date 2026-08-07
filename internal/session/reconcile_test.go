@@ -20,7 +20,7 @@ func TestReconcileMarksSessionsWhoseSandboxIsGone(t *testing.T) {
 	}
 	lister.instances = nil // what a restart looks like to a VM runtime
 
-	if err := svc.Reconcile(ctx); err != nil {
+	if _, err := svc.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
@@ -44,7 +44,7 @@ func TestReconcileLeavesLiveSessionsRunning(t *testing.T) {
 		State:  sandbox.InstanceRunning,
 	}}
 
-	if err := svc.Reconcile(ctx); err != nil {
+	if _, err := svc.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
@@ -65,7 +65,7 @@ func TestReconcileSkipsRuntimesThatCannotList(t *testing.T) {
 
 	sess := mustCreate(t, svc, "claude")
 
-	if err := svc.Reconcile(ctx); err != nil {
+	if _, err := svc.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
@@ -90,7 +90,7 @@ func TestStartRebuildsAVanishedSandbox(t *testing.T) {
 	// Simulate the restart: the driver forgets everything, and the row is reconciled to stopped.
 	lister.forget()
 	lister.instances = nil
-	if err := svc.Reconcile(ctx); err != nil {
+	if _, err := svc.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
@@ -138,5 +138,64 @@ func TestStartDoesNotRebuildOnARealStartFailure(t *testing.T) {
 	}
 	if got.ContainerID != sess.ContainerID {
 		t.Errorf("container id changed to %q; a real start failure must not rebuild", got.ContainerID)
+	}
+}
+
+// Boot path: what the previous process was running comes back without anyone clicking Start.
+func TestRestartSessionsBringsBackWhatWasRunning(t *testing.T) {
+	svc, lister := newListerService(t)
+	ctx := context.Background()
+
+	sess := mustCreate(t, svc, "claude")
+	oldHandle := sess.ContainerID
+
+	// The restart: the driver forgets every VM, the table is reconciled to the truth.
+	lister.forget()
+	lost, err := svc.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(lost) != 1 {
+		t.Fatalf("Reconcile returned %d lost sessions, want 1", len(lost))
+	}
+
+	svc.RestartSessions(ctx, lost)
+
+	got, err := svc.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusRunning {
+		t.Errorf("status = %q, want running", got.Status)
+	}
+	if got.ContainerID == oldHandle {
+		t.Errorf("container id is still the dead %q, want a rebuilt one", oldHandle)
+	}
+}
+
+// A session that cannot come back must not stop the others.
+func TestRestartSessionsContinuesPastAFailure(t *testing.T) {
+	svc, lister := newListerService(t)
+	ctx := context.Background()
+
+	first := mustCreate(t, svc, "claude")
+	second := mustCreate(t, svc, "claude")
+	lister.forget()
+	lost, err := svc.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	lister.createErr = errors.New("no capacity")
+
+	svc.RestartSessions(ctx, lost)
+
+	for _, id := range []string{first.ID, second.ID} {
+		got, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if got.Status != StatusStopped {
+			t.Errorf("session %s status = %q, want stopped after a failed restart", id, got.Status)
+		}
 	}
 }

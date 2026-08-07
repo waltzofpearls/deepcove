@@ -39,6 +39,7 @@
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import Globe from '@lucide/svelte/icons/globe';
   import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
+  import Loader2 from '@lucide/svelte/icons/loader-2';
   import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
@@ -113,7 +114,8 @@
           if ((e as Error)?.name !== 'AbortError') previewError = true;
         }
       },
-      () => preferences.pollIntervalMs,
+      // Retry sooner while failing, so a preview comes back quickly after a restart.
+      () => (previewError ? 1_000 : preferences.pollIntervalMs),
     );
     return () => {
       ac.abort();
@@ -251,6 +253,8 @@
       >
         {#if session.status === 'errored'}
           <CircleAlert class="size-10 text-destructive" />
+        {:else if session.status === 'starting'}
+          <Loader2 class="size-10 animate-spin text-muted-foreground" />
         {:else}
           <Pause class="size-10 text-muted-foreground" />
         {/if}
@@ -290,6 +294,11 @@
               <DropdownMenuItem onclick={doStop}>
                 <Square class="size-4" />
                 Stop
+              </DropdownMenuItem>
+            {:else if session.status === 'starting'}
+              <DropdownMenuItem disabled>
+                <Loader2 class="size-4 animate-spin" />
+                Starting
               </DropdownMenuItem>
             {:else}
               <DropdownMenuItem onclick={doStart}>

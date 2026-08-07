@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 
 	"golang.org/x/sys/unix"
 
@@ -30,26 +29,29 @@ const tmuxSession = "main"
 // failure instead logs loudly and drops to a console shell that keeps the guest inspectable.
 func Run() error {
 	logf("deepcove guest init starting")
+	// Built before anything is launched: it is both the record of this init's children and the only
+	// thing allowed to wait on them, so nothing may start a process before it exists.
+	children := newProcessTable()
 	cfg, err := bringUp()
 	if err != nil {
 		logf("ERROR: %v", err)
 		logf("dropping to a console shell; the guest stays up so you can investigate")
-		holdConsole()
+		holdConsole(children)
 		return nil
 	}
 	logf("session entrypoint started; agent will appear in tmux session %q", tmuxSession)
-	serveExec()
+	serveExec(children)
 	serveControl(cfg)
-	reapForever()
+	children.reapForever()
 	return nil
 }
 
 // serveExec starts the vsock exec service the host dials to run commands and attach terminals. A failure
 // here is logged rather than fatal: the agent is already running, so losing exec is a degraded session
 // rather than a dead one.
-func serveExec() {
+func serveExec(children *processTable) {
 	go func() {
-		if err := guestexec.ListenAndServe(context.Background()); err != nil {
+		if err := guestexec.ListenAndServe(context.Background(), children); err != nil {
 			logf("WARNING: exec service stopped: %v", err)
 		}
 	}()
@@ -125,6 +127,9 @@ func bringUp() (Config, error) {
 	} else {
 		logf("network up")
 	}
+	mountShares(hostCfg.Mounts)
+	mountHome(hostCfg)
+
 	if err := fetchCredentials(cfg); err != nil {
 		logf("WARNING: could not restore credentials: %v", err)
 	}
@@ -135,6 +140,47 @@ func bringUp() (Config, error) {
 	return cfg, runEntrypoint(hostCfg)
 }
 
+// mountHome mounts the session's persistent home when the disk already carries a filesystem.
+//
+// A disk on its first boot is raw, so this fails and the entrypoint formats it instead. Mounting is
+// attempted rather than probed because the base image ships no blkid-free way to ask, and a failed mount
+// is the same answer at no cost.
+func mountHome(cfg guestcfg.Config) {
+	if cfg.HomeDevice == "" || cfg.HomeTarget == "" {
+		return
+	}
+	if err := os.MkdirAll(cfg.HomeTarget, 0o700); err != nil {
+		logf("WARNING: could not create %s: %v", cfg.HomeTarget, err)
+		return
+	}
+	if err := unix.Mount(cfg.HomeDevice, cfg.HomeTarget, "ext4", 0, ""); err != nil {
+		logf("home disk is not formatted yet; the entrypoint will prepare it")
+		return
+	}
+	logf("persistent home mounted at %s", cfg.HomeTarget)
+}
+
+// mountShares mounts the host directories this VM was given, after the pivot so they land inside the
+// session's root. Best effort per mount: a share that fails leaves the session usable without it, which
+// beats refusing to boot over one bad path.
+func mountShares(mounts []guestcfg.Mount) {
+	for _, m := range mounts {
+		if err := os.MkdirAll(m.Target, 0o755); err != nil {
+			logf("WARNING: could not create %s: %v", m.Target, err)
+			continue
+		}
+		var flags uintptr
+		if m.ReadOnly {
+			flags = unix.MS_RDONLY
+		}
+		if err := unix.Mount(m.Tag, m.Target, "virtiofs", flags, ""); err != nil {
+			logf("WARNING: could not mount %s at %s: %v", m.Tag, m.Target, err)
+			continue
+		}
+		logf("mounted %s at %s", m.Target, m.Tag)
+	}
+}
+
 // runEntrypoint runs the session's entrypoint, the same script the Docker runtime uses: it performs the
 // agent setup (installing tmux and the agent when the image lacks them) and then starts the agent in a
 // tmux session named "main". Running the identical script is what keeps attach and preview working the
@@ -143,6 +189,13 @@ func runEntrypoint(hostCfg guestcfg.Config) error {
 	argv := hostCfg.Entrypoint
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv comes from the trusted host side
 	cmd.Env = append(os.Environ(), envList(hostCfg.Env)...)
+	// The entrypoint formats the home disk on its first boot, so it has to know where it is. Absent for
+	// a VM without a persistent home, which leaves the entrypoint's block inert.
+	if hostCfg.HomeDevice != "" {
+		cmd.Env = append(cmd.Env,
+			"DEEPCOVE_HOME_DEVICE="+hostCfg.HomeDevice,
+			"DEEPCOVE_HOME_TARGET="+hostCfg.HomeTarget)
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 
 	// The entrypoint ends in `sleep infinity` to hold the container open, which a VM does not need:
@@ -164,7 +217,7 @@ func envList(env map[string]string) []string {
 
 // holdConsole hands the console to an interactive shell so a broken image can be debugged from the VM
 // itself. If no shell can be started it still keeps init alive, because exiting would panic the kernel.
-func holdConsole() {
+func holdConsole(children *processTable) {
 	for _, sh := range shellCandidates() {
 		cmd := exec.Command(sh) //nolint:gosec // fixed list of shell paths, no user input
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -173,7 +226,7 @@ func holdConsole() {
 			break
 		}
 	}
-	reapForever()
+	children.reapForever()
 }
 
 // logf writes a progress line to the console (stdout is the virtio serial port), so a real boot is
@@ -234,20 +287,4 @@ func pivotInto(root string) error {
 		return fmt.Errorf("detach oldroot: %w", err)
 	}
 	return os.Remove("/oldroot")
-}
-
-// reapForever is the PID 1 duty: adopt and reap orphaned children so the guest never accumulates
-// zombies. It blocks for the life of the VM.
-func reapForever() {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, unix.SIGCHLD)
-	for range sigs {
-		for {
-			var ws unix.WaitStatus
-			pid, err := unix.Wait4(-1, &ws, unix.WNOHANG, nil)
-			if pid <= 0 || err != nil {
-				break
-			}
-		}
-	}
 }
