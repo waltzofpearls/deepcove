@@ -21,7 +21,6 @@
   import { shellQuote } from '$lib/util/shell';
   import type {
     Agent,
-    DockerStatus,
     MountRequest,
     NodeInfo,
     RuntimesInfo,
@@ -126,18 +125,13 @@
       .catch(() => {});
   });
 
-  // Docker readiness of the *selected* create target. When a specific node is chosen (multi-node), we
-  // gate on that node's Docker, not the primary's. Otherwise we'd let you create on a node whose
-  // Docker is down, or block you on the primary's when the target is fine. Null until fetched / when
-  // there's no distinct selection, in which case we fall back to the global preflight store below.
-  let nodeDocker = $state<DockerStatus | null>(null);
-  // Which runtimes the create target offers. Runtime availability is a property of the node (a Linux
-  // node will never offer Apple VF), so this is fetched from the selected node alongside its Docker
-  // status rather than assumed from the node serving this page.
+  // Which runtimes the create target offers, and which of them can host right now. Both are properties
+  // of the *selected* node (a Linux node will never offer Apple VF), so they are fetched from that node
+  // rather than assumed from the node serving this page. Otherwise we would block you on the primary's
+  // state when the target is fine. Null until fetched, in which case we fall back to the global store.
   let nodeRuntimes = $state<RuntimesInfo | null>(null);
   $effect(() => {
     const host = selectedHost;
-    nodeDocker = null;
     nodeRuntimes = null;
     if (!open || !host) return;
     let cancelled = false;
@@ -146,7 +140,6 @@
       .preflight(host, ac.signal)
       .then((p) => {
         if (cancelled) return;
-        nodeDocker = p.docker;
         nodeRuntimes = p.runtimes;
       })
       .catch(() => {});
@@ -156,11 +149,7 @@
     };
   });
 
-  // Effective Docker readiness the form gates on: the selected node's when known, else the global
-  // (primary/local) preflight store.
-  const dockerReachable = $derived(nodeDocker ? nodeDocker.reachable : preflight.dockerReachable);
-  const dockerLoaded = $derived(nodeDocker !== null || preflight.loaded);
-  const dockerMessage = $derived(nodeDocker ? nodeDocker.message : preflight.docker.message);
+  const preflightLoaded = $derived(nodeRuntimes !== null || preflight.loaded);
 
   // The runtimes the create target offers: the selected node's when known, else this node's. Older
   // nodes predate the field, so treat a missing list as "docker only" rather than showing nothing.
@@ -399,9 +388,10 @@
   // inputs so Svelte re-runs this when any of them change.
   $effect(() => {
     const img = effectiveImage();
-    const reachable = dockerReachable;
+    // Asking a runtime that cannot host anything whether it has an image just fails.
+    const blocked = runtimeBlocked;
     imagePresent = null;
-    if (!img || !reachable) return;
+    if (!img || blocked) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
@@ -824,7 +814,7 @@
         </div>
       {/if}
 
-      {#if dockerLoaded && runtimeBlocked}
+      {#if preflightLoaded && runtimeBlocked}
         <div
           class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
         >

@@ -191,8 +191,8 @@
         <div class="space-y-1">
           <h2 class="text-sm font-semibold">It's just this machine right now</h2>
           <p class="text-sm text-muted-foreground">
-            deepcove is running locally. Connect to your tailnet to bring your other machines into
-            one cluster and see them all here.
+            deepcove is running locally. Connect to your Tailscale network to bring your other
+            machines into one cluster and see them all here.
           </p>
         </div>
       </div>

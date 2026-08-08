@@ -3,12 +3,13 @@
 // poller avoids duplicate pings. Ref-counted + lazy like the sessions
 // store: starts on first subscriber, stops when the last leaves.
 //
-// Cadence is adaptive. We poll fast while Docker is unreachable so the
-// banner clears promptly once it's back, and slow when healthy.
+// Cadence is adaptive. We poll fast while nothing can host a session so
+// the banner clears promptly once something can, and slow when healthy.
 
 import { api } from '$lib/api/client';
 import type { DockerStatus, RuntimesInfo } from '$lib/api/types';
 import { usePolling } from '$lib/polling';
+import { usableRuntimes } from '$lib/util/runtime';
 
 const HEALTHY_MS = 30_000;
 const UNHEALTHY_MS = 5_000;
@@ -45,7 +46,7 @@ function startIfIdle(): void {
   const signal = abortCtrl.signal;
   stopPolling = usePolling(
     () => check(signal),
-    () => (docker.reachable ? HEALTHY_MS : UNHEALTHY_MS),
+    () => (usableRuntimes(runtimes).length > 0 ? HEALTHY_MS : UNHEALTHY_MS),
   );
 }
 
@@ -69,6 +70,14 @@ export const preflight = {
   },
   get dockerReachable(): boolean {
     return docker.reachable;
+  },
+  get usableRuntimes(): string[] {
+    return usableRuntimes(runtimes);
+  },
+  // ready is the question the UI actually asks: can this node run a session at all. Before the first
+  // poll lands we say yes, so a healthy node never flashes a "nothing can run" banner on load.
+  get ready(): boolean {
+    return !loaded || usableRuntimes(runtimes).length > 0;
   },
 
   // subscribe registers interest; returns a cleanup for use in a

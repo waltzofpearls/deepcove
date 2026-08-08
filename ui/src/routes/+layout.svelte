@@ -96,15 +96,14 @@
   <div class="flex h-screen flex-col bg-background text-foreground">
     <TopBar onNewSession={() => (newSessionOpen = true)} onMenu={() => (sidebarOpen = true)} />
 
-    {#if preflight.loaded && !preflight.dockerReachable}
+    {#if !preflight.ready}
       <div
         class="flex items-center gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-foreground"
         role="alert"
       >
         <CircleAlert class="size-4 shrink-0 text-destructive" />
         <span class="min-w-0 flex-1">
-          {preflight.docker.message || "Docker isn't running."}
-          Sessions can't be created until it's back.
+          Nothing on this machine can host a session right now, so new ones can't be created.
         </span>
         <button
           onclick={retryPreflight}

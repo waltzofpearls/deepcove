@@ -1,3 +1,5 @@
+import type { RuntimesInfo } from '$lib/api/types';
+
 // Presentation for sandbox runtimes. The wire values are the backend's runtime names
 // (internal/session.Runtime*), kept short and stable; these turn them into something worth reading in
 // the UI. An unknown name falls through to itself rather than being hidden, so a node offering a runtime
@@ -5,6 +7,14 @@
 
 export const RUNTIME_DOCKER = 'docker';
 export const RUNTIME_APPLEVF = 'applevf';
+
+// usableRuntimes is what can host a session right now. Being registered says the driver exists;
+// `unavailable` says whether it can be used at the moment, which is the half that changes.
+export function usableRuntimes(info: RuntimesInfo | null | undefined): string[] {
+  if (!info) return [];
+  const down = info.unavailable ?? {};
+  return info.available.filter((name) => !down[name]);
+}
 
 // runtimeLabel names the runtime by what the user gets, not by its implementation. "Container" and
 // "Virtual machine" describe the isolation boundary, which is the thing being chosen.

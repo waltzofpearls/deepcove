@@ -11,6 +11,14 @@
     AlertDialogCancel,
   } from '$lib/components/ui/alert-dialog';
   import { Button } from '$lib/components/ui/button';
+  import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+  } from '$lib/components/ui/tooltip';
+  import TailscaleLogo from '$lib/components/TailscaleLogo.svelte';
+  import Info from '@lucide/svelte/icons/info';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
@@ -121,13 +129,31 @@
 
   {#if !status || status.phase === 'stopped'}
     <p class="text-xs text-muted-foreground">
-      Connect this machine to your tailnet to reach deepcove from your phone, work laptop, or other
-      devices, over Tailscale, identified as you.
+      Connect this machine to your Tailscale network to reach deepcove from your phone, work laptop,
+      or other devices, over Tailscale, identified as you.
     </p>
-    <Button size="sm" onclick={connect} disabled={starting}>
-      {#if starting}<Loader2 class="size-4 animate-spin" />{/if}
-      Connect to your tailnet
-    </Button>
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger>
+          {#snippet child({ props })}
+            <Button {...props} size="sm" onclick={connect} disabled={starting}>
+              {#if starting}
+                <Loader2 class="size-4 shrink-0 animate-spin" />
+              {:else}
+                <TailscaleLogo class="size-4 shrink-0" />
+              {/if}
+              Connect to Tailscale
+              <Info class="size-3.5 shrink-0 opacity-80" />
+            </Button>
+          {/snippet}
+        </TooltipTrigger>
+        <TooltipContent class="max-w-xs text-center">
+          Put deepcove on your Tailscale network to reach your sessions from anywhere, and to run
+          them across more than one machine. It's optional, since sessions on this machine work
+          without it.
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   {:else if status.phase === 'starting' || status.phase === 'needs_login'}
     <div class="space-y-2 rounded-md border border-border p-3">
       <div class="flex items-center gap-2 text-sm">
