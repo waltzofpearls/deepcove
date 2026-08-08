@@ -1,7 +1,7 @@
 <script lang="ts">
   // First-run setup wizard (a full page, not an overlay). Tailscale-style: walk the user through
   // getting deepcove ready, including putting their two devices on the tailnet (session node required-
-  // ish, web node optional/skippable). Steps: Welcome → Docker → Connect → Done. The whole thing is
+  // ish, web node optional/skippable). Steps: Welcome → Sandbox → Connect → Done. The whole thing is
   // skippable (deepcove works purely local), and finishing or skipping marks setup done (lib/setup).
   import { getContext } from 'svelte';
   import { goto } from '$app/navigation';
@@ -10,9 +10,10 @@
   import { preflight } from '$lib/stores/preflight.svelte';
   import { connect } from '$lib/stores/connect.svelte';
   import { ensureTailnet, tailnetAuth } from '$lib/api/wasm';
-  import { markSetupDone, setConnectSkipped } from '$lib/setup';
+  import { isSetupDone, markSetupDone, setConnectSkipped } from '$lib/setup';
   import { openConnectingTab } from '$lib/signin';
   import { NEW_SESSION_CTX } from '$lib/context';
+  import { runtimeLabel } from '$lib/util/runtime';
   import { Button } from '$lib/components/ui/button';
   import Logo from '$lib/components/layout/Logo.svelte';
   import TailscaleLogo from '$lib/components/TailscaleLogo.svelte';
@@ -23,14 +24,17 @@
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
 
-  const steps = ['Welcome', 'Docker', 'Connect', 'Done'];
+  const steps = ['Welcome', 'Sandbox', 'Connect', 'Done'];
   // Deep link: the dashboard nudge sends ?step=connect to drop the user straight on the Connect step.
   let step = $state(page.url.searchParams.get('step') === 'connect' ? 2 : 0);
 
   $effect(() => preflight.subscribe());
   $effect(() => connect.subscribe());
 
-  const dockerReady = $derived(preflight.loaded && preflight.dockerReachable);
+  const runtimesReady = $derived(preflight.loaded && preflight.usableRuntimes.length > 0);
+  // Only shown when nothing works, to say why. When something else can host a session, a runtime that
+  // is merely absent is not the user's problem.
+  const runtimesDown = $derived(Object.entries(preflight.runtimes?.unavailable ?? {}));
 
   let auth = $derived($tailnetAuth);
   const webConnected = $derived(auth.phase === 'running');
@@ -87,9 +91,12 @@
   const openNewSession = getContext<() => void>(NEW_SESSION_CTX);
 
   function finish(createSession: boolean) {
+    // Whether this was onboarding, not a revisit. Read before markSetupDone flips it.
+    const firstRun = !isSetupDone();
     markSetupDone();
-    // Remember if they left the session node unconnected, so the dashboard can nudge them to finish it.
-    setConnectSkipped(!connect.connected);
+    // Nudge only after onboarding. Re-opening the wizard from the menu would otherwise bring back a
+    // nudge the user already dismissed.
+    if (firstRun) setConnectSkipped(!connect.connected);
     if (createSession) openNewSession();
     void goto('/');
   }
@@ -144,16 +151,17 @@
         </div>
       {:else if step === 1}
         <div class="space-y-4">
-          <h2 class="text-lg font-semibold">Check Docker</h2>
+          <h2 class="text-lg font-semibold">Check your sandbox</h2>
           <p class="text-sm text-muted-foreground">
-            Each session runs in its own Docker container, so deepcove needs Docker running on this
-            machine.
+            Every session runs in a sandbox of its own. deepcove needs at least one way to make them
+            on this machine.
           </p>
-          {#if dockerReady}
+          {#if runtimesReady}
             <div
               class="flex items-center gap-2 rounded-md border border-border bg-secondary/30 px-3 py-2.5 text-sm"
             >
-              <Check class="size-4 text-[var(--color-success)]" /> Docker is running.
+              <Check class="size-4 text-[var(--color-success)]" />
+              {preflight.usableRuntimes.map(runtimeLabel).join(', ')} ready.
             </div>
           {:else if preflight.loaded}
             <div
@@ -161,8 +169,11 @@
             >
               <CircleAlert class="size-4 shrink-0 translate-y-0.5 text-destructive" />
               <div>
-                {preflight.docker.message || "Docker isn't reachable. Start Docker and try again."}
-                This will update automatically once Docker is running.
+                Nothing on this machine can host a session yet. This updates on its own once one is
+                available.
+                {#each runtimesDown as [name, why] (name)}
+                  <p class="mt-1">{runtimeLabel(name)}: {why}</p>
+                {/each}
               </div>
             </div>
           {:else}
@@ -174,7 +185,7 @@
             <Button variant="ghost" onclick={() => (step = 0)}>Back</Button>
             <div class="flex items-center gap-4">
               {@render skipLink()}
-              <Button onclick={() => (step = 2)} disabled={!dockerReady}>Continue</Button>
+              <Button onclick={() => (step = 2)} disabled={!runtimesReady}>Continue</Button>
             </div>
           </div>
         </div>

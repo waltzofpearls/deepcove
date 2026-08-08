@@ -162,7 +162,7 @@
   </div>
 {:else if sessions.list.length === 0}
   <!-- First-run / empty state: orient the user and give them one clear
-       action. When Docker is down, surface that here too. -->
+       action. When nothing can host a session, surface that here too. -->
   <div class="flex h-full items-center justify-center p-8">
     <div class="flex max-w-md flex-col items-center text-center">
       <div class="mb-4 rounded-2xl bg-secondary p-4">
@@ -170,19 +170,16 @@
       </div>
       <h2 class="text-lg font-semibold">Run a coding agent in its own sandbox</h2>
       <p class="mt-1.5 text-sm text-muted-foreground">
-        Each session is an isolated container running Claude Code, reachable from this dashboard.
+        Each session is an isolated sandbox running Claude Code, reachable from this dashboard.
         Create one to get started.
       </p>
 
-      {#if preflight.loaded && !preflight.dockerReachable}
+      {#if !preflight.ready}
         <div
           class="mt-5 flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-left text-sm"
         >
           <CircleAlert class="mt-0.5 size-4 shrink-0 text-destructive" />
-          <span>
-            {preflight.docker.message || "Docker isn't running."}
-            Start it, then create your first session.
-          </span>
+          <span>Nothing on this machine can host a session yet.</span>
         </div>
       {:else}
         <button

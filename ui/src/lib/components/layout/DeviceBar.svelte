@@ -233,8 +233,9 @@
           {/snippet}
         </TooltipTrigger>
         <TooltipContent class="max-w-xs text-center">
-          Put deepcove on your tailnet to reach your sessions from anywhere, and to run them across
-          more than one machine. It's optional, since sessions on this machine work without it.
+          Put deepcove on your Tailscale network to reach your sessions from anywhere, and to run
+          them across more than one machine. It's optional, since sessions on this machine work
+          without it.
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -378,8 +379,8 @@
         <DialogHeader>
           <DialogTitle>Session node</DialogTitle>
           <DialogDescription>
-            The machine that runs your sessions. Connect it to your tailnet so you can reach it, and
-            the sessions it runs, from your other devices.
+            The machine that runs your sessions. Connect it to your Tailscale network so you can
+            reach it, and the sessions it runs, from your other devices.
           </DialogDescription>
         </DialogHeader>
         {#if connect.status?.login_url}

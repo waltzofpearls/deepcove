@@ -1,7 +1,9 @@
+import type { RuntimesInfo } from '$lib/api/types';
 import { describe, it, expect } from 'vitest';
 import {
   RUNTIME_APPLEVF,
   RUNTIME_DOCKER,
+  usableRuntimes,
   runtimeHint,
   runtimeLabel,
   runtimeShortLabel,
@@ -45,6 +47,50 @@ describe('runtimeShortLabel', () => {
   for (const tc of cases) {
     it(tc.name, () => {
       expect(runtimeShortLabel(tc.in)).toBe(tc.want);
+    });
+  }
+});
+
+describe('usableRuntimes', () => {
+  const cases: {
+    name: string;
+    info: RuntimesInfo | null;
+    want: string[];
+  }[] = [
+    { name: 'nothing asked yet', info: null, want: [] },
+    {
+      name: 'every registered runtime can host',
+      info: { available: [RUNTIME_DOCKER, RUNTIME_APPLEVF], default: RUNTIME_APPLEVF },
+      want: [RUNTIME_DOCKER, RUNTIME_APPLEVF],
+    },
+    {
+      name: 'a machine with no Docker still has its VM runtime',
+      info: {
+        available: [RUNTIME_DOCKER, RUNTIME_APPLEVF],
+        default: RUNTIME_APPLEVF,
+        unavailable: { [RUNTIME_DOCKER]: 'Docker is not running' },
+      },
+      want: [RUNTIME_APPLEVF],
+    },
+    {
+      name: 'nothing can host',
+      info: {
+        available: [RUNTIME_DOCKER],
+        default: RUNTIME_DOCKER,
+        unavailable: { [RUNTIME_DOCKER]: 'Docker is not running' },
+      },
+      want: [],
+    },
+    {
+      name: 'a node that offers no runtime at all',
+      info: { available: [], default: '' },
+      want: [],
+    },
+  ];
+
+  for (const tc of cases) {
+    it(tc.name, () => {
+      expect(usableRuntimes(tc.info)).toEqual(tc.want);
     });
   }
 });
