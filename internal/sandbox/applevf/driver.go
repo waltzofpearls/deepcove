@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
+	"github.com/waltzofpearls/deepcove/internal/llmproxy"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
@@ -36,6 +38,19 @@ type Driver struct {
 	// allowedRoots bounds which host directories may be shared into a VM, the same gate the container
 	// runtime applies. Empty means no host path may be mounted.
 	allowedRoots []string
+
+	// networkAllow are private addresses a sandbox may still reach. Empty is the default and the only
+	// value a public build can have: it comes from a command line flag and nothing else.
+	networkAllow []string
+
+	// tailnetClient reaches a proxy on the tailnet. A function, not a client: the tailnet node is built
+	// after the runtimes and may connect later still.
+	tailnetClient func() *http.Client
+
+	// llmProxyURL is asked on every request, not once at boot, so changing it in the UI reaches machines
+	// that are already running. Nil, or an empty answer, makes the forwarder refuse with an error the
+	// agent can read.
+	llmProxyURL func() string
 
 	mu       sync.Mutex
 	machines map[sandbox.ID]*session
@@ -67,6 +82,26 @@ func WithLogger(logger *slog.Logger) Option {
 func WithAllowedMountRoots(roots ...string) Option {
 	return func(d *Driver) { d.allowedRoots = roots }
 }
+
+// WithNetworkAllow lets sandboxes reach the given private addresses, which are otherwise blocked. Each
+// entry is an IP or a CIDR. The only caller is the command line flag, deliberately: there is no API or
+// stored setting that can open one of these.
+func WithNetworkAllow(hosts ...string) Option {
+	return func(d *Driver) { d.networkAllow = hosts }
+}
+
+// WithTailnetClient gives the driver a way to reach a proxy that lives on the tailnet.
+func WithTailnetClient(client func() *http.Client) Option {
+	return func(d *Driver) { d.tailnetClient = client }
+}
+
+// WithLLMProxyURL tells the driver where to forward LLM requests. Read per request.
+func WithLLMProxyURL(current func() string) Option {
+	return func(d *Driver) { d.llmProxyURL = current }
+}
+
+// LLMEndpoint implements sandbox.LLMForwarder.
+func (d *Driver) LLMEndpoint() string { return llmproxy.LLMEndpoint() }
 
 // WithCredentialStore enables the credential broker, which lets sessions of the same agent share one
 // login without sharing a disk. Without it a session starts with no stored credentials.
@@ -199,16 +234,22 @@ func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
 		return err
 	}
 	homeDevice, swapDevice := guestDevices(home, swap)
+	if err := serveLLMForward(m, d.llmProxyURL, d.tailnetClient, d.logger); err != nil {
+		_ = m.Stop()
+		return err
+	}
 	// The guest asks for both of these at boot, so they have to be listening before it gets that far.
 	if err := serveGuestConfig(m, guestcfg.Config{
-		Entrypoint:   s.spec.Cmd,
-		Agent:        s.spec.Agent,
-		Env:          s.spec.Env,
-		OverlayBytes: s.spec.Resources.Disk,
-		Mounts:       guestMounts,
-		HomeDevice:   homeDevice,
-		HomeTarget:   homeMountTarget(s.spec.Mounts),
-		SwapDevice:   swapDevice,
+		Entrypoint:     s.spec.Cmd,
+		Agent:          s.spec.Agent,
+		Env:            s.spec.Env,
+		OverlayBytes:   s.spec.Resources.Disk,
+		Mounts:         guestMounts,
+		HomeDevice:     homeDevice,
+		HomeTarget:     homeMountTarget(s.spec.Mounts),
+		SwapDevice:     swapDevice,
+		NetworkAllow:   d.networkAllow,
+		LLMRequestPort: llmproxy.LLMRequestPort,
 	}); err != nil {
 		_ = m.Stop()
 		return err

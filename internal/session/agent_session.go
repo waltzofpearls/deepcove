@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/waltzofpearls/deepcove/internal/llmproxy"
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 // A machine can host more than one session, so preparing the machine and starting an agent are separate
@@ -36,14 +39,18 @@ func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir 
 		return fmt.Errorf("session: could not create %s", workdir)
 	}
 
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return err
+	}
 	newSession := []string{
 		"new-session", "-d",
 		"-s", name,
 		"-n", AgentTmuxWindowName,
 		"-c", workdir,
-		// env rather than a shell: nothing parses a string we built, and it works on any tmux version.
-		"env", "DEEPCOVE_SESSION_ID=" + sess.ID, agentLaunchPath,
 	}
+	// env rather than a shell: nothing parses a string we built, and it works on any tmux version.
+	newSession = append(newSession, s.agentLaunchCommand(sess, runtime)...)
 	if _, err := s.execTmux(ctx, sess, newSession...); err != nil {
 		return fmt.Errorf("session: start agent: %w", err)
 	}
@@ -52,6 +59,27 @@ func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir 
 	// It is what makes the browser's wheel scroll the pane; tmux's own defaults handle the rest.
 	_, _ = s.execTmux(ctx, sess, "set-option", "-g", "mouse", "on")
 	return nil
+}
+
+// agentLaunchCommand starts one session's agent with the environment that belongs to the session rather
+// than to the machine. Two sessions on one machine can differ because of this.
+func (s *Service) agentLaunchCommand(sess *Session, runtime sandbox.Sandbox) []string {
+	proxyURL := s.LLMProxyURL()
+	proxied := sess.UseLLMProxy && proxyURL != ""
+	// env's options have to come before any assignment, or env reads them as the command to run.
+	//
+	// Cleared either way. Off has to mean off, whatever the machine, the image or a setup script left
+	// behind, and a machine built before this setting existed still holds the address on its init.
+	argv := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL"}
+	argv = append(argv, "DEEPCOVE_SESSION_ID="+sess.ID)
+	if proxied {
+		argv = append(argv,
+			"ANTHROPIC_BASE_URL="+llmProxyEndpoint(runtime, proxyURL),
+			// Carries the session id, which is how the host tells apart sessions sharing a machine. The
+			// proxy never sees it: it is replaced on the way out.
+			"ANTHROPIC_AUTH_TOKEN="+llmproxy.AuthToken(sess.ID))
+	}
+	return append(argv, agentLaunchPath)
 }
 
 // sessionWorkdir is the directory this session's agent works in: its own folder on the shared machine,

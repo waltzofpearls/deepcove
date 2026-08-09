@@ -97,7 +97,7 @@ func (s *Service) rebuildSandbox(ctx context.Context, sess *Session, runtime san
 		return "", fmt.Errorf("session: %w", err)
 	}
 
-	sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userMounts))
+	sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userMounts, runtime))
 	if err != nil {
 		return "", fmt.Errorf("session: rebuild sandbox: %w", err)
 	}

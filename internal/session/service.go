@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,16 @@ type Service struct {
 	// clusterStore is this node's cluster label, reported on /api/sessions/local so fan-out callers can
 	// group by cluster (set via SetClusterStore). Nil reads back as the default cluster.
 	clusterStore *ClusterStore
+
+	// llmProxyURL is where sessions send LLM requests instead of to the provider. Guarded: the UI can
+	// change it while a session is being built or an agent launched. See llm_proxy.go.
+	llmProxyMu  sync.RWMutex
+	llmProxyURL string
+	// llmProxyStore persists that URL. nil on a node whose proxy is set only by the flag.
+	llmProxyStore LLMProxyStore
+	// tailnetClient reaches a proxy that lives on the tailnet, for the reachability check. A function:
+	// this node may sign in long after the service is built.
+	tailnetClient func() *http.Client
 
 	// previewCache holds the most recent successful capture-pane
 	// snapshot per session id. We serve it back when:
@@ -206,12 +217,19 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		Mounts:         req.Mounts,
 		SetupScript:    req.SetupScript,
 		Resources:      req.Resources,
+		UseLLMProxy:    req.UseLLMProxy != nil && *req.UseLLMProxy,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		LastActivityAt: now,
 	}
 	if sess.Name == "" {
 		sess.Name = s.generateUniqueName(ctx, req.Agent)
+	} else {
+		name, err := validateSessionName(sess.Name)
+		if err != nil {
+			return nil, err
+		}
+		sess.Name = name
 	}
 
 	// Resolve the runtime before anything is created, so an unavailable one fails cleanly instead of
@@ -241,7 +259,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 			return nil, err
 		}
 	} else {
-		sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userMounts))
+		sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userMounts, runtime))
 		if err != nil {
 			return nil, fmt.Errorf("session: create sandbox: %w", err)
 		}
@@ -329,20 +347,40 @@ func (s *Service) reportStarting(sess *Session) {
 	}
 }
 
-// maxSessionNameLen bounds the user-set display name. The name is
-// display-only (ids drive routing/containers), so this is just a
-// sanity cap, not a hard constraint.
+// maxSessionNameLen bounds the name. Ids drive routing and storage, so this is a sanity cap rather
+// than a hard constraint, but the name is no longer display-only: on the shared machine it becomes the
+// session's folder.
 const maxSessionNameLen = 100
+
+// validateSessionName trims and checks a user-supplied name.
+//
+// A leading slash or a ".." segment would point the session's folder somewhere it was never meant to
+// work in. Interior slashes are fine and nest, which is how you would write org/repo.
+func validateSessionName(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if len(trimmed) > maxSessionNameLen {
+		return "", fmt.Errorf("%w: name too long (max %d characters)", ErrInvalidInput, maxSessionNameLen)
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return "", fmt.Errorf("%w: a name cannot start with /", ErrInvalidInput)
+	}
+	for _, segment := range strings.Split(trimmed, "/") {
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("%w: a name cannot contain a %q segment", ErrInvalidInput, segment)
+		}
+	}
+	return trimmed, nil
+}
 
 // Rename sets a session's display name and returns the updated session.
 // The name is trimmed; empty or over-long input is a user error.
 func (s *Service) Rename(ctx context.Context, id, name string) (*Session, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, fmt.Errorf("session: name is required")
-	}
-	if len(name) > maxSessionNameLen {
-		return nil, fmt.Errorf("session: name too long (max %d characters)", maxSessionNameLen)
+	name, err := validateSessionName(name)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.repo.Rename(ctx, placeholderOwner, id, name, time.Now().UTC()); err != nil {
 		return nil, err
@@ -494,6 +532,11 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	if err != nil {
 		return nil, err
 	}
+	// The shared machine's folder belongs to the machine, and this recreates the sandbox: doing that here
+	// would tear the machine down under every other session on it.
+	if sess.OnWorkspaceVM {
+		return nil, fmt.Errorf("%w: this session is on the workspace VM, whose folder is edited on the machine itself", ErrInvalidInput)
+	}
 	userMounts, err := validateMountRequests(newMounts)
 	if err != nil {
 		return nil, err
@@ -523,7 +566,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 		return nil, fmt.Errorf("session: %w", err)
 	}
 
-	spec := s.buildSandboxSpec(sess, agent, userMounts)
+	spec := s.buildSandboxSpec(sess, agent, userMounts, runtime)
 
 	newHandle, err := runtime.Create(ctx, spec)
 	if err != nil {
@@ -569,6 +612,18 @@ type sandboxRequest struct {
 	WorkDir   string
 }
 
+// llmProxyEndpoint is the address the agent calls. Inside a VM that is a localhost port the host
+// forwards from. Without forwarding it is the proxy's own address.
+func llmProxyEndpoint(runtime sandbox.Sandbox, proxyURL string) string {
+	if proxyURL == "" {
+		return ""
+	}
+	if f, ok := runtime.(sandbox.LLMForwarder); ok {
+		return f.LLMEndpoint()
+	}
+	return proxyURL
+}
+
 // newSandboxSpec builds the driver spec: the agent's home volume ahead of the caller's mounts, the
 // agent's env under the caller's, and the entrypoint that installs the agent and writes its launch
 // script.
@@ -610,8 +665,8 @@ func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
 	}
 }
 
-// buildSandboxSpec describes a session's own machine.
-func (s *Service) buildSandboxSpec(sess *Session, agent AgentInfo, userMounts []sandbox.Mount) sandbox.SandboxSpec {
+// buildSandboxSpec describes a session's own machine. The runtime decides how LLM traffic leaves.
+func (s *Service) buildSandboxSpec(sess *Session, agent AgentInfo, userMounts []sandbox.Mount, runtime sandbox.Sandbox) sandbox.SandboxSpec {
 	return newSandboxSpec(sandboxRequest{
 		ID:        sess.ID,
 		Name:      sess.Name,

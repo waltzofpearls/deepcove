@@ -53,6 +53,12 @@ type Config struct {
 	// SwapDevice is a raw block device the guest turns into swap, so the writable layer can spill to
 	// disk instead of the kernel killing the agent. Empty means no swap, which is the older behaviour.
 	SwapDevice string `json:"swap_device,omitempty"`
+	// NetworkAllow are addresses the sandbox may reach despite the private network block, as an IP or a
+	// CIDR. Set only from the host's command line, never from the API or the database.
+	NetworkAllow []string `json:"network_allow,omitempty"`
+	// LLMRequestPort is the local port the guest offers for LLM requests, spliced to the host over
+	// vsock. Zero means the session calls the provider itself.
+	LLMRequestPort int `json:"llm_request_port,omitempty"`
 }
 
 // Mount is one virtio-fs share: the tag the host announced, and where the guest should mount it.

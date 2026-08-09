@@ -16,8 +16,10 @@
 
   // A VM gets the distinct icon because it is the choice worth noticing.
   const isVM = $derived(runtime === RUNTIME_APPLEVF);
-  // Same words as the runtimes page: a VM is private or shared, never just "VM".
-  const label = $derived(isVM ? (shared ? 'Shared VM' : 'Private VM') : runtimeShortLabel(runtime));
+  // Same words as the runtimes page: a VM belongs to the workspace or to one session, never just "VM".
+  const label = $derived(
+    isVM ? (shared ? 'Workspace VM' : 'Session VM') : runtimeShortLabel(runtime),
+  );
 </script>
 
 {#if runtime}
@@ -40,9 +42,9 @@
       </TooltipTrigger>
       <TooltipContent>
         {#if shared}
-          Workspace VM, shared with your other sessions
+          The workspace VM, which your other sessions use too
         {:else if isVM}
-          Its own virtual machine, not shared with other sessions
+          A virtual machine for this session alone
         {:else}
           {runtimeLabel(runtime)}
         {/if}

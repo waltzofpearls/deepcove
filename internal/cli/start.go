@@ -43,11 +43,29 @@ func cmdStart(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	// default to the env value so an explicit --cluster overrides DEEPCOVE_CLUSTER
 	fs.StringVar(&cfg.Cluster, "cluster", cfg.Cluster, `cluster label to group this node with your others (persisted; default "default")`)
+	fs.StringVar(&cfg.Addr, "addr", cfg.Addr, "address to listen on; keep the 127.0.0.1 prefix unless you mean to be reachable")
+	// Persisted like --cluster, so it survives a restart and the UI can edit it later.
+	llmProxyFlag := fs.String("llm-proxy-url", "",
+		"send every session's LLM requests here instead of to the provider, e.g. http://100.75.35.244:9000 (persisted)")
+	// Repeatable, and the only way to open a hole in the sandbox network block. Not an env var and not
+	// a setting: a build nobody passed this to cannot have one.
+	var allowSandboxHosts repeatedFlag
+	fs.Var(&allowSandboxHosts, "sandbox-can-reach",
+		"IP or CIDR a sandbox may reach on a private network (repeatable, or comma separated)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := allowSandboxHosts.validateAddrs(); err != nil {
+		return fmt.Errorf("sandbox-can-reach: %w", err)
+	}
+	cfg.AllowSandboxHosts = allowSandboxHosts
 
 	logger := newLogger(cfg)
+	if len(cfg.AllowSandboxHosts) > 0 {
+		// Loud on purpose. Every session on this node gets these holes, so it should never be a surprise.
+		logger.Warn("sandboxes on this node can reach these private addresses",
+			"hosts", cfg.AllowSandboxHosts)
+	}
 
 	sqlDB, err := db.Open(cfg.DataDir)
 	if err != nil {
@@ -77,13 +95,44 @@ func cmdStart(ctx context.Context, args []string) error {
 	// Persistence: domain-owned SessionRepository over the shared DuckDB connection. Each domain package
 	// owns its own CRUD wrapper (cohesion by bounded context); `internal/db` is just the connection
 	// lifecycle.
+	// Where sessions send their LLM requests. An explicit --llm-proxy-url is stored, so the setting
+	// outlives the flag and a later restart needs no argument.
+	if *llmProxyFlag != "" {
+		normalized, err := session.NormalizeLLMProxyURL(*llmProxyFlag)
+		if err != nil {
+			return err
+		}
+		if err := session.SaveLLMProxyURL(sqlDB, normalized); err != nil {
+			return fmt.Errorf("llm proxy url: %w", err)
+		}
+	}
+	llmProxyURL, err := session.LoadLLMProxyURL(sqlDB)
+	if err != nil {
+		return fmt.Errorf("llm proxy url: %w", err)
+	}
+
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
 	sessionSvc := session.NewService(sessionRepo, logger)
 	sessionSvc.SetClusterStore(clusterStore)
 	sessionSvc.SetWorkspaceVMStore(session.NewDuckDBWorkspaceVMStore(sqlDB))
 	sessionSvc.SetDataDir(cfg.DataDir)
+	sessionSvc.SetLLMProxyStore(session.NewDuckDBLLMProxyStore(sqlDB))
+	sessionSvc.SetLLMProxyURL(llmProxyURL)
+	if llmProxyURL != "" {
+		logger.Info("sessions send LLM requests through a proxy", "url", llmProxyURL)
+	}
 
-	runtimes, err := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger)
+	// Assigned below, once the connect manager exists. Only read when a VM starts, long after.
+	var connectMgr *connect.Manager
+	tailnetClient := func() *http.Client {
+		if connectMgr == nil {
+			return nil
+		}
+		return connectMgr.TailnetClient()
+	}
+	sessionSvc.SetTailnetClient(tailnetClient)
+
+	runtimes, err := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger, tailnetClient)
 	if err != nil {
 		return err
 	}
@@ -131,7 +180,7 @@ func cmdStart(ctx context.Context, args []string) error {
 		return fmt.Errorf("ui: %w", err)
 	}
 
-	connectMgr := connect.NewManager(ctx, cfg.DataDir, sqlDB, mux, logger)
+	connectMgr = connect.NewManager(ctx, cfg.DataDir, sqlDB, mux, logger)
 	connectMgr.SetClusterStore(clusterStore)
 	connectMgr.AttachRoutes(mux)
 	// The connect manager owns the tsnet node, so it's also the cross-node source for aggregated

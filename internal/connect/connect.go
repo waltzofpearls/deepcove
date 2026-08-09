@@ -188,6 +188,13 @@ func (m *Manager) owner(tsNode *tailnet.Node) *tailnet.Identity {
 	return tsNode.Owner()
 }
 
+// TailnetClient dials over the tailnet, or nil when this node is not connected.
+func (m *Manager) TailnetClient() *http.Client {
+	m.nodeMu.Lock()
+	defer m.nodeMu.Unlock()
+	return m.httpClient
+}
+
 // Connect starts the node (idempotent) and the serve loop. With no auth key this
 // triggers interactive login; the URL surfaces via Status while needs_login.
 func (m *Manager) Connect() (Status, error) {

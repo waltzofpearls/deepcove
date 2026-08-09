@@ -41,7 +41,7 @@ var agents = map[string]AgentInfo{
 		DisplayName:   "Claude Code",
 		DefaultImage:  "alpine:3.20",
 		OfficialImage: "ghcr.io/waltzofpearls/deepcove-claude:latest",
-		DefaultSetup: `apk add --no-cache curl bash tmux libgcc libstdc++ ripgrep
+		DefaultSetup: `apk add --no-cache curl bash git tmux libgcc libstdc++ ripgrep
 # Check the install path as well as PATH: with a persistent home the binary is already there from a
 # previous boot, but $HOME/.local/bin is not on PATH this early, so a PATH-only test reinstalls it.
 command -v claude >/dev/null 2>&1 || [ -x "$HOME/.local/bin/claude" ] || curl -fsSL https://claude.ai/install.sh | bash

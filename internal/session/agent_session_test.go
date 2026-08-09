@@ -49,7 +49,9 @@ func TestStartAgentSession(t *testing.T) {
 			"-c /workspace/repo",
 			// The launch script pins the conversation to this, so two sessions in one directory on a
 			// shared machine do not resume each other.
-			"env DEEPCOVE_SESSION_ID=" + sess.ID + " " + agentLaunchPath,
+			"DEEPCOVE_SESSION_ID=" + sess.ID + " " + agentLaunchPath,
+			// Whatever the machine holds, this session's answer is the only one that counts.
+			"env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL",
 		} {
 			if !strings.Contains(create, want) {
 				t.Errorf("new-session missing %q, got: %s", want, create)

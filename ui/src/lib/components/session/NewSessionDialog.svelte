@@ -11,6 +11,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
+  import { Switch } from '$lib/components/ui/switch';
   import { api } from '$lib/api/client';
   import { discoveryRequired } from '$lib/api/transport';
   import { discovery } from '$lib/stores/discovery.svelte';
@@ -185,9 +186,9 @@
       runtimeOptions.every((name) => Boolean(runtimes?.unavailable?.[name])),
   );
 
-  // Where the session runs: this node's shared machine, or one of its own. Shared becomes the default
+  // Where the session runs: this node's workspace VM, or one of its own. The workspace VM is the default
   // once a workspace VM exists, since that is the cheap answer when you already have one.
-  // The shared machine is the default answer, including when there is none yet: this dialog then
+  // The workspace VM is the default answer, including when there is none yet: this dialog then
   // creates it, which is the flow most people want the first time.
   let placement = $state<'workspace' | 'private'>('workspace');
   let workspaceVM = $state<WorkspaceVM | null>(null);
@@ -200,7 +201,7 @@
   const creatingWorkspaceVM = $derived(onWorkspace && workspaceVM === null);
   const parsedWorkspaceResources = $derived(parseResources(workspaceFields, true));
 
-  // Reads the shared machine when the dialog opens. Null is normal rather than an error: this node
+  // Reads the workspace VM when the dialog opens. Null is normal rather than an error: this node
   // just does not have one yet.
   // The machine belongs to the node that will host the session, so this follows the node picker rather
   // than always asking this one.
@@ -377,6 +378,22 @@
 
   // The image the form is asking for, whichever strategy is selected. Shared by a private session's
   // payload and by the workspace VM it may be creating, since a machine has exactly one image.
+  // Only worth asking when this node has a proxy at all.
+  let llmProxyUrl = $state('');
+  let useLLMProxy = $state(false);
+  $effect(() => {
+    selectedHostKey; // the setting belongs to the node the session will be created on
+    const host = untrack(() => selectedHost);
+    llmProxyUrl = '';
+    if (!open) return;
+    const ac = new AbortController();
+    api
+      .llmProxy(host, ac.signal)
+      .then((p) => (llmProxyUrl = p.url ?? ''))
+      .catch(() => {});
+    return () => ac.abort();
+  });
+
   function chosenImage(): string | undefined {
     if (imageStrategy === 'official') return selectedAgent?.official_image;
     if (imageStrategy === 'custom') return customImage.trim() || undefined;
@@ -384,7 +401,7 @@
   }
 
   function buildPayload() {
-    // A session on the shared machine takes none of the machine settings: its runtime, size, image and
+    // A session on the workspace VM takes none of the machine settings: its runtime, size, image and
     // mounts are already decided.
     if (onWorkspace) {
       return {
@@ -393,6 +410,7 @@
         node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
         on_workspace_vm: true,
         work_dir: workDir.trim() || undefined,
+        use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
         mounts: [],
       };
     }
@@ -405,12 +423,14 @@
       node_id?: string;
       runtime?: string;
       resources?: SessionResources;
+      use_llm_proxy?: boolean;
     } = {
       agent,
       // Only send a runtime when the user had a real choice; otherwise let the node pick its default.
       runtime: showRuntimePicker ? effectiveRuntime || undefined : undefined,
       resources: parsedResources.resources,
       name: name.trim() || undefined,
+      use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
       // Only send a target when there's a real choice; on a single node the backend creates here.
       node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
       mounts: mounts
@@ -532,7 +552,7 @@
         );
       }
       // Download first if we know it's absent, so the create itself is fast and we can show a real
-      // progress bar. The shared machine already has its image.
+      // progress bar. The workspace VM already has its image.
       if (!onWorkspace && imagePresent === false) await pullCurrentImage();
 
       // Create via the boot transport with node_id in the payload: the receiving node routes it (creates
@@ -645,7 +665,7 @@
           >
             <span class="font-medium">Workspace VM</span>
             <span class="mt-0.5 block text-xs text-muted-foreground">
-              Shared with your other sessions. Each works in its own folder.
+              One VM your sessions use together, each in its own folder.
             </span>
           </button>
           <button
@@ -654,7 +674,7 @@
             class:border-primary={!onWorkspace}
             onclick={() => (placement = 'private')}
           >
-            <span class="font-medium">Its own machine</span>
+            <span class="font-medium">Session VM</span>
             <span class="mt-0.5 block text-xs text-muted-foreground">
               Only this session. You pick the isolation, size and folders.
             </span>
@@ -665,8 +685,8 @@
       {#if creatingWorkspaceVM}
         <div class="space-y-4 rounded-md border border-dashed border-border p-3">
           <p class="text-sm">
-            You don't have a workspace VM yet. This creates one, and your other sessions can share
-            it.
+            You don't have a workspace VM yet. This creates one, and your other sessions can use it
+            too.
           </p>
           <WorkspaceVMFields
             bind:hostRoot={workspaceHostRoot}
@@ -883,26 +903,21 @@
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <Label>Folder</Label>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={useFolder}
-              onclick={toggleFolder}
-              class="flex items-center gap-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <span>Use a folder</span>
-              <span
-                class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {useFolder
-                  ? 'bg-primary'
-                  : 'bg-input'}"
+            <div class="flex items-center gap-2">
+              <!-- A label cannot activate a button, and the switch is one, so the text toggles itself. -->
+              <button
+                type="button"
+                onclick={toggleFolder}
+                class="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
               >
-                <span
-                  class="inline-block size-4 rounded-full bg-background shadow transition-transform {useFolder
-                    ? 'translate-x-4'
-                    : 'translate-x-0.5'}"
-                ></span>
-              </span>
-            </button>
+                Use a folder
+              </button>
+              <Switch
+                checked={useFolder}
+                onCheckedChange={toggleFolder}
+                aria-label="Use a folder"
+              />
+            </div>
           </div>
           {#if !useFolder}
             <p class="text-xs text-muted-foreground">
@@ -1018,6 +1033,27 @@
             This agent image isn't downloaded yet. It downloads once when you create the session,
             then is reused.
           </span>
+        </div>
+      {/if}
+
+      {#if llmProxyUrl}
+        <div class="flex items-start justify-between gap-4">
+          <button
+            type="button"
+            onclick={() => (useLLMProxy = !useLLMProxy)}
+            class="space-y-1 text-left"
+          >
+            <span class="block text-sm font-medium">Use the LLM proxy</span>
+            <span class="block text-xs leading-relaxed text-muted-foreground">
+              <span class="font-mono">{llmProxyUrl}</span> supplies the key. Off uses this session's own
+              login.
+            </span>
+          </button>
+          <Switch
+            bind:checked={useLLMProxy}
+            class="mt-0.5 shrink-0"
+            aria-label="Use the LLM proxy"
+          />
         </div>
       {/if}
 

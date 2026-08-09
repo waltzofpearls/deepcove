@@ -8,6 +8,13 @@
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import Check from '@lucide/svelte/icons/check';
+  import Info from '@lucide/svelte/icons/info';
+  import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+  } from '$lib/components/ui/tooltip';
 
   // Refresh-interval choices for the preview/session pollers. Kept to a
   // few sensible steps rather than a free number field, for fewer knobs.
@@ -23,6 +30,10 @@
     { value: 'light', label: 'Light' },
     { value: 'dark', label: 'Dark' },
   ] as const;
+
+  // Hover shows the detail, a click or tap pins it, which is the only way it works on a phone.
+  let clusterHelpOpen = $state(false);
+  let proxyHelpOpen = $state(false);
 
   let version = $state<string>('');
   $effect(() => {
@@ -49,6 +60,60 @@
   let savingCluster = $state(false);
   let clusterSaved = $state(false);
   let clusterError = $state('');
+
+  let currentProxy = $state('');
+  let proxyDraft = $state('');
+  let savingProxy = $state(false);
+  let proxySaved = $state(false);
+  let proxyError = $state('');
+
+  $effect(() => {
+    let cancelled = false;
+    api
+      .llmProxy()
+      .then((p) => {
+        if (cancelled) return;
+        currentProxy = p.url;
+        proxyDraft = p.url;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  let testingProxy = $state(false);
+  let proxyTest = $state('');
+
+  // A reachability check from this node, which is the machine that will actually make the calls.
+  async function testProxy() {
+    testingProxy = true;
+    proxyTest = '';
+    proxyError = '';
+    try {
+      proxyTest = (await api.testLLMProxy()).result;
+    } catch (e) {
+      proxyError = e instanceof Error ? e.message : String(e);
+    } finally {
+      testingProxy = false;
+    }
+  }
+
+  async function saveProxy() {
+    savingProxy = true;
+    proxyError = '';
+    try {
+      const p = await api.saveLLMProxy(proxyDraft.trim());
+      currentProxy = p.url;
+      proxyDraft = p.url;
+      proxySaved = true;
+      setTimeout(() => (proxySaved = false), 1500);
+    } catch (e) {
+      proxyError = e instanceof Error ? e.message : String(e);
+    } finally {
+      savingProxy = false;
+    }
+  }
 
   $effect(() => {
     let cancelled = false;
@@ -92,6 +157,27 @@
     }
   }
 </script>
+
+{#snippet help(open: boolean, setOpen: (v: boolean) => void, text: string)}
+  <TooltipProvider>
+    <Tooltip {open} onOpenChange={setOpen} disableCloseOnTriggerClick>
+      <TooltipTrigger>
+        {#snippet child({ props })}
+          <button
+            {...props}
+            type="button"
+            onclick={() => setOpen(!open)}
+            class="text-muted-foreground transition-colors hover:text-foreground"
+            aria-label="More about this setting"
+          >
+            <Info class="size-3.5" />
+          </button>
+        {/snippet}
+      </TooltipTrigger>
+      <TooltipContent class="max-w-xs">{text}</TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
+{/snippet}
 
 <div class="mx-auto max-w-5xl p-6">
   <div class="mb-6 flex items-center gap-3">
@@ -171,42 +257,92 @@
 
     <!-- Cluster -->
     <section class="space-y-3 rounded-xl border border-border bg-card p-4">
-      <h2 class="text-sm font-medium text-muted-foreground">Cluster</h2>
-      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start sm:gap-4">
-        <div class="min-w-0">
-          <div class="text-sm font-medium">Cluster name</div>
-          <div class="text-xs text-muted-foreground">
-            Group this node with your others. Nodes that share a name are shown together on the
-            dashboard. Leave it as <span class="font-mono">default</span> if you don't need groups.
-          </div>
-        </div>
-        <div class="flex shrink-0 items-center gap-2 sm:justify-self-end">
-          <input
-            bind:value={clusterDraft}
-            list="known-clusters"
-            maxlength="64"
-            placeholder="default"
-            class={inputClass}
-          />
-          <datalist id="known-clusters">
-            {#each knownClusters as c (c)}<option value={c}></option>{/each}
-          </datalist>
-          <Button
-            size="sm"
-            onclick={saveCluster}
-            disabled={savingCluster || clusterDraft.trim() === currentCluster}
-          >
-            {#if savingCluster}
-              <Loader2 class="size-4 animate-spin" />
-            {:else if clusterSaved}
-              <Check class="size-4" />
-            {/if}
-            Save
-          </Button>
-        </div>
+      <div class="flex items-center gap-1.5">
+        <h2 class="text-sm font-medium text-muted-foreground">Cluster</h2>
+        {@render help(
+          clusterHelpOpen,
+          (v) => (clusterHelpOpen = v),
+          "Nodes that share a name are shown together on the dashboard. Leave it as default if you don't need groups.",
+        )}
+      </div>
+      <p class="text-xs text-muted-foreground">Group this node with your others.</p>
+      <div class="flex items-center gap-2">
+        <input
+          bind:value={clusterDraft}
+          list="known-clusters"
+          maxlength="64"
+          placeholder="default"
+          class="{inputClass} min-w-0 flex-1"
+        />
+        <datalist id="known-clusters">
+          {#each knownClusters as c (c)}<option value={c}></option>{/each}
+        </datalist>
+        <Button
+          size="sm"
+          onclick={saveCluster}
+          disabled={savingCluster || clusterDraft.trim() === currentCluster}
+        >
+          {#if savingCluster}
+            <Loader2 class="size-4 animate-spin" />
+          {:else if clusterSaved}
+            <Check class="size-4" />
+          {/if}
+          Save
+        </Button>
       </div>
       {#if clusterError}
         <p class="text-xs text-destructive">{clusterError}</p>
+      {/if}
+    </section>
+
+    <section class="space-y-3 rounded-xl border border-border bg-card p-4">
+      <div class="flex items-center gap-1.5">
+        <h2 class="text-sm font-medium text-muted-foreground">LLM proxy</h2>
+        {@render help(
+          proxyHelpOpen,
+          (v) => (proxyHelpOpen = v),
+          'Leave it blank and they go direct. Machines already running follow this; a session has to be told to use it, in its settings.',
+        )}
+      </div>
+      <p class="text-xs text-muted-foreground">
+        Agents send their requests here instead of straight to the model's API, so the sandbox holds
+        no key of its own.
+      </p>
+      <div class="flex items-center gap-2">
+        <input
+          bind:value={proxyDraft}
+          placeholder="http://100.75.35.244:9000"
+          class="{inputClass} min-w-0 flex-1"
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          onclick={testProxy}
+          disabled={testingProxy || !currentProxy}
+        >
+          {#if testingProxy}
+            <Loader2 class="size-4 animate-spin" />
+          {/if}
+          Test
+        </Button>
+        <Button
+          size="sm"
+          onclick={saveProxy}
+          disabled={savingProxy || proxyDraft.trim() === currentProxy}
+        >
+          {#if savingProxy}
+            <Loader2 class="size-4 animate-spin" />
+          {:else if proxySaved}
+            <Check class="size-4" />
+          {/if}
+          Save
+        </Button>
+      </div>
+      {#if proxyError}
+        <p class="text-xs text-destructive">{proxyError}</p>
+      {/if}
+      {#if proxyTest}
+        <p class="text-xs text-muted-foreground">{proxyTest}</p>
       {/if}
     </section>
 

@@ -16,6 +16,7 @@ type machine struct {
 	vm           *vz.VirtualMachine
 	credListener *vz.VirtioSocketListener
 	cfgListener  *vz.VirtioSocketListener
+	llmListener  *vz.VirtioSocketListener
 	consoleLog   *consoleBuffer
 	console      io.ReadWriteCloser
 	closers      []io.Closer
@@ -207,6 +208,9 @@ func (m *machine) Stop() error {
 	}
 	if m.cfgListener != nil {
 		_ = m.cfgListener.Close()
+	}
+	if m.llmListener != nil {
+		_ = m.llmListener.Close()
 	}
 	for _, c := range m.closers {
 		_ = c.Close()

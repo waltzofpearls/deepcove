@@ -107,6 +107,15 @@ func bringUp() (Config, error) {
 	// why the shutdown credential handback saw an empty agent and quietly did nothing.
 	cfg := Config{Agent: hostCfg.Agent}
 
+	// The session's environment goes on THIS process, not just the entrypoint's: deepcove starts the
+	// agent over the exec channel, and those children inherit from init. Setting it only on the
+	// entrypoint left the agent without ANTHROPIC_BASE_URL, LANG and the rest.
+	for k, v := range hostCfg.Env {
+		if err := os.Setenv(k, v); err != nil {
+			logf("WARNING: could not set %s: %v", k, err)
+		}
+	}
+
 	if err := setupOverlayRoot(hostCfg.OverlayBytes); err != nil {
 		return Config{}, err
 	}
@@ -124,8 +133,28 @@ func bringUp() (Config, error) {
 	// usable, and failing the boot over them would cost the console and exec needed to diagnose it.
 	if err := setupNetwork(); err != nil {
 		logf("WARNING: network setup failed, the session has no network: %v", err)
+	} else if warnings, err := applyNetGuard(hostCfg.NetworkAllow); err != nil {
+		// Fail closed. A session with no network is a bad session; one that can still reach the host's
+		// LAN and tailnet is the thing this prevents, so the interface goes down instead.
+		logf("ERROR: could not restrict the sandbox network, taking it down: %v", err)
+		if derr := linkDown(primaryInterface); derr != nil {
+			logf("ERROR: could not take the network down either: %v", derr)
+		}
 	} else {
-		logf("network up")
+		logf("network up, private networks blocked%s", allowLabel(hostCfg.NetworkAllow))
+		// An address the operator asked for and did not get. The session still runs, so say which.
+		for _, w := range warnings {
+			logf("WARNING: %s", w)
+		}
+	}
+	// After the guard, so the log reads in the order things happen. It needs no network: this traffic
+	// leaves over vsock.
+	if hostCfg.LLMRequestPort > 0 {
+		if err := serveAgentEndpoint(hostCfg.LLMRequestPort); err != nil {
+			logf("WARNING: the session has no LLM endpoint: %v", err)
+		} else {
+			logf("LLM requests on port %d go to the host", hostCfg.LLMRequestPort)
+		}
 	}
 	mountShares(hostCfg.Mounts)
 	mountHome(hostCfg)

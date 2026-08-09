@@ -69,7 +69,7 @@
 </script>
 
 <Dialog bind:open>
-  <DialogContent class="sm:max-w-lg">
+  <DialogContent class="max-h-[90vh] w-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl">
     <DialogHeader>
       <DialogTitle>{vm ? 'Edit the workspace VM' : 'Create a workspace VM'}</DialogTitle>
       <DialogDescription>
