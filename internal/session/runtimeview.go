@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,6 +30,9 @@ type RuntimeView struct {
 	Version   string `json:"version,omitempty"`
 	// Message is human facing guidance when Reachable is false.
 	Message string `json:"message,omitempty"`
+	// Missing is a stable reason code when this node knows about the runtime but cannot provide it, so
+	// there is no driver to ask anything of. Reachable is false and every field below is empty.
+	Missing string `json:"missing,omitempty"`
 	// ListSupported is false for a driver that cannot enumerate its sandboxes, which is a capability
 	// gap rather than an error. Sandboxes and Orphaned are then empty and mean nothing.
 	ListSupported bool `json:"list_supported"`
@@ -87,6 +91,15 @@ func (s *Service) RuntimeViews(ctx context.Context) ([]RuntimeView, error) {
 	views := make([]RuntimeView, 0, len(names))
 	for _, name := range names {
 		views = append(views, s.runtimeView(ctx, name, sessions))
+	}
+	// After the registered ones, so the list reads as "what you have, then what you could have".
+	for _, name := range s.missingRuntimeNames() {
+		views = append(views, RuntimeView{
+			Name:      name,
+			Missing:   s.missingRuntimes[name],
+			Sandboxes: []SandboxView{},
+			Orphaned:  []OrphanedSession{},
+		})
 	}
 	return views, nil
 }
@@ -261,4 +274,61 @@ func (s *Service) handleDestroySandbox(w http.ResponseWriter, r *http.Request) {
 		}
 		writeSandboxError(w, err)
 	}
+}
+
+// handleSetupRuntime serves POST /api/runtimes/{runtime}/setup: it downloads whatever a missing runtime
+// needs, then registers it, so a node goes from "cannot run VMs" to running them without a restart.
+//
+// Progress streams as newline delimited JSON in the same shape the image pull already emits, so the
+// client has one reader for both.
+func (s *Service) handleSetupRuntime(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("runtime")
+
+	// Both of these are resolved before committing to a streamed 200, so a caller gets a clean status
+	// code rather than an error buried in the body.
+	if _, missing := s.MissingRuntimes()[name]; !missing {
+		writeErrorCode(w, http.StatusConflict, codeInvalidInput,
+			"this runtime does not need setting up")
+		return
+	}
+	install, ok := s.runtimeInstaller(name)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "this node cannot set up "+name+" for you")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported on this connection")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	emit := func(v any) {
+		_ = enc.Encode(v)
+		flusher.Flush()
+	}
+
+	// Throttled to whole percent or status changes, so a download does not emit thousands of lines.
+	lastPct, lastStatus := -1, ""
+	err := install(r.Context(), func(p sandbox.PullProgress) {
+		pct := -1
+		if p.Total > 0 {
+			pct = int(p.Current * 100 / p.Total)
+		}
+		if pct == lastPct && p.Status == lastStatus {
+			return
+		}
+		lastPct, lastStatus = pct, p.Status
+		emit(map[string]any{"status": p.Status, "percent": pct})
+	})
+	if err != nil {
+		s.logger.Warn("could not set up runtime", "runtime", name, "err", err)
+		emit(map[string]any{"error": err.Error()})
+		return
+	}
+	s.logger.Info("runtime set up and registered", "runtime", name)
+	emit(map[string]any{"percent": 100, "done": true})
 }

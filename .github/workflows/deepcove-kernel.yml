@@ -1,0 +1,128 @@
+# Republishes the guest kernel that VM sessions boot, as a small OCI image on GHCR.
+#
+# Why this exists: Kata Containers builds a Linux kernel configured for fast VM boot, but ships it only
+# inside a kata-static tarball that is now around 1GB per architecture. Downloading that on a user's
+# machine to obtain a 15MB file is not something to put in a first run. So the tarball is unpacked here,
+# once, and only the kernel is published.
+#
+# Manual on purpose. A kernel bump should be a deliberate act, not something that drifts when Kata
+# publishes a release, so there is no schedule and no "latest" tag.
+#
+# After the first successful run, walk through Package Settings → Danger Zone → Change visibility →
+# Public so deepcove can pull it without authentication.
+
+name: deepcove kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kata_version:
+        description: 'Kata Containers release to take the kernel from, e.g. 3.28.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both architectures in one job, so a single buildx run publishes one index rather than two
+      # manifests that have to be stitched together afterwards.
+      #
+      # The tarball is streamed through tar rather than downloaded first: it is roughly 1GB compressed
+      # and several GB unpacked, and a runner does not need to hold either to read one file out of it.
+      - name: Extract the kernel from the Kata release
+        id: extract
+        run: |
+          set -euo pipefail
+          KATA="${{ inputs.kata_version }}"
+          BASE="https://github.com/kata-containers/kata-containers/releases/download/$KATA"
+
+          versions=""
+          for arch in amd64 arm64; do
+            mkdir -p "kernels/$arch" "raw/$arch"
+
+            # .tar.zst is current; older releases used .tar.xz.
+            url=""
+            for ext in tar.zst tar.xz; do
+              candidate="$BASE/kata-static-$KATA-$arch.$ext"
+              if curl -sfIL "$candidate" >/dev/null; then url="$candidate"; break; fi
+            done
+            if [ -z "$url" ]; then
+              echo "::error::no kata-static asset for $arch in release $KATA"
+              exit 1
+            fi
+            echo "$arch: $url"
+
+            # tar picks the decompressor from the stream, so one command covers both extensions. The
+            # leading wildcard absorbs a possible "./" on the entries, and the path is not stripped:
+            # finding the file afterwards is immune to both that prefix and any depth change upstream.
+            curl -sL "$url" \
+              | tar -x --wildcards -C "raw/$arch" '*opt/kata/share/kata-containers/vmlinux-*'
+
+            # Exactly one match, or the layout changed and we should stop rather than publish something
+            # unexpected. -type f skips the vmlinux.container symlink, and vmlinuz is a different name.
+            found=$(find "raw/$arch" -type f -name 'vmlinux-*' | sort)
+            count=$(echo "$found" | grep -c . || true)
+            if [ "$count" -ne 1 ]; then
+              echo "::error::expected one kernel for $arch, found $count:"
+              echo "$found"
+              exit 1
+            fi
+
+            version=$(basename "$found")
+            version="${version#vmlinux-}"
+            mv "$found" "kernels/$arch/vmlinux"
+            versions="$versions $version"
+            echo "${arch}_version=$version" >> "$GITHUB_OUTPUT"
+            echo "${arch}_sha256=$(sha256sum "kernels/$arch/vmlinux" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          done
+
+          # The tag names one kernel, so both architectures must be that same kernel.
+          if [ "$(echo $versions | tr ' ' '\n' | sort -u | wc -l)" -ne 1 ]; then
+            echo "::error::the two architectures carry different kernel versions:$versions"
+            exit 1
+          fi
+
+      - name: Summarise what is being published
+        run: |
+          {
+            echo "| arch | kernel | sha256 |"
+            echo "| --- | --- | --- |"
+            echo "| amd64 | ${{ steps.extract.outputs.amd64_version }} | \`${{ steps.extract.outputs.amd64_sha256 }}\` |"
+            echo "| arm64 | ${{ steps.extract.outputs.arm64_version }} | \`${{ steps.extract.outputs.arm64_sha256 }}\` |"
+            echo ""
+            echo "From Kata Containers ${{ inputs.kata_version }}."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tagged by kernel version, and by the Kata release it came from. No "latest": deepcove pins an
+      # exact tag, so a kernel must never change under a version of deepcove that was tested with it.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/kernel.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/deepcove-kernel:${{ steps.extract.outputs.arm64_version }}
+            ghcr.io/${{ github.repository_owner }}/deepcove-kernel:kata-${{ inputs.kata_version }}
+          build-args: |
+            KATA_VERSION=${{ inputs.kata_version }}
+            KERNEL_VERSION=${{ steps.extract.outputs.arm64_version }}
+            KERNEL_SHA256=${{ steps.extract.outputs.arm64_sha256 }}

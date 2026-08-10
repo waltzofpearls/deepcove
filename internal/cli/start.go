@@ -81,11 +81,11 @@ func cmdStart(ctx context.Context, args []string) error {
 	sessionSvc := session.NewService(sessionRepo, logger)
 	sessionSvc.SetClusterStore(clusterStore)
 
-	closeRuntimes, err := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger)
+	runtimes, err := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger)
 	if err != nil {
 		return err
 	}
-	defer closeRuntimes()
+	defer runtimes.close()
 	// Defers unwind in reverse, so this runs before the runtimes and the database close. Terminal
 	// streams survive the HTTP drain (their connection is hijacked) and need both to clean up.
 	defer sessionSvc.CloseAttachStreams(attachCloseGrace)

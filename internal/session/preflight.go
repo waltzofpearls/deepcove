@@ -34,6 +34,10 @@ type RuntimesInfo struct {
 	// Absent from the map means usable. Reported per runtime rather than as one flag because the answer
 	// differs between them: a stopped Docker daemon says nothing about the VM runtime.
 	Unavailable map[string]string `json:"unavailable,omitempty"`
+	// Missing maps a runtime this node knows about but cannot provide to a stable reason code. Different
+	// from Unavailable, which has a driver whose backend is not answering: this one has no driver at
+	// all, and something has to be installed first. See missing.go.
+	Missing map[string]string `json:"missing,omitempty"`
 	// Defaults maps a runtime name to what a session gets when it asks for no particular size, so the
 	// create form can show real numbers rather than the word "default". A runtime is absent from the map
 	// when it imposes no limit of its own, which is different from a limit of zero.
@@ -76,6 +80,7 @@ func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 			Default:     s.defaultRuntime,
 			Defaults:    s.runtimeDefaults(),
 			Unavailable: s.unavailableRuntimes(r.Context()),
+			Missing:     s.MissingRuntimes(),
 		},
 	})
 }

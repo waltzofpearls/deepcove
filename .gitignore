@@ -55,3 +55,4 @@ go.work.sum
 # Air hot-reload build-errors log + tmp dir
 /build-errors.log
 /tmp/
+/internal/guestasset/deepcove-guest-init

@@ -185,6 +185,46 @@ async function uploadViaWasm(
 // a single leaked request is enough to push past Firefox's default
 // 6-connections-per-origin limit and queue the next /preview indefinitely.
 
+// readProgressStream consumes the newline delimited JSON that the image pull and the runtime setup both
+// emit. Split out so the two callers cannot drift on framing, trailing lines, or in-band errors.
+//
+// An in-band error line throws, which matters: the HTTP status is already 200 by the time a download
+// fails, so without this a failure would look like success.
+export async function readProgressStream(
+  resp: Response,
+  onProgress: (p: { status: string; percent: number }) => void,
+): Promise<void> {
+  if (!resp.body) return; // no stream, so assume done
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  const handleLine = (line: string) => {
+    const t = line.trim();
+    if (!t) return;
+    const ev = JSON.parse(t) as {
+      status?: string;
+      percent?: number;
+      done?: boolean;
+      error?: string;
+    };
+    if (ev.error) throw new ApiError(resp.status, ev.error);
+    if (ev.done) return;
+    onProgress({
+      status: ev.status ?? '',
+      percent: typeof ev.percent === 'number' ? ev.percent : -1,
+    });
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) handleLine(line);
+  }
+  if (buf.trim()) handleLine(buf); // trailing line without newline
+}
+
 export const api = {
   listAgents(): Promise<Agent[]> {
     return request('/agents');
@@ -268,35 +308,31 @@ export const api = {
       }
       throw new ApiError(resp.status, msg, code);
     }
-    if (!resp.body) return; // no stream, so assume done
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    const handleLine = (line: string) => {
-      const t = line.trim();
-      if (!t) return;
-      const ev = JSON.parse(t) as {
-        status?: string;
-        percent?: number;
-        done?: boolean;
-        error?: string;
-      };
-      if (ev.error) throw new ApiError(resp.status, ev.error);
-      if (ev.done) return;
-      onProgress({
-        status: ev.status ?? '',
-        percent: typeof ev.percent === 'number' ? ev.percent : -1,
-      });
-    };
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() ?? '';
-      for (const line of lines) handleLine(line);
+    await readProgressStream(resp, onProgress);
+  },
+
+  // setupRuntime downloads whatever a runtime is missing, reporting progress as it goes. On success the
+  // node can host sessions on it immediately, so callers refresh rather than asking for a restart.
+  async setupRuntime(
+    name: string,
+    onProgress: (p: { status: string; percent: number }) => void,
+  ): Promise<void> {
+    const resp = await transport.fetch(`${BASE}/runtimes/${encodeURIComponent(name)}/setup`, {
+      method: 'POST',
+    });
+    if (!resp.ok) {
+      let msg = resp.statusText;
+      let code: string | undefined;
+      try {
+        const b = (await resp.json()) as { error?: string; code?: string };
+        if (b.error) msg = b.error;
+        code = b.code;
+      } catch {
+        /* non-JSON */
+      }
+      throw new ApiError(resp.status, msg, code);
     }
-    if (buf.trim()) handleLine(buf); // trailing line without newline
+    await readProgressStream(resp, onProgress);
   },
 
   // fsList returns the subdirectories of a host path (scoped to $HOME on
