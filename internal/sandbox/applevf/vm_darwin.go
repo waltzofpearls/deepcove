@@ -121,6 +121,13 @@ func storageDevices(spec vmSpec) ([]vz.StorageDeviceConfiguration, error) {
 		}
 		devices = append(devices, scratch)
 	}
+	if spec.SwapImage != "" {
+		swap, err := blockDevice(spec.SwapImage, false)
+		if err != nil {
+			return nil, fmt.Errorf("swap image: %w", err)
+		}
+		devices = append(devices, swap)
+	}
 	return devices, nil
 }
 

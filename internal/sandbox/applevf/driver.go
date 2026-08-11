@@ -147,18 +147,25 @@ func (d *Driver) Start(ctx context.Context, h sandbox.Handle) error {
 	if err != nil {
 		return err
 	}
+	memory := memoryBytes(s.spec.Resources)
+	swap, err := d.swapDisk(h, memory)
+	if err != nil {
+		return err
+	}
 	m, err := bootVM(vmSpec{
 		KernelPath:   d.kernel,
 		Cmdline:      defaultCmdline().String(),
 		BaseImage:    s.baseImage,
 		ScratchImage: home,
+		SwapImage:    swap,
 		CPUCount:     cpuCount(s.spec.Resources),
-		MemoryBytes:  memoryBytes(s.spec.Resources),
+		MemoryBytes:  memory,
 		Shares:       shares,
 	})
 	if err != nil {
 		return err
 	}
+	homeDevice, swapDevice := guestDevices(home, swap)
 	// The guest asks for both of these at boot, so they have to be listening before it gets that far.
 	if err := serveGuestConfig(m, guestcfg.Config{
 		Entrypoint:   s.spec.Cmd,
@@ -166,8 +173,9 @@ func (d *Driver) Start(ctx context.Context, h sandbox.Handle) error {
 		Env:          s.spec.Env,
 		OverlayBytes: s.spec.Resources.Disk,
 		Mounts:       guestMounts,
-		HomeDevice:   homeDeviceIf(home),
+		HomeDevice:   homeDevice,
 		HomeTarget:   homeMountTarget(s.spec.Mounts),
+		SwapDevice:   swapDevice,
 	}); err != nil {
 		_ = m.Stop()
 		return err
@@ -327,6 +335,11 @@ func (d *Driver) Destroy(ctx context.Context, h sandbox.Handle) error {
 	live := d.liveCountLocked()
 	tracked := len(d.machines)
 	d.mu.Unlock()
+	// Swap belongs to the machine, so it goes with it. The home disk does not: it is keyed by session and
+	// outlives the sandbox on purpose.
+	if err := os.Remove(filepath.Join(d.disks, "swap-"+string(h)+".img")); err != nil && !os.IsNotExist(err) {
+		d.logger.Warn("could not remove swap disk", "handle", h, "err", err)
+	}
 	d.logger.Info("vm destroyed", "handle", h, "live_vms", live, "tracked_sandboxes", tracked)
 	return nil
 }
@@ -458,13 +471,62 @@ func (d *Driver) homeDisk(spec sandbox.SandboxSpec) (string, error) {
 	return path, nil
 }
 
-// homeDeviceIf names the guest device a home disk appears as, or "" when there is none. It is the second
-// virtio block device, because the read only base is always the first.
-func homeDeviceIf(path string) string {
-	if path == "" {
-		return ""
+// swapDiskBytes is the ceiling for spill, not an allocation: the file is sparse, so it costs only what
+// is actually swapped out. Twice the VM's memory, the traditional rule, which gives a workload that
+// overflows RAM somewhere to go rather than being killed.
+func swapDiskBytes(memory uint64) int64 {
+	if memory == 0 {
+		return 0
 	}
-	return "/dev/vdb"
+	return int64(memory) * 2 //nolint:gosec // memory is a VM size, nowhere near overflowing
+}
+
+// swapDisk returns this sandbox's swap file, creating it the first time.
+//
+// Named by sandbox rather than by session, unlike the home disk: swap belongs to the machine and holds
+// nothing worth keeping, so a rebuilt sandbox gets a fresh one.
+func (d *Driver) swapDisk(h sandbox.Handle, memory uint64) (string, error) {
+	size := swapDiskBytes(memory)
+	if size <= 0 {
+		return "", nil
+	}
+	if err := os.MkdirAll(d.disks, 0o700); err != nil {
+		return "", fmt.Errorf("applevf: create disk dir: %w", err)
+	}
+	path := filepath.Join(d.disks, "swap-"+string(h)+".img")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("applevf: create swap disk: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	// Truncate rather than reuse: the guest runs mkswap on it every boot anyway, and starting from a
+	// hole means the previous boot's spilled pages stop occupying disk.
+	if err := f.Truncate(0); err != nil {
+		return "", fmt.Errorf("applevf: reset swap disk: %w", err)
+	}
+	if err := f.Truncate(size); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("applevf: size swap disk: %w", err)
+	}
+	return path, nil
+}
+
+// guestDevices names the guest block devices for the optional disks, in the order they are attached.
+//
+// The names come from the attach order, not a fixed layout: the read only base is always /dev/vda, and
+// each optional disk takes the next letter. A session with no home disk but with swap therefore gets
+// swap at /dev/vdb, which is why this is computed rather than hardcoded.
+func guestDevices(home, swap string) (homeDevice, swapDevice string) {
+	next := 'b'
+	name := func(path string) string {
+		if path == "" {
+			return ""
+		}
+		device := "/dev/vd" + string(next)
+		next++
+		return device
+	}
+	return name(home), name(swap)
 }
 
 // homeMountTarget is where the agent's home belongs, taken from the volume mount the session layer adds

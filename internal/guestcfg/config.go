@@ -50,6 +50,9 @@ type Config struct {
 	HomeDevice string `json:"home_device,omitempty"`
 	// HomeTarget is where HomeDevice is mounted, matching the agent's home in the container runtime.
 	HomeTarget string `json:"home_target,omitempty"`
+	// SwapDevice is a raw block device the guest turns into swap, so the writable layer can spill to
+	// disk instead of the kernel killing the agent. Empty means no swap, which is the older behaviour.
+	SwapDevice string `json:"swap_device,omitempty"`
 }
 
 // Mount is one virtio-fs share: the tag the host announced, and where the guest should mount it.
