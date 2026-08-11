@@ -59,15 +59,27 @@ jobs:
             fi
             echo "$arch: $url"
 
-            # tar picks the decompressor from the stream, so one command covers both extensions. The
-            # leading wildcard absorbs a possible "./" on the entries, and the path is not stripped:
+            # Decompress explicitly. GNU tar refuses to auto-detect zstd when reading a pipe ("Archive
+            # is compressed. Use --zstd option"), so the extension picks the decompressor.
+            #
+            # The leading wildcard absorbs a possible "./" on the entries, and the path is not stripped:
             # finding the file afterwards is immune to both that prefix and any depth change upstream.
-            curl -sL "$url" \
+            case "$url" in
+              *.zst) decompress="zstd -dc" ;;
+              *.xz)  decompress="xz -dc" ;;
+              *) echo "::error::unknown archive type: $url"; exit 1 ;;
+            esac
+            curl -sL "$url" | $decompress \
               | tar -x --wildcards -C "raw/$arch" '*opt/kata/share/kata-containers/vmlinux-*'
 
-            # Exactly one match, or the layout changed and we should stop rather than publish something
-            # unexpected. -type f skips the vmlinux.container symlink, and vmlinuz is a different name.
-            found=$(find "raw/$arch" -type f -name 'vmlinux-*' | sort)
+            # Kata ships variants alongside the plain kernel (dragonball-experimental, nvidia-gpu), so
+            # match the exact shape vmlinux-<version>-<revision> and nothing after it. That is the one
+            # Apple's container tool uses too.
+            #
+            # Then exactly one match, or the layout changed and we should stop rather than publish
+            # something unexpected. -type f skips the vmlinux.container symlink.
+            found=$(find "raw/$arch" -type f -name 'vmlinux-*' \
+              | grep -E '/vmlinux-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' | sort)
             count=$(echo "$found" | grep -c . || true)
             if [ "$count" -ne 1 ]; then
               echo "::error::expected one kernel for $arch, found $count:"

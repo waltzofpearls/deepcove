@@ -58,6 +58,7 @@ build-darwin: build-darwin-arm64 build-darwin-amd64 ## Build darwin binaries for
 .PHONY: build-darwin-arm64
 build-darwin-arm64: ui/build/index.html ## Build a darwin/arm64 binary into dist/
 	@mkdir -p dist/darwin-arm64
+	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=arm64
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -ldflags '$(LDFLAGS_NATIVE)' \
 		-o dist/darwin-arm64/deepcove ./cmd/deepcove
@@ -73,6 +74,7 @@ build-darwin-arm64: ui/build/index.html ## Build a darwin/arm64 binary into dist
 .PHONY: build-darwin-amd64
 build-darwin-amd64: ui/build/index.html ## Build a darwin/amd64 binary (cross-compiled from arm64 host)
 	@mkdir -p dist/darwin-amd64
+	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
 		CC="clang -arch x86_64" \
 		CXX="clang++ -arch x86_64" \
@@ -100,6 +102,7 @@ build-windows: build-windows-amd64 ## Build windows binary for amd64
 .PHONY: build-windows-amd64
 build-windows-amd64: ui/build/index.html ## Build a windows/amd64 binary (cross-compiled via mingw-w64)
 	@mkdir -p dist/windows-amd64
+	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
 		CC=x86_64-w64-mingw32-gcc \
 		CXX=x86_64-w64-mingw32-g++ \
@@ -119,6 +122,7 @@ build-linux: build-linux-amd64 build-linux-arm64 ## Build linux binaries for amd
 
 .PHONY: build-linux-amd64
 build-linux-amd64: ## Build a linux/amd64 binary (glibc, dynamic)
+	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	docker buildx build --platform linux/amd64 \
 		-f build/linux.Dockerfile \
 		--build-arg VERSION=$(VERSION) \
@@ -126,6 +130,7 @@ build-linux-amd64: ## Build a linux/amd64 binary (glibc, dynamic)
 
 .PHONY: build-linux-arm64
 build-linux-arm64: ## Build a linux/arm64 binary (glibc, dynamic)
+	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=arm64
 	docker buildx build --platform linux/arm64 \
 		-f build/linux.Dockerfile \
 		--build-arg VERSION=$(VERSION) \
@@ -183,9 +188,10 @@ format: ## Reformat the frontend (gofmt covers Go, and golangci-lint already enf
 	cd ui && npm run format
 
 # --- Apple VF runtime (macOS only) -----------------------------------------
-# The guest init is a static pure-Go Linux binary baked into the session image. GUEST_ARCH defaults to
-# the host arch mapping (arm64 host -> arm64 guest); override for a different guest.
-GUEST_ARCH ?= arm64
+# The guest init is a static pure-Go Linux binary baked into the session image. It defaults to the host,
+# since a native build runs guests of the host's architecture. Cross-compile targets override it: the
+# init has to match the guest the released binary will boot.
+GUEST_ARCH ?= $(shell go env GOARCH)
 
 .PHONY: guest-init
 guest-init: ## Build the Linux guest init binary into the package that embeds it
