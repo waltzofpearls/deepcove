@@ -9,6 +9,17 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo v
 # DWARF + symbol table to shrink the binary; injects VERSION.
 LDFLAGS_NATIVE := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 
+# The guest init is embedded into the deepcove binary from this path, so it is built into the package
+# that embeds it rather than into dist/. Defined here because prerequisites are expanded as make reads
+# each rule, so a definition further down would expand to nothing.
+GUEST_INIT_EMBED := internal/guestasset/deepcove-guest-init
+
+# Placeholder so the package compiles in a tree that has not built the init yet. Empty on purpose:
+# guestasset.Available() reads that as "not built", and the runtime reports that it needs setup.
+$(GUEST_INIT_EMBED):
+	@mkdir -p $(dir $@)
+	@: > $@
+
 .PHONY: ui-build
 ui-build: ## Build the SvelteKit UI into ui/build/
 	cd ui && npm run build
@@ -20,7 +31,9 @@ ui/build/index.html:
 	@echo '<h1>deepcove is running</h1><p>SvelteKit not yet built. Run: make ui-build</p>' > ui/build/index.html
 
 .PHONY: build
-build: ui-build ## Build the deepcove binary for the host (builds UI first)
+# guest-init first, so the embedded init always matches this binary. That closes the trap where a
+# rebuilt init was never picked up and sessions silently booted stale code.
+build: guest-init ui-build ## Build the deepcove binary for the host (builds the guest init + UI first)
 	CGO_ENABLED=1 go build -ldflags '$(LDFLAGS_NATIVE)' -o deepcove ./cmd/deepcove
 	@$(MAKE) --no-print-directory sign-if-darwin BIN=deepcove
 
@@ -145,7 +158,7 @@ image-claude: ## Build the deepcove-claude session image locally (tagged for the
 test: test-go test-js ## Run all unit tests (Go + JS)
 
 .PHONY: test-go
-test-go: ui/build/index.html ## Run Go unit tests (CGO; uses a UI stub for the //go:embed)
+test-go: ui/build/index.html $(GUEST_INIT_EMBED) ## Run Go unit tests (CGO; uses a UI stub for the //go:embed)
 	CGO_ENABLED=1 go test ./... -v -cover -count=1
 
 .PHONY: test-js
@@ -156,7 +169,7 @@ test-js: ## Run frontend (vitest) unit tests
 lint: lint-go lint-js ## Run all linters (Go + JS)
 
 .PHONY: lint-go
-lint-go: ui/build/index.html ## Run Go linters (go vet + golangci-lint; UI stub for the //go:embed)
+lint-go: ui/build/index.html $(GUEST_INIT_EMBED) ## Run Go linters (go vet + golangci-lint; UI stub for the //go:embed)
 	CGO_ENABLED=1 go vet ./...
 	CGO_ENABLED=1 golangci-lint run ./...
 
@@ -175,10 +188,10 @@ format: ## Reformat the frontend (gofmt covers Go, and golangci-lint already enf
 GUEST_ARCH ?= arm64
 
 .PHONY: guest-init
-guest-init: ## Build the Linux guest init binary into dist/guest/
-	@mkdir -p dist/guest
+guest-init: ## Build the Linux guest init binary into the package that embeds it
+	@mkdir -p $(dir $(GUEST_INIT_EMBED))
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GUEST_ARCH) \
-		go build -ldflags '-s -w' -o dist/guest/deepcove-guest-init ./cmd/deepcove-guest-init
+		go build -ldflags '-s -w' -o $(GUEST_INIT_EMBED) ./cmd/deepcove-guest-init
 
 .PHONY: applevf-smoke
 applevf-smoke: ## Build + codesign the VF boot smoke harness (needs an Apple signing identity)

@@ -84,6 +84,13 @@ type Service struct {
 	runtimes       map[string]sandbox.Sandbox
 	defaultRuntime string
 
+	// missingRuntimes are runtimes this node knows about but cannot provide, keyed by name and valued
+	// by a stable reason code, and runtimeInstallers is how to close that gap. Guarded because a runtime
+	// can be installed from an HTTP request long after startup. See missing.go.
+	missingMu         sync.Mutex
+	missingRuntimes   map[string]string
+	runtimeInstallers map[string]RuntimeInstaller
+
 	// federation supplies the cross-node view for ListAggregated (set via SetFederation). Nil means
 	// single-node: only this machine's sessions.
 	federation Federation

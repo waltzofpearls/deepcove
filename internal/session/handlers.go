@@ -14,6 +14,7 @@ import (
 func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	mux.HandleFunc("GET /api/preflight", s.handlePreflight)
+	mux.HandleFunc("POST /api/runtimes/{runtime}/setup", s.handleSetupRuntime)
 	mux.HandleFunc("GET /api/runtimes", s.handleRuntimes)
 	mux.HandleFunc("DELETE /api/runtimes/{runtime}/sandboxes/{handle}", s.handleDestroySandbox)
 	mux.HandleFunc("GET /api/fs/list", s.handleFsList)

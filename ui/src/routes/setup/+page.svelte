@@ -13,7 +13,8 @@
   import { isSetupDone, markSetupDone, setConnectSkipped } from '$lib/setup';
   import { openConnectingTab } from '$lib/signin';
   import { NEW_SESSION_CTX } from '$lib/context';
-  import { runtimeLabel } from '$lib/util/runtime';
+  import { runtimeLabel, runtimeMissingReason } from '$lib/util/runtime';
+  import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
   import { Button } from '$lib/components/ui/button';
   import Logo from '$lib/components/layout/Logo.svelte';
   import TailscaleLogo from '$lib/components/TailscaleLogo.svelte';
@@ -35,6 +36,10 @@
   // Only shown when nothing works, to say why. When something else can host a session, a runtime that
   // is merely absent is not the user's problem.
   const runtimesDown = $derived(Object.entries(preflight.runtimes?.unavailable ?? {}));
+  // Runtimes this machine could have but has not set up. Shown even when something else is ready,
+  // because otherwise there is no way to discover the VM runtime exists. A merely unavailable runtime
+  // stays hidden in that case: that is noise, this is an offer.
+  const runtimesMissing = $derived(Object.entries(preflight.runtimes?.missing ?? {}));
 
   let auth = $derived($tailnetAuth);
   const webConnected = $derived(auth.phase === 'running');
@@ -163,6 +168,20 @@
               <Check class="size-4 text-[var(--color-success)]" />
               {preflight.usableRuntimes.map(runtimeLabel).join(', ')} ready.
             </div>
+            {#each runtimesMissing as [name, code] (name)}
+              <div
+                class="flex items-start gap-2 rounded-md border border-border px-3 py-2.5 text-sm"
+              >
+                <Boxes class="size-4 shrink-0 translate-y-0.5 text-muted-foreground" />
+                <div class="flex-1">
+                  <span class="font-medium">{runtimeLabel(name)}</span> is not set up.
+                  <p class="text-xs text-muted-foreground">{runtimeMissingReason(code)}</p>
+                  <div class="mt-2">
+                    <RuntimeSetupButton runtime={name} ondone={() => preflight.refresh()} />
+                  </div>
+                </div>
+              </div>
+            {/each}
           {:else if preflight.loaded}
             <div
               class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm"
@@ -173,6 +192,9 @@
                 available.
                 {#each runtimesDown as [name, why] (name)}
                   <p class="mt-1">{runtimeLabel(name)}: {why}</p>
+                {/each}
+                {#each runtimesMissing as [name, code] (name)}
+                  <p class="mt-1">{runtimeLabel(name)}: {runtimeMissingReason(code)}</p>
                 {/each}
               </div>
             </div>

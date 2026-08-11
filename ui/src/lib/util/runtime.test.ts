@@ -4,6 +4,7 @@ import {
   RUNTIME_APPLEVF,
   RUNTIME_DOCKER,
   usableRuntimes,
+  runtimeMissingReason,
   runtimeHint,
   runtimeLabel,
   runtimeShortLabel,
@@ -91,6 +92,29 @@ describe('usableRuntimes', () => {
   for (const tc of cases) {
     it(tc.name, () => {
       expect(usableRuntimes(tc.info)).toEqual(tc.want);
+    });
+  }
+});
+
+describe('runtimeMissingReason', () => {
+  const cases: { name: string; code: string; want: string }[] = [
+    {
+      name: 'no kernel says what is not downloaded',
+      code: 'no_kernel',
+      want: 'The Linux kernel it boots sessions with is not downloaded yet.',
+    },
+    { name: 'no guest init', code: 'no_guest_init', want: 'Part of its setup is missing.' },
+    // A newer node can report a reason this build has never seen; it must still say something true.
+    {
+      name: 'an unknown code still explains itself',
+      code: 'something_new',
+      want: 'It needs to be set up before it can run sessions.',
+    },
+  ];
+
+  for (const tc of cases) {
+    it(tc.name, () => {
+      expect(runtimeMissingReason(tc.code)).toBe(tc.want);
     });
   }
 });

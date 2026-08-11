@@ -201,6 +201,9 @@ export interface RuntimesInfo {
   // e.g. Docker installed but not running. Absent from the map means usable. Being registered says the
   // driver exists, not that the backend is up, and the backend can come up without restarting the node.
   unavailable?: Record<string, string>;
+  // missing maps a runtime this node knows about but cannot provide to a reason code. Unlike
+  // unavailable, there is no driver at all and something has to be installed first.
+  missing?: Record<string, string>;
 }
 
 export interface DockerStatus {
@@ -234,6 +237,9 @@ export interface RuntimeView {
   version?: string;
   // message is human-facing guidance when reachable is false.
   message?: string;
+  // missing is the reason code when this node cannot provide the runtime at all, so there is no driver
+  // to ask anything of. reachable is false and everything below is empty.
+  missing?: string;
   // list_supported is false for a driver that cannot enumerate its sandboxes. That is a capability
   // gap, not an error, and sandboxes/orphaned then mean nothing rather than "none".
   list_supported: boolean;

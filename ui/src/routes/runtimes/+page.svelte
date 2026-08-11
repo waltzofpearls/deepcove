@@ -2,7 +2,8 @@
   import { api } from '$lib/api/client';
   import { usePolling } from '$lib/polling';
   import { preferences } from '$lib/stores/preferences.svelte';
-  import { runtimeLabel } from '$lib/util/runtime';
+  import { runtimeLabel, runtimeMissingReason } from '$lib/util/runtime';
+  import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
   import { formatResources } from '$lib/util/resources';
   import { ageOf, shortId } from '$lib/format';
   import { Button } from '$lib/components/ui/button';
@@ -160,14 +161,26 @@
               <span
                 class="size-2 rounded-full"
                 class:bg-green-500={view.reachable}
-                class:bg-destructive={!view.reachable}
+                class:bg-muted-foreground={view.missing}
+                class:bg-destructive={!view.reachable && !view.missing}
                 aria-hidden="true"
               ></span>
-              {view.reachable ? (view.version ? view.version : 'reachable') : 'unreachable'}
+              {#if view.missing}
+                not set up
+              {:else}
+                {view.reachable ? (view.version ? view.version : 'reachable') : 'unreachable'}
+              {/if}
             </div>
           </header>
 
-          {#if !view.reachable}
+          {#if view.missing}
+            <p class="px-4 pt-3 text-sm text-muted-foreground">
+              {runtimeMissingReason(view.missing)}
+            </p>
+            <div class="px-4 pb-3 pt-2">
+              <RuntimeSetupButton runtime={view.name} ondone={() => load()} />
+            </div>
+          {:else if !view.reachable}
             <p class="px-4 py-3 text-sm text-muted-foreground">
               {view.message || "This runtime's backend isn't reachable."}
             </p>

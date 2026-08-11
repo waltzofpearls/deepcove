@@ -16,6 +16,20 @@ export function usableRuntimes(info: RuntimesInfo | null | undefined): string[] 
   return info.available.filter((name) => !down[name]);
 }
 
+// runtimeMissingReason says what a runtime still needs, in the user's terms. The server sends a stable
+// code so this wording can change without a server change. An unknown code falls back to something true
+// but vague, since a newer node may report a reason this build has never heard of.
+export function runtimeMissingReason(code: string): string {
+  switch (code) {
+    case 'no_kernel':
+      return 'The Linux kernel it boots sessions with is not downloaded yet.';
+    case 'no_guest_init':
+      return 'Part of its setup is missing.';
+    default:
+      return 'It needs to be set up before it can run sessions.';
+  }
+}
+
 // runtimeLabel names the runtime by what the user gets, not by its implementation. "Container" and
 // "Virtual machine" describe the isolation boundary, which is the thing being chosen.
 export function runtimeLabel(name: string): string {
