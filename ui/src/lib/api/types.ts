@@ -21,7 +21,11 @@ export interface Session {
   mounts: MountRequest[] | null;
   // Empty means "use the agent registry's default".
   setup_script: string;
-  container_id?: string;
+  sandbox_id?: string;
+  // On this node's shared machine, rather than one of its own.
+  on_workspace_vm?: boolean;
+  // The folder this session works in, inside the sandbox.
+  work_dir?: string;
   created_at: string; // ISO-8601 timestamp
   updated_at: string;
   last_activity_at: string; // added in Phase 4 / migration 0002
@@ -72,6 +76,40 @@ export interface CreateSessionRequest {
   // Which sandbox runtime hosts the session ("docker", "applevf"). Empty uses the node's default.
   runtime?: string;
   // Omitted, or with any field zero, leaves that cap to the runtime.
+  resources?: SessionResources;
+  // Put the session on this node's shared machine instead of building it one. The machine owns the
+  // mounts, its runtime and its size, so those are ignored.
+  on_workspace_vm?: boolean;
+  // The session's folder under the workspace root, created if missing. Empty means one named after the
+  // session. Workspace sessions only.
+  work_dir?: string;
+}
+
+// WorkspaceVM mirrors internal/session.WorkspaceVM: this node's shared machine, one per node. Sessions
+// on it work in their own folder under host_root.
+export interface WorkspaceVM {
+  host_root: string;
+  // Runs once when the machine is built. Empty means the agent's default.
+  setup_script: string;
+  // Where that folder appears inside the VM, and the root every session's folder lives under.
+  guest_root: string;
+  image: string;
+  runtime: string;
+  resources: SessionResources;
+  // Absent until the machine has been built, which happens on first use.
+  sandbox_id?: string;
+  created_at: string; // ISO-8601
+  updated_at: string; // ISO-8601
+}
+
+// WorkspaceVMRequest is the PUT body: empty fields take node defaults.
+export interface WorkspaceVMRequest {
+  host_root: string;
+  setup_script?: string;
+  // Empty means /workspace.
+  guest_root?: string;
+  runtime?: string;
+  image?: string;
   resources?: SessionResources;
 }
 
@@ -204,6 +242,9 @@ export interface RuntimesInfo {
   // missing maps a runtime this node knows about but cannot provide to a reason code. Unlike
   // unavailable, there is no driver at all and something has to be installed first.
   missing?: Record<string, string>;
+  // workspace_defaults is the size a new workspace VM gets on this host, derived from what the machine
+  // actually has. Not part of defaults, which is per runtime: this one is per machine.
+  workspace_defaults?: SessionResources;
 }
 
 export interface DockerStatus {
@@ -250,18 +291,36 @@ export interface RuntimeView {
   orphaned: OrphanedSession[];
 }
 
-// SandboxView is one sandbox the driver is hosting, joined to the session that owns it.
+// SandboxView is one sandbox the driver is hosting, joined to the sessions living on it.
 export interface SandboxView {
-  handle: string;
-  state: 'running' | 'stopped' | 'unknown';
+  sandbox_id: string;
+  state: 'running' | 'starting' | 'stopped' | 'unknown';
   image?: string;
   // What the driver actually gave it. All zero means the driver applied its own defaults or cannot
   // report them.
   resources: SessionResources;
   created_at: string; // ISO-8601
-  // Absent when nothing owns this sandbox, which means it leaked: still allocated for finished work.
-  session_id?: string;
-  session_name?: string;
+  // The host folders this sandbox shares, as the driver reports them.
+  mounts?: SandboxMount[];
+  // The sessions on this sandbox; a shared machine has several. Empty means it leaked: still allocated
+  // for finished work.
+  sessions: SandboxSession[];
+  // This node's shared machine. Allowed to have no sessions on it, and never a leak.
+  is_workspace_vm?: boolean;
+}
+
+// SandboxMount is one host folder shared into a sandbox, and where it lands inside it.
+export interface SandboxMount {
+  host_path: string;
+  guest_path: string;
+  read_only?: boolean;
+}
+
+// SandboxSession is one session on a sandbox, enough to name it and link to it.
+export interface SandboxSession {
+  id: string;
+  name: string;
+  status: SessionStatus;
 }
 
 // OrphanedSession is a session whose sandbox is gone. The useful action is deleting the session, since
@@ -269,6 +328,6 @@ export interface SandboxView {
 export interface OrphanedSession {
   session_id: string;
   session_name: string;
-  handle?: string;
+  sandbox_id?: string;
   status: SessionStatus;
 }

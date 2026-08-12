@@ -177,11 +177,13 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 			svc, fake, _, _ := newTestService(t)
 			sess := mustRunning(t, svc)
 
-			// Three scripted Exec responses, in call order:
-			//   1. new-session (setup)
-			//   2. attach      (the bridge: empty stdout EOFs fast, tearing the bridge down)
-			//   3. kill-session (deferred cleanup)
+			// Four scripted Exec responses, in call order:
+			//   1. has-session (the agent session is already there, so attach only groups onto it)
+			//   2. new-session (setup)
+			//   3. attach      (the bridge: empty stdout EOFs fast, tearing the bridge down)
+			//   4. kill-session (deferred cleanup)
 			fake.execResponses = []execResponse{
+				{exit: 0},
 				{exit: 0},
 				{exit: 0},
 				{exit: 0},
@@ -216,12 +218,18 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 				t.Fatal("handleAttach did not return within 3s")
 			}
 
-			if len(fake.execCalls) != 3 {
-				t.Fatalf("expected 3 exec calls (new/attach/kill); got %d: %v", len(fake.execCalls), fake.execCalls)
+			if len(fake.execCalls) != 4 {
+				t.Fatalf("expected 4 exec calls (has/new/attach/kill); got %d: %v", len(fake.execCalls), fake.execCalls)
 			}
 
-			// Call 0: new-session as a member of main's group.
-			gotNew := fake.execCalls[0]
+			// Call 0: the safety net checking the agent's own tmux session is there.
+			wantHas := []string{"tmux", "has-session", "-t", tmuxSessionName(sess.ID)}
+			if !slicesEqual(fake.execCalls[0], wantHas) {
+				t.Errorf("has-session cmd: got %v, want %v", fake.execCalls[0], wantHas)
+			}
+
+			// Call 1: new-session as a member of the agent session's group.
+			gotNew := fake.execCalls[1]
 			wantNewPrefix := []string{"tmux", "new-session", "-d", "-s"}
 			if !sliceHasPrefix(gotNew, wantNewPrefix) {
 				t.Errorf("new-session cmd prefix: got %v, want prefix %v", gotNew, wantNewPrefix)
@@ -233,13 +241,16 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 			if !strings.HasPrefix(viewName, "view-") {
 				t.Errorf("view session name: got %q, want prefix %q", viewName, "view-")
 			}
-			if gotNew[5] != "-t" || gotNew[6] != AgentTmuxWindowName {
-				t.Errorf("new-session group target: got %v, want -t %s", gotNew[5:], AgentTmuxWindowName)
+			// Grouped onto THIS session's tmux session, not a machine-wide "main": a machine can host
+			// several sessions, and an attach must join the right one.
+			wantGroup := tmuxSessionName(sess.ID)
+			if gotNew[5] != "-t" || gotNew[6] != wantGroup {
+				t.Errorf("new-session group target: got %v, want -t %s", gotNew[5:], wantGroup)
 			}
 
-			// Call 1: attach to the view session, optionally chained
+			// Call 2: attach to the view session, optionally chained
 			// with select-window.
-			gotAttach := fake.execCalls[1]
+			gotAttach := fake.execCalls[2]
 			if len(gotAttach) != tc.wantAttachLen {
 				t.Errorf("attach cmd length: got %d, want %d (%v)", len(gotAttach), tc.wantAttachLen, gotAttach)
 			}
@@ -260,10 +271,10 @@ func TestHandleAttach_ViewSessionLifecycle(t *testing.T) {
 				}
 			}
 
-			// Call 2: kill-session on the same view name. Confirms
+			// Call 3: kill-session on the same view name. Confirms
 			// the deferred cleanup wired through the right name and
 			// will run on every return path.
-			gotKill := fake.execCalls[2]
+			gotKill := fake.execCalls[3]
 			wantKill := []string{"tmux", "kill-session", "-t", viewName}
 			if !slicesEqual(gotKill, wantKill) {
 				t.Errorf("kill cmd: got %v, want %v", gotKill, wantKill)
@@ -281,7 +292,8 @@ func TestHandleAttach_ViewSessionSetupFailure(t *testing.T) {
 	sess := mustRunning(t, svc)
 
 	fake.execResponses = []execResponse{
-		{exit: 1, stderr: "tmux: server lost"},
+		{exit: 0},                              // has-session: the agent session is already there
+		{exit: 1, stderr: "tmux: server lost"}, // new-session for the view: this is the failure
 	}
 	fake.execCalls = nil
 
@@ -295,8 +307,8 @@ func TestHandleAttach_ViewSessionSetupFailure(t *testing.T) {
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusInternalServerError)
 	}
-	if len(fake.execCalls) != 1 {
-		t.Errorf("expected exactly 1 exec call (the failed new-session); got %d: %v",
+	if len(fake.execCalls) != 2 {
+		t.Errorf("expected 2 exec calls (has-session, the failed new-session); got %d: %v",
 			len(fake.execCalls), fake.execCalls)
 	}
 	// No attach exec, no kill; the failed new-session means there's

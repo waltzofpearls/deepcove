@@ -31,14 +31,7 @@ func TestClusterStore(t *testing.T) {
 }
 
 func TestLoadSaveCluster(t *testing.T) {
-	database, err := db.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = database.Close() }()
-	if err := db.Migrate(database); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	database := db.OpenForTest(t)
 
 	// Unset reads back empty (the caller falls back to the default).
 	if got, err := LoadCluster(database); err != nil || got != "" {

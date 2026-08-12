@@ -8,13 +8,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/waltzofpearls/deepcove/internal/db"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
+
+// newBareService is a service with no runtime registered, which is how the CLI starts before it
+// registers any.
+func newBareService(t *testing.T) *Service {
+	t.Helper()
+	database := db.OpenForTest(t)
+	svc := NewService(NewDuckDBSessionRepository(database), nil)
+	svc.SetWorkspaceVMStore(NewDuckDBWorkspaceVMStore(database))
+	return svc
+}
 
 // A fresh service provides nothing. Runtimes come from whoever builds it, so no runtime is privileged
 // by construction and adding one never means editing the service.
 func TestNewServiceStartsWithNoRuntimes(t *testing.T) {
-	svc := NewService(NewDuckDBSessionRepository(openTestDB(t)), nil)
+	svc := newBareService(t)
 
 	if got := svc.Runtimes(); len(got) != 0 {
 		t.Errorf("Runtimes() = %v, want none before anything registers", got)
@@ -29,7 +40,7 @@ func TestNewServiceStartsWithNoRuntimes(t *testing.T) {
 
 func TestSelectDefaultRuntime(t *testing.T) {
 	newSvc := func(t *testing.T, names ...string) *Service {
-		svc := NewService(NewDuckDBSessionRepository(openTestDB(t)), nil)
+		svc := newBareService(t)
 		for _, n := range names {
 			svc.RegisterRuntime(n, newFakeSandbox())
 		}
@@ -364,7 +375,7 @@ func (unreachableSandbox) Ping(context.Context) (string, error) {
 // Registering a driver says this node knows how to talk to that backend, not that the backend is up.
 // Creating against a down one must be refused before any work, and in the node's own words.
 func TestCreateRefusesAnUnavailableRuntime(t *testing.T) {
-	svc := NewService(NewDuckDBSessionRepository(openTestDB(t)), nil)
+	svc := newBareService(t)
 	down := unreachableSandbox{fakeSandbox: newFakeSandbox()}
 	svc.RegisterRuntime(RuntimeDocker, down)
 	if err := svc.SetDefaultRuntime(RuntimeDocker); err != nil {
@@ -388,7 +399,7 @@ func TestCreateRefusesAnUnavailableRuntime(t *testing.T) {
 
 // The default must not land on a runtime that cannot work when a working one is registered.
 func TestSelectDefaultRuntimeSkipsUnavailable(t *testing.T) {
-	svc := NewService(NewDuckDBSessionRepository(openTestDB(t)), nil)
+	svc := newBareService(t)
 	// applevf sorts first in runtimeOrder, so a naive pick would choose it even though it is down.
 	svc.RegisterRuntime(RuntimeAppleVF, unreachableSandbox{fakeSandbox: newFakeSandbox()})
 	svc.RegisterRuntime(RuntimeDocker, newFakeSandbox())
@@ -403,7 +414,7 @@ func TestSelectDefaultRuntimeSkipsUnavailable(t *testing.T) {
 
 // With nothing reachable the node still reports a coherent default; creating is what gets refused.
 func TestSelectDefaultRuntimeWithNothingReachable(t *testing.T) {
-	svc := NewService(NewDuckDBSessionRepository(openTestDB(t)), nil)
+	svc := newBareService(t)
 	svc.RegisterRuntime(RuntimeDocker, unreachableSandbox{fakeSandbox: newFakeSandbox()})
 
 	if err := svc.SelectDefaultRuntime(context.Background(), ""); err != nil {

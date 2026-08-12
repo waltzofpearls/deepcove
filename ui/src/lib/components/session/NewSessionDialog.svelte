@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import {
     Dialog,
@@ -18,6 +19,7 @@
   import { preflight } from '$lib/stores/preflight.svelte';
   import { onlineHostNodes, defaultNodeId, nodeHost } from '$lib/api/sessions';
   import HostPathField from './HostPathField.svelte';
+  import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import { shellQuote } from '$lib/util/shell';
   import type {
     Agent,
@@ -25,6 +27,7 @@
     NodeInfo,
     RuntimesInfo,
     SessionResources,
+    WorkspaceVM,
   } from '$lib/api/types';
   import { runtimeCapsDisk, runtimeHint, runtimeLabel } from '$lib/util/runtime';
   import { emptyResourceFields, fieldsFromDefaults, parseResources } from '$lib/util/resources';
@@ -60,6 +63,9 @@
     if (!node || node.self) return undefined;
     return nodeHost(node);
   });
+  // A stable key for that host. selectedHost is a fresh object on every recompute, so an effect that
+  // depends on it re-runs forever; the dns name changes only when the choice does.
+  const selectedHostKey = $derived(selectedHost?.dns_name ?? '');
   // The last auto-suggested name, so the prefill effect can refresh it on agent
   // change without clobbering a name the user has typed.
   let suggestedName = $state('');
@@ -131,9 +137,10 @@
   // state when the target is fine. Null until fetched, in which case we fall back to the global store.
   let nodeRuntimes = $state<RuntimesInfo | null>(null);
   $effect(() => {
-    const host = selectedHost;
+    const key = selectedHostKey;
+    const host = untrack(() => selectedHost);
     nodeRuntimes = null;
-    if (!open || !host) return;
+    if (!open || !key) return;
     let cancelled = false;
     const ac = new AbortController();
     api
@@ -177,6 +184,38 @@
     runtimeOptions.length > 0 &&
       runtimeOptions.every((name) => Boolean(runtimes?.unavailable?.[name])),
   );
+
+  // Where the session runs: this node's shared machine, or one of its own. Shared becomes the default
+  // once a workspace VM exists, since that is the cheap answer when you already have one.
+  // The shared machine is the default answer, including when there is none yet: this dialog then
+  // creates it, which is the flow most people want the first time.
+  let placement = $state<'workspace' | 'private'>('workspace');
+  let workspaceVM = $state<WorkspaceVM | null>(null);
+  let workspaceHostRoot = $state('');
+  let workspaceGuestRoot = $state('/workspace');
+  let workspaceFields = $state({ ...emptyResourceFields });
+  let workDir = $state('');
+  const onWorkspace = $derived(placement === 'workspace');
+  // No machine yet means this dialog creates it too, so it asks for the folder and size first.
+  const creatingWorkspaceVM = $derived(onWorkspace && workspaceVM === null);
+  const parsedWorkspaceResources = $derived(parseResources(workspaceFields, true));
+
+  // Reads the shared machine when the dialog opens. Null is normal rather than an error: this node
+  // just does not have one yet.
+  // The machine belongs to the node that will host the session, so this follows the node picker rather
+  // than always asking this one.
+  $effect(() => {
+    if (!open) return;
+    void selectedHostKey;
+    const host = untrack(() => selectedHost);
+    const ac = new AbortController();
+    workspaceVM = null;
+    api
+      .workspaceVM(host, ac.signal)
+      .then((vm) => (workspaceVM = vm))
+      .catch(() => {});
+    return () => ac.abort();
+  });
 
   // Size of the machine the session runs on. Blank fields mean "whatever the runtime defaults to",
   // which is what every session got before these inputs existed.
@@ -253,6 +292,12 @@
     const parts = ['deepcove', 'session', agent];
     const trimmedName = name.trim();
     if (trimmedName) parts.push('--name', shellQuote(trimmedName));
+    // The machine settings below belong to the workspace VM, not to a session on it.
+    if (onWorkspace) {
+      parts.push('--workspace');
+      if (workDir.trim()) parts.push('--work-dir', shellQuote(workDir.trim()));
+      return parts.join(' ');
+    }
     if (imageStrategy === 'official' && selectedAgent?.official_image) {
       parts.push('--image', shellQuote(selectedAgent.official_image));
     } else if (imageStrategy === 'custom' && customImage) {
@@ -330,7 +375,27 @@
     // baseImage / setupScript / imageStrategy get re-seeded by the agent-change $effect.
   }
 
+  // The image the form is asking for, whichever strategy is selected. Shared by a private session's
+  // payload and by the workspace VM it may be creating, since a machine has exactly one image.
+  function chosenImage(): string | undefined {
+    if (imageStrategy === 'official') return selectedAgent?.official_image;
+    if (imageStrategy === 'custom') return customImage.trim() || undefined;
+    return baseImage || undefined;
+  }
+
   function buildPayload() {
+    // A session on the shared machine takes none of the machine settings: its runtime, size, image and
+    // mounts are already decided.
+    if (onWorkspace) {
+      return {
+        agent,
+        name: name.trim() || undefined,
+        node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
+        on_workspace_vm: true,
+        work_dir: workDir.trim() || undefined,
+        mounts: [],
+      };
+    }
     const payload: {
       agent: string;
       name?: string;
@@ -444,9 +509,31 @@
     submitError = null;
 
     try {
-      // Download first if we know it's absent, so the create itself is
-      // fast and we can show a real progress bar.
-      if (imagePresent === false) await pullCurrentImage();
+      // The machine has to exist before a session can land on it. Recording it is instant; the VM boots
+      // when this session starts, which the session page already shows.
+      if (creatingWorkspaceVM) {
+        if (parsedWorkspaceResources.error) {
+          submitError = {
+            title: 'Check the workspace VM size',
+            raw: parsedWorkspaceResources.error,
+          };
+          return;
+        }
+        workspaceVM = await api.saveWorkspaceVM(
+          {
+            host_root: workspaceHostRoot.trim(),
+            guest_root: workspaceGuestRoot.trim() || undefined,
+            image: chosenImage(),
+            // The machine is what installs the agent, so a custom setup belongs to it.
+            setup_script: imageStrategy === 'custom' ? customSetup.trim() || undefined : undefined,
+            resources: parsedWorkspaceResources.resources,
+          },
+          selectedHost,
+        );
+      }
+      // Download first if we know it's absent, so the create itself is fast and we can show a real
+      // progress bar. The shared machine already has its image.
+      if (!onWorkspace && imagePresent === false) await pullCurrentImage();
 
       // Create via the boot transport with node_id in the payload: the receiving node routes it (creates
       // locally if it's the target, else proxies to the target over its own tailnet). This works in both
@@ -547,7 +634,58 @@
         </div>
       {/if}
 
-      {#if showRuntimePicker}
+      <div class="space-y-2">
+        <Label>Machine</Label>
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
+            class:border-primary={onWorkspace}
+            onclick={() => (placement = 'workspace')}
+          >
+            <span class="font-medium">Workspace VM</span>
+            <span class="mt-0.5 block text-xs text-muted-foreground">
+              Shared with your other sessions. Each works in its own folder.
+            </span>
+          </button>
+          <button
+            type="button"
+            class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
+            class:border-primary={!onWorkspace}
+            onclick={() => (placement = 'private')}
+          >
+            <span class="font-medium">Its own machine</span>
+            <span class="mt-0.5 block text-xs text-muted-foreground">
+              Only this session. You pick the isolation, size and folders.
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {#if creatingWorkspaceVM}
+        <div class="space-y-4 rounded-md border border-dashed border-border p-3">
+          <p class="text-sm">
+            You don't have a workspace VM yet. This creates one, and your other sessions can share
+            it.
+          </p>
+          <WorkspaceVMFields
+            bind:hostRoot={workspaceHostRoot}
+            bind:guestRoot={workspaceGuestRoot}
+            bind:fields={workspaceFields}
+          />
+        </div>
+      {:else if onWorkspace}
+        <div class="space-y-2">
+          <Label for="work-dir">Folder</Label>
+          <Input id="work-dir" bind:value={workDir} placeholder={name || 'my-repo'} />
+          <p class="text-xs text-muted-foreground">
+            A folder inside {workspaceVM?.host_root}, which the VM sees at {workspaceVM?.guest_root}.
+            Created if it isn't there; blank uses the session name.
+          </p>
+        </div>
+      {/if}
+
+      {#if showRuntimePicker && !onWorkspace}
         <div class="space-y-2">
           <Label for="runtime">Isolation</Label>
           <select
@@ -564,241 +702,264 @@
         </div>
       {/if}
 
-      <div class="space-y-2">
-        <Label>Size</Label>
-        <div
-          class="grid gap-3"
-          class:grid-cols-3={showDiskField}
-          class:grid-cols-2={!showDiskField}
-        >
-          <div class="space-y-1.5">
-            <Label for="cpu" class="text-xs font-normal text-muted-foreground">CPU cores</Label>
-            <Input
-              id="cpu"
-              type="number"
-              min="1"
-              step="1"
-              placeholder="No limit"
-              bind:value={resourceFields.cpu}
-              oninput={() => (sizeEdited = true)}
-            />
-          </div>
-          <div class="space-y-1.5">
-            <Label for="memory" class="text-xs font-normal text-muted-foreground"
-              >Memory (GiB)</Label
-            >
-            <Input
-              id="memory"
-              type="number"
-              min="0.5"
-              step="0.5"
-              placeholder="No limit"
-              bind:value={resourceFields.memoryGiB}
-              oninput={() => (sizeEdited = true)}
-            />
-          </div>
-          {#if showDiskField}
+      {#if !onWorkspace}
+        <div class="space-y-2">
+          <Label>Size</Label>
+          <div
+            class="grid gap-3"
+            class:grid-cols-3={showDiskField}
+            class:grid-cols-2={!showDiskField}
+          >
             <div class="space-y-1.5">
-              <Label for="disk" class="text-xs font-normal text-muted-foreground">Disk (GiB)</Label>
+              <Label for="cpu" class="text-xs font-normal text-muted-foreground">CPU cores</Label>
               <Input
-                id="disk"
+                id="cpu"
+                type="number"
+                min="1"
+                step="1"
+                placeholder="No limit"
+                bind:value={resourceFields.cpu}
+                oninput={() => (sizeEdited = true)}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label for="memory" class="text-xs font-normal text-muted-foreground"
+                >Memory (GiB)</Label
+              >
+              <Input
+                id="memory"
                 type="number"
                 min="0.5"
                 step="0.5"
                 placeholder="No limit"
-                bind:value={resourceFields.diskGiB}
+                bind:value={resourceFields.memoryGiB}
                 oninput={() => (sizeEdited = true)}
               />
             </div>
+            {#if showDiskField}
+              <div class="space-y-1.5">
+                <Label for="disk" class="text-xs font-normal text-muted-foreground"
+                  >Disk (GiB)</Label
+                >
+                <Input
+                  id="disk"
+                  type="number"
+                  min="0.5"
+                  step="0.5"
+                  placeholder="No limit"
+                  bind:value={resourceFields.diskGiB}
+                  oninput={() => (sizeEdited = true)}
+                />
+              </div>
+            {/if}
+          </div>
+          {#if parsedResources.error}
+            <p class="text-xs text-destructive">{parsedResources.error}</p>
+          {:else}
+            <p class="text-xs text-muted-foreground">{sizeHint}</p>
           {/if}
         </div>
-        {#if parsedResources.error}
-          <p class="text-xs text-destructive">{parsedResources.error}</p>
-        {:else}
-          <p class="text-xs text-muted-foreground">{sizeHint}</p>
-        {/if}
-      </div>
+      {/if}
 
-      <div class="space-y-2">
-        <Label>Image</Label>
-        <div class="space-y-2 rounded-md border border-border p-3">
-          <label
-            class="flex items-start gap-2.5 text-sm"
-            class:cursor-pointer={selectedAgent?.official_image}
-            class:cursor-not-allowed={!selectedAgent?.official_image}
-            class:opacity-60={!selectedAgent?.official_image}
-          >
-            <input
-              type="radio"
-              bind:group={imageStrategy}
-              value="official"
-              disabled={!selectedAgent?.official_image}
-              class="mt-0.5 size-4 border-input disabled:cursor-not-allowed"
-            />
-            <div class="flex-1">
-              <div class="font-medium">Default deepcove image</div>
-              <div class="text-xs text-muted-foreground">
-                {#if selectedAgent?.official_image}
-                  Prebuilt and ready, the fastest boot. <code>{selectedAgent.official_image}</code>
-                {:else}
-                  Not yet published for this agent. Use "Run install script at startup" for now.
-                {/if}
-              </div>
-            </div>
-          </label>
-
-          <label class="flex cursor-pointer items-start gap-2.5 text-sm">
-            <input
-              type="radio"
-              bind:group={imageStrategy}
-              value="custom"
-              class="mt-0.5 size-4 border-input"
-            />
-            <div class="flex-1">
-              <div class="font-medium">Bring your own image</div>
-              <div class="text-xs text-muted-foreground">
-                Use a custom image. Optionally run extra setup on first boot.
-              </div>
-            </div>
-          </label>
-
-          <label class="flex cursor-pointer items-start gap-2.5 text-sm">
-            <input
-              type="radio"
-              bind:group={imageStrategy}
-              value="install"
-              class="mt-0.5 size-4 border-input"
-            />
-            <div class="flex-1">
-              <div class="font-medium">Run install script at startup</div>
-              <div class="text-xs text-muted-foreground">
-                Start from a base image and install the agent on first boot (~15s for Claude).
-              </div>
-            </div>
-          </label>
-        </div>
-
-        {#if imageStrategy === 'install'}
-          <div class="space-y-3 rounded-md border border-border p-3">
-            <div class="space-y-1.5">
-              <Label class="text-xs" for="base-image">Base image</Label>
-              <Input id="base-image" bind:value={baseImage} placeholder="alpine:3.20" />
-            </div>
-            <div class="space-y-1.5">
-              <Label class="text-xs" for="setup-script">Setup script</Label>
-              <textarea
-                id="setup-script"
-                bind:value={setupScript}
-                rows="10"
-                class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-              ></textarea>
-              <p class="text-xs text-muted-foreground">
-                Runs once on container start. Make it idempotent. Checking
-                <code>command -v &lt;bin&gt;</code> before installing is the convention.
-              </p>
-            </div>
-          </div>
-        {/if}
-
-        {#if imageStrategy === 'custom'}
-          <div class="space-y-3 rounded-md border border-border p-3">
-            <div class="space-y-1.5">
-              <Label class="text-xs" for="custom-image">Image reference</Label>
-              <Input
-                id="custom-image"
-                bind:value={customImage}
-                placeholder="my-registry/my-image:tag"
-              />
-            </div>
-            <div class="space-y-1.5">
-              <Label class="text-xs" for="custom-setup">Extra setup script (optional)</Label>
-              <textarea
-                id="custom-setup"
-                bind:value={customSetup}
-                rows="6"
-                placeholder="# Leave blank if your image has the agent baked in.&#10;# Add commands here for any extra setup."
-                class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-              ></textarea>
-            </div>
-          </div>
-        {/if}
-      </div>
-
-      <div class="space-y-2">
-        <div class="flex items-center justify-between">
-          <Label>Folder</Label>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={useFolder}
-            onclick={toggleFolder}
-            class="flex items-center gap-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <span>Use a folder</span>
-            <span
-              class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {useFolder
-                ? 'bg-primary'
-                : 'bg-input'}"
+      {#if !onWorkspace || creatingWorkspaceVM}
+        <div class="space-y-2">
+          <Label>Image</Label>
+          <div class="space-y-2 rounded-md border border-border p-3">
+            <label
+              class="flex items-start gap-2.5 text-sm"
+              class:cursor-pointer={selectedAgent?.official_image}
+              class:cursor-not-allowed={!selectedAgent?.official_image}
+              class:opacity-60={!selectedAgent?.official_image}
             >
-              <span
-                class="inline-block size-4 rounded-full bg-background shadow transition-transform {useFolder
-                  ? 'translate-x-4'
-                  : 'translate-x-0.5'}"
-              ></span>
-            </span>
-          </button>
-        </div>
-        {#if !useFolder}
-          <p class="text-xs text-muted-foreground">
-            No folder. The agent starts in an empty <code>/workspace</code>. Turn on "Use a folder"
-            to mount your code.
-          </p>
-        {:else}
-          <p class="text-xs text-muted-foreground">
-            The agent works in this folder (mounted at <code>/workspace</code>).
-          </p>
-          {#each mounts as m, i (i)}
-            <div class="space-y-2 rounded-md border border-border p-2.5">
-              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <div class="min-w-0 space-y-1 sm:col-span-2">
-                  <Label class="text-xs" for="mount-host-{i}">Host path</Label>
-                  <HostPathField id="mount-host-{i}" bind:value={m.host_path} host={selectedHost} />
-                </div>
-                <div class="min-w-0 space-y-1">
-                  <Label class="text-xs" for="mount-container-{i}">Mounts to</Label>
-                  <Input
-                    id="mount-container-{i}"
-                    bind:value={m.container_path}
-                    placeholder="/workspace"
-                  />
+              <input
+                type="radio"
+                bind:group={imageStrategy}
+                value="official"
+                disabled={!selectedAgent?.official_image}
+                class="mt-0.5 size-4 border-input disabled:cursor-not-allowed"
+              />
+              <div class="flex-1">
+                <div class="font-medium">Default deepcove image</div>
+                <div class="text-xs text-muted-foreground">
+                  {#if selectedAgent?.official_image}
+                    Prebuilt and ready, the fastest boot. <code>{selectedAgent.official_image}</code
+                    >
+                  {:else}
+                    Not yet published for this agent. Use "Run install script at startup" for now.
+                  {/if}
                 </div>
               </div>
-              <div class="flex items-center justify-between">
-                <label class="flex cursor-pointer select-none items-center gap-1.5 text-xs">
-                  <input
-                    type="checkbox"
-                    bind:checked={m.read_only}
-                    class="size-3.5 rounded border-input"
-                  />
-                  Read-only
-                </label>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onclick={() => removeMount(i)}
-                  aria-label="Remove folder"
-                >
-                  <X class="size-4" />
-                </Button>
+            </label>
+
+            <label class="flex cursor-pointer items-start gap-2.5 text-sm">
+              <input
+                type="radio"
+                bind:group={imageStrategy}
+                value="custom"
+                class="mt-0.5 size-4 border-input"
+              />
+              <div class="flex-1">
+                <div class="font-medium">Bring your own image</div>
+                <div class="text-xs text-muted-foreground">
+                  Use a custom image. Optionally run extra setup on first boot.
+                </div>
+              </div>
+            </label>
+
+            <label class="flex cursor-pointer items-start gap-2.5 text-sm">
+              <input
+                type="radio"
+                bind:group={imageStrategy}
+                value="install"
+                class="mt-0.5 size-4 border-input"
+              />
+              <div class="flex-1">
+                <div class="font-medium">Run install script at startup</div>
+                <div class="text-xs text-muted-foreground">
+                  Start from a base image and install the agent on first boot (~15s for Claude).
+                </div>
+              </div>
+            </label>
+          </div>
+
+          {#if imageStrategy === 'install'}
+            <div class="space-y-3 rounded-md border border-border p-3">
+              <div class="space-y-1.5">
+                <Label class="text-xs" for="base-image">Base image</Label>
+                <Input id="base-image" bind:value={baseImage} placeholder="alpine:3.20" />
+              </div>
+              <div class="space-y-1.5">
+                <Label class="text-xs" for="setup-script">Setup script</Label>
+                <textarea
+                  id="setup-script"
+                  bind:value={setupScript}
+                  rows="10"
+                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+                ></textarea>
+                <p class="text-xs text-muted-foreground">
+                  Runs once on container start. Make it idempotent. Checking
+                  <code>command -v &lt;bin&gt;</code> before installing is the convention.
+                </p>
               </div>
             </div>
-          {/each}
-          <Button size="sm" variant="ghost" onclick={addMount}>
-            <Plus class="size-4" />
-            Add another folder
-          </Button>
-        {/if}
-      </div>
+          {/if}
+
+          {#if imageStrategy === 'custom'}
+            <div class="space-y-3 rounded-md border border-border p-3">
+              <div class="space-y-1.5">
+                <Label class="text-xs" for="custom-image">Image reference</Label>
+                <Input
+                  id="custom-image"
+                  bind:value={customImage}
+                  placeholder="my-registry/my-image:tag"
+                />
+              </div>
+              <div class="space-y-1.5">
+                <Label class="text-xs" for="custom-setup">Extra setup script (optional)</Label>
+                <textarea
+                  id="custom-setup"
+                  bind:value={customSetup}
+                  rows="6"
+                  placeholder="# Leave blank if your image has the agent baked in.&#10;# Add commands here for any extra setup."
+                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+                ></textarea>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if onWorkspace && !creatingWorkspaceVM}
+        <div class="space-y-2">
+          <Label>Image</Label>
+          <p class="font-mono text-xs text-muted-foreground">{workspaceVM?.image}</p>
+          <p class="text-xs text-muted-foreground">
+            The workspace VM's own image. Every session on it runs this one.
+          </p>
+        </div>
+      {/if}
+
+      {#if !onWorkspace}
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <Label>Folder</Label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={useFolder}
+              onclick={toggleFolder}
+              class="flex items-center gap-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <span>Use a folder</span>
+              <span
+                class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {useFolder
+                  ? 'bg-primary'
+                  : 'bg-input'}"
+              >
+                <span
+                  class="inline-block size-4 rounded-full bg-background shadow transition-transform {useFolder
+                    ? 'translate-x-4'
+                    : 'translate-x-0.5'}"
+                ></span>
+              </span>
+            </button>
+          </div>
+          {#if !useFolder}
+            <p class="text-xs text-muted-foreground">
+              No folder. The agent starts in an empty <code>/workspace</code>. Turn on "Use a
+              folder" to mount your code.
+            </p>
+          {:else}
+            <p class="text-xs text-muted-foreground">
+              The agent works in this folder (mounted at <code>/workspace</code>).
+            </p>
+            {#each mounts as m, i (i)}
+              <div class="space-y-2 rounded-md border border-border p-2.5">
+                <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div class="min-w-0 space-y-1 sm:col-span-2">
+                    <Label class="text-xs" for="mount-host-{i}">Host path</Label>
+                    <HostPathField
+                      id="mount-host-{i}"
+                      bind:value={m.host_path}
+                      host={selectedHost}
+                    />
+                  </div>
+                  <div class="min-w-0 space-y-1">
+                    <Label class="text-xs" for="mount-container-{i}">Mounts to</Label>
+                    <Input
+                      id="mount-container-{i}"
+                      bind:value={m.container_path}
+                      placeholder="/workspace"
+                    />
+                  </div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <label class="flex cursor-pointer select-none items-center gap-1.5 text-xs">
+                    <input
+                      type="checkbox"
+                      bind:checked={m.read_only}
+                      class="size-3.5 rounded border-input"
+                    />
+                    Read-only
+                  </label>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onclick={() => removeMount(i)}
+                    aria-label="Remove folder"
+                  >
+                    <X class="size-4" />
+                  </Button>
+                </div>
+              </div>
+            {/each}
+            <Button size="sm" variant="ghost" onclick={addMount}>
+              <Plus class="size-4" />
+              Add another folder
+            </Button>
+          {/if}
+        </div>
+      {/if}
 
       {#if submitError}
         <div class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2.5 text-sm">

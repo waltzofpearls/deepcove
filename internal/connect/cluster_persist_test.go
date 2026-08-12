@@ -8,14 +8,7 @@ import (
 )
 
 func TestNodeClusterPersistence(t *testing.T) {
-	database, err := db.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer func() { _ = database.Close() }()
-	if err := db.Migrate(database); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	database := db.OpenForTest(t)
 
 	// Empty to start.
 	if got, err := loadNodeClusters(database); err != nil || len(got) != 0 {

@@ -116,10 +116,10 @@ func (s *Service) Runtimes() []string {
 // DefaultRuntime is what a create request gets when it does not ask for one.
 func (s *Service) DefaultRuntime() string { return s.defaultRuntime }
 
-// runtimeNamed resolves a runtime by name, falling back to the default when name is empty. An empty name
+// runtimeByName resolves a runtime by name, falling back to the default when name is empty. An empty name
 // covers both a create request that did not choose one and a session row written before the runtime
 // column existed.
-func (s *Service) runtimeNamed(name string) (sandbox.Sandbox, error) {
+func (s *Service) runtimeByName(name string) (sandbox.Sandbox, error) {
 	if name == "" {
 		name = s.defaultRuntime
 	}
@@ -134,7 +134,7 @@ func (s *Service) runtimeNamed(name string) (sandbox.Sandbox, error) {
 // through here, because a node can offer several runtimes and the session must go back to the one that
 // created it.
 func (s *Service) runtimeFor(sess *Session) (sandbox.Sandbox, error) {
-	return s.runtimeNamed(sess.Runtime)
+	return s.runtimeByName(sess.Runtime)
 }
 
 // ErrRuntimeUnavailable means the runtime exists on this node but cannot host a session right now, which
@@ -157,7 +157,7 @@ func (s *Service) runtimeUnavailable(ctx context.Context, name string) string {
 	}
 	driver, ok := s.runtimes[name]
 	if !ok {
-		return "" // an unknown runtime is reported by runtimeNamed, not here
+		return "" // an unknown runtime is reported by runtimeByName, not here
 	}
 	pinger, ok := driver.(sandbox.Pinger)
 	if !ok {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -61,9 +62,11 @@ func (d *Driver) ListSandboxes(ctx context.Context) ([]sandbox.Instance, error) 
 	out := make([]sandbox.Instance, 0, len(res.Items))
 	for _, c := range res.Items {
 		out = append(out, sandbox.Instance{
-			Handle: sandbox.Handle(c.ID),
-			State:  toInstanceState(c.State),
-			Image:  c.Image,
+			ID:    sandbox.ID(c.ID),
+			State: toInstanceState(c.State),
+			Image: c.Image,
+			// The list call already carries mounts, unlike resources, so reporting them costs nothing.
+			Mounts: hostMounts(c.Mounts),
 			// Resources are left zero: the list endpoint does not carry them, and inspecting every
 			// container to fill them in would turn one call into N for a field the session row
 			// already records.
@@ -74,18 +77,32 @@ func (d *Driver) ListSandboxes(ctx context.Context) ([]sandbox.Instance, error) 
 		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
 			return c
 		}
-		return strings.Compare(string(a.Handle), string(b.Handle))
+		return strings.Compare(string(a.ID), string(b.ID))
 	})
 	return out, nil
 }
 
-// toInstanceState collapses Docker's seven states into the three the view cares about. The dividing line
-// is whether the sandbox is still resident and holding memory, not whether it is executing, which is why
-// paused counts as running: a paused container has not given its RAM back.
+// hostMounts keeps the bind mounts, the ones that name a real host folder. The agent's home is a volume,
+// whose source is a path inside Docker's own storage that means nothing to a reader.
+func hostMounts(mounts []container.MountPoint) []sandbox.Mount {
+	out := make([]sandbox.Mount, 0, len(mounts))
+	for _, m := range mounts {
+		if m.Type != mount.TypeBind {
+			continue
+		}
+		out = append(out, sandbox.Mount{Source: m.Source, Target: m.Destination, ReadOnly: !m.RW})
+	}
+	return out
+}
+
+// toInstanceState collapses Docker's seven states into the four the view cares about. Paused counts as
+// running because it has not given its RAM back; restarting is a start in flight, like a VM booting.
 func toInstanceState(s container.ContainerState) sandbox.InstanceState {
 	switch s {
-	case container.StateRunning, container.StateRestarting, container.StatePaused:
+	case container.StateRunning, container.StatePaused:
 		return sandbox.InstanceRunning
+	case container.StateRestarting:
+		return sandbox.InstanceStarting
 	case container.StateCreated, container.StateExited, container.StateDead, container.StateRemoving:
 		return sandbox.InstanceStopped
 	default:

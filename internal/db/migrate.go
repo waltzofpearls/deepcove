@@ -24,7 +24,8 @@ var ErrOutOfOrderMigration = errors.New("migrate: out-of-order migration detecte
 
 // Migrate applies any embedded migrations that haven't been recorded in the schema_migrations table.
 // Migrations run in lexical order of their filenames; the 4-digit prefix (0001_, 0002_, ...) keeps
-// ordering stable. Each file runs in its own transaction.
+// ordering stable. Each file runs in its own transaction, unless it carries the no-transaction
+// directive for DDL the engine cannot transact.
 //
 // We refuse to apply migrations out of order: if a new file would
 // land lexically before something already applied, we error rather
@@ -121,22 +122,52 @@ func listMigrations(embedFS fs.FS, dir string) ([]string, error) {
 	return names, nil
 }
 
+// execer is what a migration runs against: a transaction, or the database itself when the migration
+// opted out of one. Both satisfy it, so the body and the record of it are one code path either way.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// noTransactionDirective opts a migration out of the wrapping transaction, the way dbmate's
+// "transaction:false" and goose's "NO TRANSACTION" do.
+//
+// DuckDB cannot do every DDL inside a transaction: dropping an index and renaming a column in one
+// aborts the process on commit, and a crash is not something a migration can recover from.
+//
+// The cost is atomicity, so a file carrying this must survive being run twice: it can half apply, and
+// the next start will run it again.
+const noTransactionDirective = "-- deepcove:no-transaction"
+
 func applyOne(db *sql.DB, name, body string) error {
+	// A migration file may hold several statements separated by semicolons. We rely on go-duckdb's Exec
+	// running them in order, which is driver behaviour rather than a database/sql guarantee: another
+	// driver would need a SQL aware splitter here.
+	apply := func(into execer) error {
+		if _, err := into.Exec(body); err != nil {
+			return fmt.Errorf("migrate: exec %s: %w", name, err)
+		}
+		if _, err := into.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, name); err != nil {
+			return fmt.Errorf("migrate: record %s: %w", name, err)
+		}
+		return nil
+	}
+
+	if strings.Contains(body, noTransactionDirective) {
+		return apply(db)
+	}
+	return inTransaction(db, name, apply)
+}
+
+// inTransaction runs apply against a transaction, rolling back on failure so a migration that stops
+// half way leaves nothing behind, not a schema no code expects.
+func inTransaction(db *sql.DB, name string, apply func(execer) error) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("migrate: begin %s: %w", name, err)
 	}
-	// Each migration file may contain multiple SQL statements separated by semicolons. We rely on
-	// go-duckdb's Exec accepting a multi-statement string and running them sequentially within the
-	// same transaction. This is driver behaviour, not a standard database/sql guarantee; if we ever
-	// switch drivers we will need a SQL-aware splitter here.
-	if _, err := tx.Exec(body); err != nil {
+	if err := apply(tx); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("migrate: exec %s: %w", name, err)
-	}
-	if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, name); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("migrate: record %s: %w", name, err)
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("migrate: commit %s: %w", name, err)

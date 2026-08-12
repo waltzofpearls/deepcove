@@ -33,18 +33,18 @@ import (
 //
 //   - ErrNotSupported: the operation isn't implemented by this driver
 //     (e.g. Snapshot on Docker). Treat as a perf-only signal.
-//   - ErrNotFound: the handle doesn't refer to a live sandbox (e.g.
+//   - ErrNotFound: the id doesn't refer to a live sandbox (e.g.
 //     someone destroyed it out of band). Stop/Destroy can treat this
 //     as idempotent success.
 //   - ErrConflict: the operation can't be performed in the current
 //     state (e.g. Start on an already-running sandbox).
 var (
 	ErrNotSupported = errors.New("sandbox: operation not supported by this driver")
-	ErrNotFound     = errors.New("sandbox: handle not found")
+	ErrNotFound     = errors.New("sandbox: not found")
 	ErrConflict     = errors.New("sandbox: lifecycle conflict")
 
 	// ErrUnavailable means the backend itself is unreachable: the Docker daemon isn't running, the
-	// socket is gone, etc. Distinct from ErrNotFound (the daemon is up but the handle/image is
+	// socket is gone, etc. Distinct from ErrNotFound (the backend is up but the sandbox/image is
 	// absent). The session layer maps this to a 503 + actionable "start Docker" guidance instead of
 	// a raw socket error.
 	ErrUnavailable = errors.New("sandbox: backend unavailable")
@@ -125,6 +125,9 @@ type InstanceState string
 const (
 	// InstanceRunning is executing right now and holding memory and CPU.
 	InstanceRunning InstanceState = "running"
+	// InstanceStarting has a start in flight: created, not yet answering. A VM spends its whole boot
+	// here, which is long enough that reporting it as stopped reads as broken.
+	InstanceStarting InstanceState = "starting"
 	// InstanceStopped exists but is not executing. Created-but-never-started lands here too: from the
 	// outside the two are the same, something tracked that is not running.
 	InstanceStopped InstanceState = "stopped"
@@ -136,11 +139,15 @@ const (
 // the session table to produce the view a user reads, so anything already on the session row (name,
 // agent, owner) does not belong here.
 type Instance struct {
-	Handle Handle
-	State  InstanceState
+	ID    ID
+	State InstanceState
 	// Image is the reference the sandbox was built from, for spotting a sandbox left over from an
 	// image you no longer use.
 	Image string
+	// Mounts are the host folders shared into this sandbox, so a view can say what a machine is working
+	// on without joining against a session. Driver managed volumes are left out: their source is a
+	// volume name, which means nothing to a reader.
+	Mounts []Mount
 	// Resources are what the sandbox was actually given, which is not always what was asked for: a VM
 	// rounds CPU up to whole cores, and a zero field means the driver's own default applied.
 	Resources Resources
@@ -148,40 +155,39 @@ type Instance struct {
 	CreatedAt time.Time
 }
 
-// Handle is an opaque, driver-owned reference to a created sandbox. Treat it as a token to pass back
-// into the same driver; do not interpret its contents. Drivers may store side state keyed off the
-// handle internally.
-type Handle string
+// ID is an opaque, driver-owned reference to a created sandbox. Treat it as a token to pass back
+// into the same driver; do not interpret its contents. Drivers may key their own state off it.
+type ID string
 
 // Sandbox is the surface every driver implements. The minimal set covering Docker, Firecracker, and
 // Apple Virtualization.framework.
 type Sandbox interface {
 	// Lifecycle.
-	Create(ctx context.Context, spec SandboxSpec) (Handle, error)
-	Start(ctx context.Context, h Handle) error
-	Stop(ctx context.Context, h Handle) error
-	Destroy(ctx context.Context, h Handle) error
+	Create(ctx context.Context, spec SandboxSpec) (ID, error)
+	Start(ctx context.Context, h ID) error
+	Stop(ctx context.Context, h ID) error
+	Destroy(ctx context.Context, h ID) error
 
 	// Exec runs a command inside an already-Started sandbox. The returned Process is owned by the
 	// caller; call Close on it (or Wait, which closes on completion) to release the underlying
 	// connection.
-	Exec(ctx context.Context, h Handle, cmd ExecSpec) (Process, error)
+	Exec(ctx context.Context, h ID, cmd ExecSpec) (Process, error)
 
 	// Logs returns the sandbox's stdout/stderr stream. Follow=true
 	// keeps the reader open across new writes; closing the reader
 	// is the caller's responsibility.
-	Logs(ctx context.Context, h Handle, opts LogOpts) (io.ReadCloser, error)
+	Logs(ctx context.Context, h ID, opts LogOpts) (io.ReadCloser, error)
 
 	// CopyIn / CopyOut move single paths between host and sandbox.
 	// Behavior on directories is driver-defined (most copy recursively).
-	CopyIn(ctx context.Context, h Handle, src, dst string) error
-	CopyOut(ctx context.Context, h Handle, src, dst string) error
+	CopyIn(ctx context.Context, h ID, src, dst string) error
+	CopyOut(ctx context.Context, h ID, src, dst string) error
 
 	// Snapshot / Restore are optional. Drivers without support
 	// return ErrNotSupported and the session layer falls back to
 	// cold-creating a fresh sandbox.
-	Snapshot(ctx context.Context, h Handle) (SnapshotID, error)
-	Restore(ctx context.Context, h Handle, id SnapshotID) error
+	Snapshot(ctx context.Context, h ID) (SnapshotID, error)
+	Restore(ctx context.Context, h ID, id SnapshotID) error
 
 	// RemoveStorage deletes a named persistent storage primitive (e.g. a Docker volume, a microVM
 	// volume image) by name. Used by the session layer to clean up the agent-home volume when a
@@ -385,6 +391,12 @@ func ValidateSpec(s SandboxSpec, allowedRoots []string) error {
 		}
 	}
 	return nil
+}
+
+// MountSourceAllowed reports whether a host folder may be shared into a sandbox. Exported so the
+// session layer can refuse one up front, by the same rule the drivers enforce at create time.
+func MountSourceAllowed(source string, allowedRoots []string) error {
+	return validateMount(Mount{Source: source, Target: "/mnt", Type: MountBind}, allowedRoots)
 }
 
 func validateMount(m Mount, allowedRoots []string) error {

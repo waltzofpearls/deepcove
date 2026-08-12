@@ -112,7 +112,7 @@ func TestHandlesAreUnique(t *testing.T) {
 func TestUnknownHandleIsNotFound(t *testing.T) {
 	d := newTestDriver(t)
 	ctx := context.Background()
-	const ghost = sandbox.Handle("applevf-does-not-exist")
+	const ghost = sandbox.ID("applevf-does-not-exist")
 
 	if err := d.Start(ctx, ghost); !errors.Is(err, sandbox.ErrNotFound) {
 		t.Errorf("Start error = %v, want ErrNotFound", err)
@@ -224,7 +224,7 @@ func TestImageExistsReflectsTheCache(t *testing.T) {
 // The registry is the only record these VMs have, so listing it is the only way to see them at all.
 func TestListSandboxes(t *testing.T) {
 	d := &Driver{
-		machines: map[sandbox.Handle]*session{
+		machines: map[sandbox.ID]*session{
 			"older": {
 				spec:      sandbox.SandboxSpec{Image: "alpine:3.20"},
 				createdAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
@@ -246,8 +246,8 @@ func TestListSandboxes(t *testing.T) {
 	}
 
 	// Newest first, so a poll does not reshuffle the view and what you just made is at the top.
-	if got[0].Handle != "newer" || got[1].Handle != "older" {
-		t.Errorf("order = %q, %q; want newer, older", got[0].Handle, got[1].Handle)
+	if got[0].ID != "newer" || got[1].ID != "older" {
+		t.Errorf("order = %q, %q; want newer, older", got[0].ID, got[1].ID)
 	}
 	// A booted VM is running; one that was created but never started is not.
 	if got[0].State != sandbox.InstanceRunning {
@@ -455,4 +455,93 @@ func TestHomeMountTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Swap from a previous process is dead weight: those VMs are gone. A session's home disk sitting in the
+// same directory is not, so the sweep has to tell them apart.
+func TestNewSweepsStaleSwapDisks(t *testing.T) {
+	stateDir := t.TempDir()
+	disks := filepath.Join(stateDir, "vm-disks")
+	if err := os.MkdirAll(disks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// New fingerprints the guest init, so both files have to be real.
+	kernel, guestInit := filepath.Join(stateDir, "vmlinux"), filepath.Join(stateDir, "init")
+	for _, f := range []string{kernel, guestInit} {
+		if err := os.WriteFile(f, []byte("stub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	swap := filepath.Join(disks, "swap-applevf-abc123.img")
+	home := filepath.Join(disks, "019ff000-0000-7000-8000-000000000001.img")
+	for _, path := range []string{swap, home} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := New(kernel, guestInit, stateDir); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := os.Stat(swap); !os.IsNotExist(err) {
+		t.Errorf("swap disk survived: %v", err)
+	}
+	if _, err := os.Stat(home); err != nil {
+		t.Errorf("home disk was removed: %v", err)
+	}
+}
+
+// The agent's home is a driver managed volume, whose source is a name rather than a path. Reporting it
+// as a mount would put a meaningless string in front of the user.
+func TestHostMountsDropsVolumes(t *testing.T) {
+	got := hostMounts([]sandbox.Mount{
+		{Source: "deepcove-agent-claude-home", Target: "/root", Type: sandbox.MountVolume},
+		{Source: "/Users/rollie/Dev", Target: "/workspace", Type: sandbox.MountBind},
+	})
+	if len(got) != 1 || got[0].Source != "/Users/rollie/Dev" {
+		t.Errorf("got %+v, want only the host folder", got)
+	}
+}
+
+// A VM spends its whole boot between Create and answering. Reporting that as stopped made a machine
+// look broken for the seconds it takes to come up.
+func TestListReportsAStartingVM(t *testing.T) {
+	d := newTestDriver(t)
+	h, err := d.Create(context.Background(), sandbox.SandboxSpec{
+		Image: "ghcr.io/x/agent:latest",
+		Cmd:   []string{"sh", "-c", "true"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := stateOf(t, d, h); got != sandbox.InstanceStopped {
+		t.Errorf("before Start: %q, want stopped", got)
+	}
+
+	// Set by hand: booting a real VM is what this test cannot do, and the flag is the whole point.
+	d.mu.Lock()
+	d.machines[h].starting = true
+	d.mu.Unlock()
+
+	if got := stateOf(t, d, h); got != sandbox.InstanceStarting {
+		t.Errorf("while starting: %q, want starting", got)
+	}
+}
+
+func stateOf(t *testing.T, d *Driver, h sandbox.ID) sandbox.InstanceState {
+	t.Helper()
+	instances, err := d.ListSandboxes(context.Background())
+	if err != nil {
+		t.Fatalf("ListSandboxes: %v", err)
+	}
+	for _, inst := range instances {
+		if inst.ID == h {
+			return inst.State
+		}
+	}
+	t.Fatalf("sandbox %q not listed", h)
+	return ""
 }

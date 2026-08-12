@@ -70,9 +70,9 @@ func watchCredentials(cfg Config) {
 		time.Sleep(credentialPollInterval)
 
 		files, err := readCredentialFiles()
-		if err != nil || len(files) == 0 {
-			// Nothing stored yet, or unreadable. Never push an empty bundle: it would wipe a good login
-			// on the host just because this VM has not logged in.
+		if err != nil || !bundleHasLogin(files) {
+			// No login here to share. Never push one: it would wipe a good login on the host, and a
+			// logout in one session is not a logout everywhere.
 			continue
 		}
 		sum := fingerprint(files)
@@ -120,7 +120,7 @@ func returnCredentials(cfg Config) error {
 		return nil
 	}
 	files, err := readCredentialFiles()
-	if err != nil || len(files) == 0 {
+	if err != nil || !bundleHasLogin(files) {
 		return err
 	}
 	if err := pushCredentials(cfg.Agent, files); err != nil {

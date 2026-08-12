@@ -8,9 +8,9 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// Restarting deepcove destroys every VM while its session rows survive saying "running". Reconcile is what
+// Restarting deepcove destroys every VM while its session rows survive saying "running". MarkLostSessions is what
 // makes the table tell the truth again, so the session page stops waiting on a sandbox that cannot answer.
-func TestReconcileMarksSessionsWhoseSandboxIsGone(t *testing.T) {
+func TestMarkLostSessionsMarksSessionsWhoseSandboxIsGone(t *testing.T) {
 	svc, lister := newListerService(t)
 	ctx := context.Background()
 
@@ -20,8 +20,8 @@ func TestReconcileMarksSessionsWhoseSandboxIsGone(t *testing.T) {
 	}
 	lister.instances = nil // what a restart looks like to a VM runtime
 
-	if _, err := svc.Reconcile(ctx); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if _, err := svc.MarkLostSessions(ctx); err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
 	}
 
 	got, err := svc.Get(ctx, sess.ID)
@@ -34,18 +34,18 @@ func TestReconcileMarksSessionsWhoseSandboxIsGone(t *testing.T) {
 }
 
 // A session whose sandbox is still there must be left alone, or a restart would stop everything.
-func TestReconcileLeavesLiveSessionsRunning(t *testing.T) {
+func TestMarkLostSessionsLeavesLiveSessionsRunning(t *testing.T) {
 	svc, lister := newListerService(t)
 	ctx := context.Background()
 
 	sess := mustCreate(t, svc, "claude")
 	lister.instances = []sandbox.Instance{{
-		Handle: sandbox.Handle(sess.ContainerID),
-		State:  sandbox.InstanceRunning,
+		ID:    sandbox.ID(sess.SandboxID),
+		State: sandbox.InstanceRunning,
 	}}
 
-	if _, err := svc.Reconcile(ctx); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if _, err := svc.MarkLostSessions(ctx); err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
 	}
 
 	got, err := svc.Get(ctx, sess.ID)
@@ -59,14 +59,14 @@ func TestReconcileLeavesLiveSessionsRunning(t *testing.T) {
 
 // "The driver cannot enumerate" is not "the sandbox is gone". Acting on a runtime that cannot list would
 // stop sessions that are running perfectly well, which is worse than a stale row.
-func TestReconcileSkipsRuntimesThatCannotList(t *testing.T) {
+func TestMarkLostSessionsSkipsRuntimesThatCannotList(t *testing.T) {
 	svc, _, _, _ := newTestService(t) // plain fake, no Lister
 	ctx := context.Background()
 
 	sess := mustCreate(t, svc, "claude")
 
-	if _, err := svc.Reconcile(ctx); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if _, err := svc.MarkLostSessions(ctx); err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
 	}
 
 	got, err := svc.Get(ctx, sess.ID)
@@ -78,20 +78,20 @@ func TestReconcileSkipsRuntimesThatCannotList(t *testing.T) {
 	}
 }
 
-// Reconcile only reports the truth. Start is what makes the session usable again, by building a new
+// MarkLostSessions only reports the truth. Start is what makes the session usable again, by building a new
 // sandbox instead of failing forever on a handle no driver has ever heard of.
 func TestStartRebuildsAVanishedSandbox(t *testing.T) {
 	svc, lister := newListerService(t)
 	ctx := context.Background()
 
 	sess := mustCreate(t, svc, "claude")
-	oldHandle := sess.ContainerID
+	oldHandle := sess.SandboxID
 
-	// Simulate the restart: the driver forgets everything, and the row is reconciled to stopped.
+	// Simulate the restart: the driver forgets everything, and the row is marked stopped.
 	lister.forget()
 	lister.instances = nil
-	if _, err := svc.Reconcile(ctx); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if _, err := svc.MarkLostSessions(ctx); err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
 	}
 
 	if err := svc.Start(ctx, sess.ID); err != nil {
@@ -105,8 +105,8 @@ func TestStartRebuildsAVanishedSandbox(t *testing.T) {
 	if got.Status != StatusRunning {
 		t.Errorf("status = %q, want running", got.Status)
 	}
-	if got.ContainerID == "" || got.ContainerID == oldHandle {
-		t.Errorf("container id = %q; want a NEW handle, not the dead %q", got.ContainerID, oldHandle)
+	if got.SandboxID == "" || got.SandboxID == oldHandle {
+		t.Errorf("container id = %q; want a NEW handle, not the dead %q", got.SandboxID, oldHandle)
 	}
 	// The row itself has to survive: losing the id or name would make this a delete-and-recreate, which is
 	// exactly the manual step being removed.
@@ -125,7 +125,7 @@ func TestStartDoesNotRebuildOnARealStartFailure(t *testing.T) {
 	if err := svc.Stop(ctx, sess.ID); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	lister.instances = []sandbox.Instance{{Handle: sandbox.Handle(sess.ContainerID)}}
+	lister.instances = []sandbox.Instance{{ID: sandbox.ID(sess.SandboxID)}}
 	lister.startErr = errors.New("the daemon refused to start it")
 
 	if err := svc.Start(ctx, sess.ID); err == nil {
@@ -136,8 +136,8 @@ func TestStartDoesNotRebuildOnARealStartFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.ContainerID != sess.ContainerID {
-		t.Errorf("container id changed to %q; a real start failure must not rebuild", got.ContainerID)
+	if got.SandboxID != sess.SandboxID {
+		t.Errorf("container id changed to %q; a real start failure must not rebuild", got.SandboxID)
 	}
 }
 
@@ -147,16 +147,16 @@ func TestRestartSessionsBringsBackWhatWasRunning(t *testing.T) {
 	ctx := context.Background()
 
 	sess := mustCreate(t, svc, "claude")
-	oldHandle := sess.ContainerID
+	oldHandle := sess.SandboxID
 
-	// The restart: the driver forgets every VM, the table is reconciled to the truth.
+	// The restart: the driver forgets every VM, and the table is brought back to the truth.
 	lister.forget()
-	lost, err := svc.Reconcile(ctx)
+	lost, err := svc.MarkLostSessions(ctx)
 	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
+		t.Fatalf("MarkLostSessions: %v", err)
 	}
 	if len(lost) != 1 {
-		t.Fatalf("Reconcile returned %d lost sessions, want 1", len(lost))
+		t.Fatalf("MarkLostSessions returned %d lost sessions, want 1", len(lost))
 	}
 
 	svc.RestartSessions(ctx, lost)
@@ -168,7 +168,7 @@ func TestRestartSessionsBringsBackWhatWasRunning(t *testing.T) {
 	if got.Status != StatusRunning {
 		t.Errorf("status = %q, want running", got.Status)
 	}
-	if got.ContainerID == oldHandle {
+	if got.SandboxID == oldHandle {
 		t.Errorf("container id is still the dead %q, want a rebuilt one", oldHandle)
 	}
 }
@@ -181,9 +181,9 @@ func TestRestartSessionsContinuesPastAFailure(t *testing.T) {
 	first := mustCreate(t, svc, "claude")
 	second := mustCreate(t, svc, "claude")
 	lister.forget()
-	lost, err := svc.Reconcile(ctx)
+	lost, err := svc.MarkLostSessions(ctx)
 	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
+		t.Fatalf("MarkLostSessions: %v", err)
 	}
 	lister.createErr = errors.New("no capacity")
 
@@ -197,5 +197,82 @@ func TestRestartSessionsContinuesPastAFailure(t *testing.T) {
 		if got.Status != StatusStopped {
 			t.Errorf("session %s status = %q, want stopped after a failed restart", id, got.Status)
 		}
+	}
+}
+
+// Sessions that shared a machine must come back sharing one machine. Restarting each on its own would
+// quietly turn one workspace VM into a VM per session, which is the memory blowup the sharing avoids.
+func TestRestartSessionsRejoinsTheWorkspaceVM(t *testing.T) {
+	svc, lister := workspaceService(t)
+	ctx := context.Background()
+
+	first := onWorkspace(t, svc, "first", "")
+	second := onWorkspace(t, svc, "second", "second")
+	oldSandbox := first.SandboxID
+
+	lister.forget() // the restart: every VM is gone
+	lost, err := svc.MarkLostSessions(ctx)
+	if err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
+	}
+	if len(lost) != 2 {
+		t.Fatalf("got %d lost sessions, want 2", len(lost))
+	}
+
+	built := len(lister.created)
+	svc.RestartSessions(ctx, lost)
+
+	if got := len(lister.created) - built; got != 1 {
+		t.Errorf("built %d machines for two sessions sharing one, want 1", got)
+	}
+	back := make([]*Session, 0, 2)
+	for _, id := range []string{first.ID, second.ID} {
+		sess, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		back = append(back, sess)
+	}
+	if back[0].SandboxID != back[1].SandboxID {
+		t.Errorf("sessions landed on different machines: %q and %q", back[0].SandboxID, back[1].SandboxID)
+	}
+	if back[0].SandboxID == oldSandbox {
+		t.Error("still pointing at the sandbox that is gone")
+	}
+	for _, sess := range back {
+		if sess.Status != StatusRunning {
+			t.Errorf("session %s: status %q, want running", sess.ID, sess.Status)
+		}
+	}
+}
+
+// A rebuild has to update the Session the caller is holding, not only the row. Start hands that value
+// to the background agent launch, so a stale handle there means a session that never gets an agent.
+func TestRebuildUpdatesTheSessionItWasGiven(t *testing.T) {
+	svc, lister := newListerService(t)
+	ctx := context.Background()
+
+	sess := mustCreate(t, svc, "claude")
+	old := sess.SandboxID
+
+	lister.forget()
+	lister.instances = nil
+	if _, err := svc.MarkLostSessions(ctx); err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
+	}
+
+	runtime, err := svc.runtimeFor(sess)
+	if err != nil {
+		t.Fatalf("runtimeFor: %v", err)
+	}
+	handle, err := svc.rebuildSandbox(ctx, sess, runtime)
+	if err != nil {
+		t.Fatalf("rebuildSandbox: %v", err)
+	}
+	if sess.SandboxID != string(handle) {
+		t.Errorf("session still points at %q, want the new %q", sess.SandboxID, handle)
+	}
+	if sess.SandboxID == old {
+		t.Error("session still points at the sandbox that is gone")
 	}
 }

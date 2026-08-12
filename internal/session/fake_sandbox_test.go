@@ -19,10 +19,10 @@ import (
 type fakeSandbox struct {
 	mu sync.Mutex
 
-	created   map[sandbox.Handle]sandbox.SandboxSpec
-	started   map[sandbox.Handle]bool
-	stopped   map[sandbox.Handle]bool
-	destroyed map[sandbox.Handle]bool
+	created   map[sandbox.ID]sandbox.SandboxSpec
+	started   map[sandbox.ID]bool
+	stopped   map[sandbox.ID]bool
+	destroyed map[sandbox.ID]bool
 
 	// Calls tracks the order of lifecycle operations for tests that
 	// care about the sequence (e.g. rollback ordering).
@@ -70,10 +70,10 @@ type execResponse struct {
 
 func newFakeSandbox() *fakeSandbox {
 	return &fakeSandbox{
-		created:   map[sandbox.Handle]sandbox.SandboxSpec{},
-		started:   map[sandbox.Handle]bool{},
-		stopped:   map[sandbox.Handle]bool{},
-		destroyed: map[sandbox.Handle]bool{},
+		created:   map[sandbox.ID]sandbox.SandboxSpec{},
+		started:   map[sandbox.ID]bool{},
+		stopped:   map[sandbox.ID]bool{},
+		destroyed: map[sandbox.ID]bool{},
 	}
 }
 
@@ -93,7 +93,7 @@ func (f *fakeSandbox) Ping(ctx context.Context) (string, error) {
 	return f.pingVersion, nil
 }
 
-func (f *fakeSandbox) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.Handle, error) {
+func (f *fakeSandbox) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.ID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "Create")
@@ -101,12 +101,12 @@ func (f *fakeSandbox) Create(ctx context.Context, spec sandbox.SandboxSpec) (san
 	if f.createErr != nil {
 		return "", f.createErr
 	}
-	h := sandbox.Handle(uuid.NewString())
+	h := sandbox.ID(uuid.NewString())
 	f.created[h] = spec
 	return h, nil
 }
 
-func (f *fakeSandbox) Start(ctx context.Context, h sandbox.Handle) error {
+func (f *fakeSandbox) Start(ctx context.Context, h sandbox.ID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "Start")
@@ -120,7 +120,7 @@ func (f *fakeSandbox) Start(ctx context.Context, h sandbox.Handle) error {
 	return nil
 }
 
-func (f *fakeSandbox) Stop(ctx context.Context, h sandbox.Handle) error {
+func (f *fakeSandbox) Stop(ctx context.Context, h sandbox.ID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "Stop")
@@ -135,7 +135,7 @@ func (f *fakeSandbox) Stop(ctx context.Context, h sandbox.Handle) error {
 	return nil
 }
 
-func (f *fakeSandbox) Destroy(ctx context.Context, h sandbox.Handle) error {
+func (f *fakeSandbox) Destroy(ctx context.Context, h sandbox.ID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "Destroy")
@@ -152,11 +152,17 @@ func (f *fakeSandbox) Destroy(ctx context.Context, h sandbox.Handle) error {
 	return nil
 }
 
-func (f *fakeSandbox) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpec) (sandbox.Process, error) {
+func (f *fakeSandbox) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSpec) (sandbox.Process, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.execCalls = append(f.execCalls, append([]string(nil), cmd.Cmd...))
 	if len(f.execResponses) == 0 {
+		// Creating a session now also starts its agent, three tmux calls that almost no test is about.
+		// Answer those when nothing is scripted, so a test only scripts what it actually asserts on.
+		// Everything else still fails loudly, which is what catches an exec nobody expected.
+		if isAgentStartCmd(cmd.Cmd) {
+			return newScriptedProcess("", "", 0), nil
+		}
 		return nil, errors.New("fakeSandbox: Exec called with no scripted response left (cmd=" + strings.Join(cmd.Cmd, " ") + ")")
 	}
 	resp := f.execResponses[0]
@@ -198,23 +204,23 @@ type nopWriteCloser struct{}
 func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
 
-func (f *fakeSandbox) Logs(ctx context.Context, h sandbox.Handle, opts sandbox.LogOpts) (io.ReadCloser, error) {
+func (f *fakeSandbox) Logs(ctx context.Context, h sandbox.ID, opts sandbox.LogOpts) (io.ReadCloser, error) {
 	return nil, sandbox.ErrNotSupported
 }
 
-func (f *fakeSandbox) CopyIn(ctx context.Context, h sandbox.Handle, src, dst string) error {
+func (f *fakeSandbox) CopyIn(ctx context.Context, h sandbox.ID, src, dst string) error {
 	return sandbox.ErrNotSupported
 }
 
-func (f *fakeSandbox) CopyOut(ctx context.Context, h sandbox.Handle, src, dst string) error {
+func (f *fakeSandbox) CopyOut(ctx context.Context, h sandbox.ID, src, dst string) error {
 	return sandbox.ErrNotSupported
 }
 
-func (f *fakeSandbox) Snapshot(ctx context.Context, h sandbox.Handle) (sandbox.SnapshotID, error) {
+func (f *fakeSandbox) Snapshot(ctx context.Context, h sandbox.ID) (sandbox.SnapshotID, error) {
 	return "", sandbox.ErrNotSupported
 }
 
-func (f *fakeSandbox) Restore(ctx context.Context, h sandbox.Handle, id sandbox.SnapshotID) error {
+func (f *fakeSandbox) Restore(ctx context.Context, h sandbox.ID, id sandbox.SnapshotID) error {
 	return sandbox.ErrNotSupported
 }
 
@@ -256,4 +262,16 @@ func (f *fakeSandbox) callSequence() string {
 func pathExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// isAgentStartCmd reports whether cmd is one of the tmux calls startAgentSession makes.
+func isAgentStartCmd(cmd []string) bool {
+	if len(cmd) < 2 || cmd[0] != "tmux" {
+		return false
+	}
+	switch cmd[1] {
+	case "has-session", "new-session", "set-option":
+		return true
+	}
+	return false
 }

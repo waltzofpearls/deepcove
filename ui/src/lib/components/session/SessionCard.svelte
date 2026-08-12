@@ -9,6 +9,7 @@
   import { createConverter, CARD_FONT_SIZE } from './ansiToHtml';
   import StatusIndicator from './StatusIndicator.svelte';
   import SessionTags from './SessionTags.svelte';
+  import SessionInfoDialog from './SessionInfoDialog.svelte';
   import {
     DropdownMenu,
     DropdownMenuTrigger,
@@ -40,6 +41,7 @@
   import Globe from '@lucide/svelte/icons/globe';
   import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
   import Loader2 from '@lucide/svelte/icons/loader-2';
+  import Info from '@lucide/svelte/icons/info';
   import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
@@ -147,6 +149,7 @@
   // Destroy removes the card right away (the doomed session's preview
   // would otherwise 404 until the next tick).
   let destroyOpen = $state(false);
+  let infoOpen = $state(false);
 
   async function doStop() {
     sessions.patch(session.id, { status: 'stopped' });
@@ -306,6 +309,10 @@
                 Start
               </DropdownMenuItem>
             {/if}
+            <DropdownMenuItem onclick={() => (infoOpen = true)}>
+              <Info class="size-4" />
+              Session info
+            </DropdownMenuItem>
             <DropdownMenuItem onclick={openRename}>
               <Pencil class="size-4" />
               Rename
@@ -324,6 +331,8 @@
     </div>
   </div>
 </div>
+
+<SessionInfoDialog bind:open={infoOpen} {session} />
 
 <AlertDialog bind:open={destroyOpen}>
   <AlertDialogContent>

@@ -130,7 +130,7 @@ func (s *Service) fetchLivePreview(ctx context.Context, sess *Session) *PreviewR
 	defer cancel()
 
 	ansi, ok := s.execCapture(execCtx, sess,
-		[]string{"tmux", "capture-pane", "-p", "-e", "-t", "main"})
+		[]string{"tmux", "capture-pane", "-p", "-e", "-t", tmuxSessionName(sess.ID)})
 	if !ok || len(ansi) == 0 {
 		return nil
 	}
@@ -142,24 +142,24 @@ func (s *Service) execCapture(ctx context.Context, sess *Session, cmd []string) 
 	if err != nil {
 		return nil, false
 	}
-	proc, err := runtime.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
+	proc, err := runtime.Exec(ctx, sandbox.ID(sess.SandboxID), sandbox.ExecSpec{
 		Cmd: cmd,
 		Tty: false,
 	})
 	if err != nil {
-		s.logger.Debug("preview: exec failed", "container", sess.ContainerID, "cmd", cmd[0], "err", err)
+		s.logger.Debug("preview: exec failed", "sandbox", sess.SandboxID, "cmd", cmd[0], "err", err)
 		return nil, false
 	}
 	defer func() { _ = proc.Close() }()
 
 	out, err := io.ReadAll(proc.Stdout())
 	if err != nil {
-		s.logger.Debug("preview: stdout read failed", "container", sess.ContainerID, "err", err)
+		s.logger.Debug("preview: stdout read failed", "sandbox", sess.SandboxID, "err", err)
 		return nil, false
 	}
 	if exit, werr := proc.Wait(ctx); werr != nil || exit != 0 {
 		s.logger.Debug("preview: non-zero exit",
-			"container", sess.ContainerID, "cmd", cmd[0], "exit", exit, "err", werr)
+			"sandbox", sess.SandboxID, "cmd", cmd[0], "exit", exit, "err", werr)
 		return nil, false
 	}
 	return out, true

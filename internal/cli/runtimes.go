@@ -58,6 +58,9 @@ func (rs *runtimeSet) close() {
 // afterwards by the caller, from the session package's preference order.
 func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker.Store, logger *slog.Logger) (*runtimeSet, error) {
 	roots := allowedMountRoots()
+	// The service checks a workspace VM's folder against the same list, so a folder it may not share is
+	// refused when you pick it rather than when the machine is built.
+	svc.SetAllowedMountRoots(roots)
 	container, err := newContainerRuntime(cfg, roots)
 	if err != nil {
 		return nil, err

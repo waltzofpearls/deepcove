@@ -46,12 +46,9 @@ type SessionRepository interface {
 	// Rename sets the session's display name and bumps updated_at.
 	Rename(ctx context.Context, owner, id, name string, now time.Time) error
 
-	// UpdateMountsAndContainer replaces the mounts JSON and
-	// container_id on a session, and bumps updated_at. Used by
-	// Service.EditMounts after the recreate-with-new-spec flow:
-	// the container instance changes, but the session row
-	// (especially the id and name) is preserved.
-	UpdateMountsAndContainer(ctx context.Context, owner, id string, mounts []MountRequest, containerID string, now time.Time) error
+	// UpdateMountsAndSandbox replaces the mounts JSON and sandbox id on a session, and bumps
+	// updated_at. The sandbox changes; the row, above all its id and name, is preserved.
+	UpdateMountsAndSandbox(ctx context.Context, owner, id string, mounts []MountRequest, sandboxID string, now time.Time) error
 
 	// Delete removes the session row.
 	Delete(ctx context.Context, owner, id string) error
@@ -100,11 +97,12 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 		return fmt.Errorf("session: marshal resources: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources, container_id, created_at, updated_at, last_activity_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources, sandbox_id, on_workspace_vm, work_dir, created_at, updated_at, last_activity_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
-		string(sess.Status), string(mountsJSON), string(envJSON), sess.SetupScript, sess.Runtime, string(resourcesJSON), sess.ContainerID,
+		string(sess.Status), string(mountsJSON), string(envJSON), sess.SetupScript, sess.Runtime, string(resourcesJSON), sess.SandboxID,
+		sess.OnWorkspaceVM, sess.WorkDir,
 		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
 	)
 	if err != nil {
@@ -116,7 +114,7 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*Session, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources,
-		       container_id, created_at, updated_at, last_activity_at
+		       sandbox_id, on_workspace_vm, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, owner)
 	sess, err := scanRow(row)
@@ -132,7 +130,7 @@ func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*S
 func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includeAll bool) ([]*Session, error) {
 	query := `
 		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources,
-		       container_id, created_at, updated_at, last_activity_at
+		       sandbox_id, on_workspace_vm, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
 	`
@@ -204,9 +202,9 @@ func (r *duckdbSessionRepository) Rename(ctx context.Context, owner, id, name st
 	return rowsAffectedOrNotFound(res)
 }
 
-func (r *duckdbSessionRepository) UpdateMountsAndContainer(
+func (r *duckdbSessionRepository) UpdateMountsAndSandbox(
 	ctx context.Context, owner, id string,
-	mounts []MountRequest, containerID string, now time.Time,
+	mounts []MountRequest, sandboxID string, now time.Time,
 ) error {
 	if mounts == nil {
 		mounts = []MountRequest{}
@@ -216,9 +214,9 @@ func (r *duckdbSessionRepository) UpdateMountsAndContainer(
 		return fmt.Errorf("session: marshal mounts: %w", err)
 	}
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE sessions SET mounts = ?, container_id = ?, updated_at = ?
+		`UPDATE sessions SET mounts = ?, sandbox_id = ?, updated_at = ?
 		 WHERE id = ? AND owner_email = ?`,
-		string(mountsJSON), containerID, now, id, owner)
+		string(mountsJSON), sandboxID, now, id, owner)
 	if err != nil {
 		return fmt.Errorf("session: update mounts: %w", err)
 	}
@@ -263,13 +261,16 @@ func scanRow(r rowScanner) (*Session, error) {
 		setupScript    sql.NullString
 		runtime        sql.NullString
 		resourcesJSON  sql.NullString
-		containerID    sql.NullString
+		sandboxID      sql.NullString
+		onWorkspaceVM  sql.NullBool
+		workDir        sql.NullString
 		status         string
 		lastActivityAt sql.NullTime
 	)
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &mountsJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &containerID,
+		&status, &mountsJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &sandboxID,
+		&onWorkspaceVM, &workDir,
 		&sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
 		return nil, err
@@ -298,8 +299,12 @@ func scanRow(r rowScanner) (*Session, error) {
 		sess.LastActivityAt = sess.CreatedAt
 	}
 	sess.Status = Status(status)
-	if containerID.Valid {
-		sess.ContainerID = containerID.String
+	if sandboxID.Valid {
+		sess.SandboxID = sandboxID.String
+	}
+	sess.OnWorkspaceVM = onWorkspaceVM.Valid && onWorkspaceVM.Bool
+	if workDir.Valid {
+		sess.WorkDir = workDir.String
 	}
 	if envJSON.Valid && strings.TrimSpace(envJSON.String) != "" && envJSON.String != "null" {
 		if err := json.Unmarshal([]byte(envJSON.String), &sess.Env); err != nil {

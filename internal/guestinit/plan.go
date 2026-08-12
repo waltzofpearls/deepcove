@@ -10,6 +10,7 @@
 package guestinit
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
 	"syscall"
@@ -140,9 +141,34 @@ const agentHome = "/root"
 // happened to leave in its home directory.
 func credentialPaths() []string {
 	return []string{
-		".claude/.credentials.json",
+		credentialFile,
 		".claude.json",
 	}
+}
+
+// credentialFile holds the login itself, as opposed to the settings alongside it.
+const credentialFile = ".claude/.credentials.json"
+
+// bundleHasLogin reports whether a bundle is worth sending to the host.
+//
+// A logged out Claude leaves the credentials file in place with empty tokens, so "the file exists" is
+// not enough: pushing that replaces a good login on the host, and every session created afterwards
+// starts logged out. Claude specific, like credentialPaths above.
+func bundleHasLogin(files map[string][]byte) bool {
+	data, ok := files[credentialFile]
+	if !ok {
+		return false
+	}
+	var creds struct {
+		OAuth struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return false
+	}
+	return creds.OAuth.AccessToken != "" || creds.OAuth.RefreshToken != ""
 }
 
 // tmpfsSizeOption renders the mount option that caps a tmpfs, or "" to leave it at the default. The

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -53,6 +54,9 @@ func agentHomeVolumeName(agentName string) string {
 // HTTP handlers map this to 400. The wrapped error message tells the
 // caller which mount and why.
 var ErrMountInvalid = errors.New("session: mount invalid")
+
+// ErrInvalidInput is a user error rather than a failure. HTTP handlers map it to 400.
+var ErrInvalidInput = errors.New("session: invalid input")
 
 // placeholderOwner is the owner_email recorded for new sessions until
 // the identity layer (tsnet WhoIs middleware, first-run owner
@@ -117,6 +121,22 @@ type Service struct {
 		wg      sync.WaitGroup
 	}
 
+	// background runs work that outlives the request that started it, like waiting for a machine to
+	// finish setting up. A field so tests can run it synchronously instead of racing it.
+	background func(func())
+
+	// workspaceVM persists the shared machine. nil on a node that never wires one, where every session
+	// gets a sandbox of its own.
+	workspaceVM WorkspaceVMStore
+	// workspaceMu serialises building the shared machine, so concurrent creates get one VM.
+	workspaceMu sync.Mutex
+	// allowedMountRoots bounds which host folders may be shared into a sandbox. Empty means the service
+	// does not check, and the driver still does.
+	allowedMountRoots []string
+	// dataDir is where this node keeps its state. Used to size a workspace VM against the volume its
+	// disks will land on; empty falls back to the home directory.
+	dataDir string
+
 	// Sessions with a start in flight, for StatusStarting.
 	starting struct {
 		mu  sync.Mutex
@@ -137,6 +157,7 @@ func NewService(repo SessionRepository, logger *slog.Logger) *Service {
 		logger:       logger,
 		runtimes:     map[string]sandbox.Sandbox{},
 		previewCache: newPreviewCache(previewCacheMaxEntries),
+		background:   func(f func()) { go f() },
 	}
 }
 
@@ -190,16 +211,22 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		LastActivityAt: now,
 	}
 	if sess.Name == "" {
-		sess.Name = generateName(req.Agent)
+		sess.Name = s.generateUniqueName(ctx, req.Agent)
 	}
 
 	// Resolve the runtime before anything is created, so an unavailable one fails cleanly instead of
 	// leaving a half built session behind.
-	sess.Runtime = req.Runtime
-	if sess.Runtime == "" {
-		sess.Runtime = s.defaultRuntime
+	// A session on the shared machine runs on the machine's runtime, so that is the one to check for
+	// availability below. Reading the record builds nothing; it just says which runtime that will be.
+	sess.Runtime = cmp.Or(req.Runtime, s.defaultRuntime)
+	if req.OnWorkspaceVM {
+		vm, err := s.WorkspaceVM(ctx)
+		if err != nil {
+			return nil, err
+		}
+		sess.Runtime = vm.Runtime
 	}
-	runtime, err := s.runtimeNamed(sess.Runtime)
+	runtime, err := s.runtimeByName(sess.Runtime)
 	if err != nil {
 		return nil, err
 	}
@@ -209,25 +236,34 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		return nil, ErrRuntimeUnavailable{Runtime: sess.Runtime, Reason: reason}
 	}
 
-	spec := s.buildSandboxSpec(sess, agent, userMounts)
+	if req.OnWorkspaceVM {
+		if err := s.joinWorkspaceVM(ctx, sess, req); err != nil {
+			return nil, err
+		}
+	} else {
+		sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userMounts))
+		if err != nil {
+			return nil, fmt.Errorf("session: create sandbox: %w", err)
+		}
+		sess.SandboxID = string(sandboxID)
 
-	handle, err := runtime.Create(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("session: create sandbox: %w", err)
-	}
-	sess.ContainerID = string(handle)
-
-	if err := runtime.Start(ctx, handle); err != nil {
-		_ = runtime.Destroy(context.Background(), handle)
-		return nil, fmt.Errorf("session: start sandbox: %w", err)
+		if err := runtime.Start(ctx, sandboxID); err != nil {
+			_ = runtime.Destroy(context.Background(), sandboxID)
+			return nil, fmt.Errorf("session: start sandbox: %w", err)
+		}
 	}
 	sess.Status = StatusRunning
 
 	if err := s.repo.Insert(ctx, sess); err != nil {
-		_ = runtime.Stop(context.Background(), handle)
-		_ = runtime.Destroy(context.Background(), handle)
+		// The shared machine is not this session's to tear down.
+		if !sess.OnWorkspaceVM {
+			sandboxID := sandbox.ID(sess.SandboxID)
+			_ = runtime.Stop(context.Background(), sandboxID)
+			_ = runtime.Destroy(context.Background(), sandboxID)
+		}
 		return nil, fmt.Errorf("session: insert row: %w", err)
 	}
+	s.background(func() { s.ensureAgentAfterSetup(sess, sessionWorkdir(sess)) })
 
 	s.logger.Info("session created", "id", sess.ID, "name", sess.Name, "agent", sess.Agent)
 	return sess, nil
@@ -345,11 +381,29 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := runtime.Start(ctx, sandbox.Handle(sess.ContainerID)); err != nil {
+	userMounts, err := validateMountRequests(sess.Mounts)
+	if err != nil {
+		return err
+	}
+	if sess.OnWorkspaceVM {
+		return s.startOnWorkspaceVM(ctx, sess)
+	}
+	if s.sandboxRunning(ctx, sess) {
+		if err := s.repo.MarkRunning(ctx, placeholderOwner, id, time.Now().UTC()); err != nil {
+			return fmt.Errorf("session: mark running: %w", err)
+		}
+		// Same wait as a fresh machine: running means the VM answers, not that setup has finished, and
+		// tmux exists only once it has.
+		s.background(func() { s.ensureAgentAfterSetup(sess, workdirFor(userMounts)) })
+		s.logger.Info("session started on a running machine", "id", id, "name", sess.Name)
+		return nil
+	}
+
+	if err := runtime.Start(ctx, sandbox.ID(sess.SandboxID)); err != nil {
 		// The sandbox this row points at is gone: a container removed out of band with `docker rm`, or,
 		// far more routinely, a VM that died when deepcove restarted, since that runtime's registry only
 		// ever lived in memory. Build a new one rather than leaving the session permanently unstartable.
-		if !sandboxVanished(err, sess.ContainerID) {
+		if !sandboxVanished(err, sess.SandboxID) {
 			return fmt.Errorf("session: sandbox start: %w", err)
 		}
 		if _, rerr := s.rebuildSandbox(ctx, sess, runtime); rerr != nil {
@@ -359,6 +413,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err := s.repo.MarkRunning(ctx, placeholderOwner, id, time.Now().UTC()); err != nil {
 		return fmt.Errorf("session: mark running: %w", err)
 	}
+	s.background(func() { s.ensureAgentAfterSetup(sess, workdirFor(userMounts)) })
 	s.logger.Info("session started", "id", id, "name", sess.Name)
 	return nil
 }
@@ -380,7 +435,10 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := runtime.Stop(ctx, sandbox.Handle(sess.ContainerID)); err != nil {
+	if sess.OnWorkspaceVM || s.sandboxIsShared(ctx, sess) {
+		// Others are using this machine, so end the session's agent and leave the machine up.
+		_, _ = s.execTmux(ctx, sess, "kill-session", "-t", tmuxSessionName(sess.ID))
+	} else if err := runtime.Stop(ctx, sandbox.ID(sess.SandboxID)); err != nil {
 		// If the sandbox is already gone, finish the transition anyway.
 		if !errors.Is(err, sandbox.ErrNotFound) {
 			return fmt.Errorf("session: sandbox stop: %w", err)
@@ -402,19 +460,20 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	handle := sandbox.Handle(sess.ContainerID)
+	handle := sandbox.ID(sess.SandboxID)
 	runtime, err := s.runtimeFor(sess)
 	if err != nil {
 		return err
 	}
-	// Best-effort sandbox teardown: if the daemon already lost the container, we still want to clear
-	// our row.
-	if err := runtime.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+	if sess.OnWorkspaceVM || s.sandboxIsShared(ctx, sess) {
+		// Others are using this machine, so take the session off it rather than deleting it.
+		_, _ = s.execTmux(ctx, sess, "kill-session", "-t", tmuxSessionName(sess.ID))
+	} else if err := runtime.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+		// Best-effort teardown: if the daemon already lost the sandbox, we still want to clear our row.
 		return fmt.Errorf("session: sandbox destroy: %w", err)
 	}
-	// Storage the runtime keeps for this session goes with it. The container runtime's agent-home volume
-	// is shared between sessions and stays; the VM runtime's home disk belongs to this session alone.
-	if err := runtime.RemoveStorage(ctx, sess.ID); err != nil &&
+	// A session on the shared machine has no storage of its own; the machine owns it.
+	if err := runtime.RemoveStorage(ctx, sess.ID); !sess.OnWorkspaceVM && err != nil &&
 		!errors.Is(err, sandbox.ErrNotSupported) && !errors.Is(err, sandbox.ErrNotFound) {
 		s.logger.Warn("could not remove session storage", "id", id, "err", err)
 	}
@@ -447,7 +506,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 		return nil, err
 	}
 
-	oldHandle := sandbox.Handle(sess.ContainerID)
+	oldHandle := sandbox.ID(sess.SandboxID)
 	wasRunning := sess.Status == StatusRunning
 
 	if wasRunning {
@@ -481,7 +540,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	}
 
 	now := time.Now().UTC()
-	if err := s.repo.UpdateMountsAndContainer(ctx, placeholderOwner, id, newMounts, string(newHandle), now); err != nil {
+	if err := s.repo.UpdateMountsAndSandbox(ctx, placeholderOwner, id, newMounts, string(newHandle), now); err != nil {
 		return nil, fmt.Errorf("session: update mounts row: %w", err)
 	}
 	// Keep the just-reconfigured session at the top of the canvas.
@@ -495,57 +554,75 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	return updated, nil
 }
 
-// Shared by Create + EditMounts so the entrypoint, mount layout, and network mode
-// stay identical between initial and recreated containers. Mounts: the shared
-// agent-home volume at /root, then user mounts. /root is mounted first so a stray
-// user mount can't shadow it (the validator also rejects /root); /workspace is
-// intentionally user-mountable, so it's not protected. No deepcove-managed scratch
-// mount; a no-mount session just gets an empty in-container /workspace (created by
-// the entrypoint). User env wins on key conflicts with agent.Env; DEEPCOVE_WORKDIR
-// is set last so the agent always lands in the right place.
-func (s *Service) buildSandboxSpec(
-	sess *Session,
-	agent AgentInfo,
-	userMounts []sandbox.Mount,
-) sandbox.SandboxSpec {
-	mounts := []sandbox.Mount{
-		{
-			Source: agentHomeVolumeName(agent.Name),
-			Target: agentHomeMountTarget,
-			Type:   sandbox.MountVolume,
-		},
-	}
-	mounts = append(mounts, userMounts...)
+// sandboxRequest is what a sandbox needs to exist, whether it will host one session or several.
+type sandboxRequest struct {
+	// ID keys the runtime's per sandbox storage: a session's id for a private machine, the workspace
+	// machine's own id for the shared one.
+	ID        string
+	Name      string
+	Agent     AgentInfo
+	Image     string
+	Resources Resources
+	Setup     string
+	Env       map[string]string
+	Mounts    []sandbox.Mount
+	WorkDir   string
+}
 
-	effectiveSetup := sess.SetupScript
-	if effectiveSetup == "" {
-		effectiveSetup = agent.DefaultSetup
-	}
+// newSandboxSpec builds the driver spec: the agent's home volume ahead of the caller's mounts, the
+// agent's env under the caller's, and the entrypoint that installs the agent and writes its launch
+// script.
+//
+// The home volume is first so a stray mount cannot shadow /root; the validator rejects that target
+// anyway, while /workspace is deliberately mountable.
+func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
+	mounts := []sandbox.Mount{{
+		Source: agentHomeVolumeName(req.Agent.Name),
+		Target: agentHomeMountTarget,
+		Type:   sandbox.MountVolume,
+	}}
+	mounts = append(mounts, req.Mounts...)
 
-	mergedEnv := make(map[string]string, len(agent.Env)+len(sess.Env)+1)
-	for k, v := range agent.Env {
-		mergedEnv[k] = v
+	setup := req.Setup
+	if setup == "" {
+		setup = req.Agent.DefaultSetup
 	}
-	for k, v := range sess.Env {
-		mergedEnv[k] = v
+	env := make(map[string]string, len(req.Agent.Env)+len(req.Env)+1)
+	for k, v := range req.Agent.Env {
+		env[k] = v
 	}
-	// The agent cd's here at launch: the first user mount (your code), else the
-	// empty /workspace the entrypoint creates.
-	mergedEnv["DEEPCOVE_WORKDIR"] = workdirFor(userMounts)
+	for k, v := range req.Env {
+		env[k] = v
+	}
+	env["DEEPCOVE_WORKDIR"] = req.WorkDir
 
 	return sandbox.SandboxSpec{
-		// Stable across sandbox recreates, which is what lets a runtime keep per session storage.
-		SessionID: sess.ID,
-		Image:     sess.Image,
-		Agent:     sess.Agent,
-		Resources: toSandboxResources(sess.Resources),
-		Cmd:       buildEntrypoint(sess.Name, effectiveSetup, agent.LaunchCmd),
-		Env:       mergedEnv,
+		// Stable across sandbox recreates, which is what lets a runtime keep per sandbox storage.
+		SessionID: req.ID,
+		Image:     req.Image,
+		Agent:     req.Agent.Name,
+		Resources: toSandboxResources(req.Resources),
+		Cmd:       buildEntrypoint(req.Name, setup, req.Agent.LaunchCmd),
+		Env:       env,
 		Mounts:    mounts,
-		// NetNAT for outbound LLM API calls + package installs. Zero value (NetIsolated)
-		// would block `apk add` at startup.
+		// NetNAT for outbound LLM API calls and package installs. NetIsolated would block apk at boot.
 		Network: sandbox.NetworkConfig{Mode: sandbox.NetNAT},
 	}
+}
+
+// buildSandboxSpec describes a session's own machine.
+func (s *Service) buildSandboxSpec(sess *Session, agent AgentInfo, userMounts []sandbox.Mount) sandbox.SandboxSpec {
+	return newSandboxSpec(sandboxRequest{
+		ID:        sess.ID,
+		Name:      sess.Name,
+		Agent:     agent,
+		Image:     sess.Image,
+		Resources: sess.Resources,
+		Setup:     sess.SetupScript,
+		Env:       sess.Env,
+		Mounts:    userMounts,
+		WorkDir:   workdirFor(userMounts),
+	})
 }
 
 // LaunchCmd is written to a file rather than passed inline to tmux; quoting a
@@ -617,23 +694,7 @@ chmod +x /usr/local/bin/deepcove-agent-launch
 
 # A fresh tmux refuses to reuse a stale socket from a previous boot.
 rm -rf /tmp/tmux-* 2>/dev/null || true
-tmux new-session -d -s main -n main /usr/local/bin/deepcove-agent-launch
 
-# Let tmux interpret mouse input. This is what makes the browser's wheel scroll the pane.
-#
-# Deliberately adds no bindings of its own: tmux's defaults already handle every case, and an earlier
-# hand-rolled Shift-PageUp binding got each of them subtly wrong. What the defaults do:
-#   - a full screen TUI that grabbed the mouse (the agent) gets the wheel forwarded and scrolls its own
-#     transcript, which is the only thing that can, since tmux records no scrollback for the alternate
-#     screen (history_size is 0 for such a pane)
-#   - a shell pane enters copy mode and scrolls tmux's real scrollback, and leaves copy mode by itself on
-#     reaching the bottom
-#
-# The browser synthesizes the wheel as SGR mouse sequences (see Terminal.svelte). xterm.js's own mouse
-# reporting stays suppressed there, so dragging still selects text natively; only the wheel is sent.
-tmux set-option -g mouse on
-
-# Flip to ready only after tmux is up. The frontend gates WS attach on this.
 echo ready > /etc/deepcove-bootstrap-status
 
 exec sleep infinity

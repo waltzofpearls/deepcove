@@ -204,3 +204,48 @@ func TestOverlayCapLabel(t *testing.T) {
 		})
 	}
 }
+
+// A bundle is only worth pushing when it carries a login. A logged out Claude leaves the credentials
+// file in place with empty tokens, and pushing that wiped every session's login on the host.
+func TestBundleHasLogin(t *testing.T) {
+	const settings = `{"onboarding":true}`
+	cases := []struct {
+		name  string
+		files map[string][]byte
+		want  bool
+	}{
+		{
+			name:  "a real login",
+			files: map[string][]byte{credentialFile: []byte(`{"claudeAiOauth":{"accessToken":"sk-x","refreshToken":"rt-x"}}`)},
+			want:  true,
+		},
+		{
+			name:  "only a refresh token still logs in",
+			files: map[string][]byte{credentialFile: []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"rt-x"}}`)},
+			want:  true,
+		},
+		{
+			name:  "empty tokens are a logged out shell",
+			files: map[string][]byte{credentialFile: []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`)},
+			want:  false,
+		},
+		{
+			name:  "settings without the credentials file",
+			files: map[string][]byte{".claude.json": []byte(settings)},
+			want:  false,
+		},
+		{
+			name:  "unreadable json",
+			files: map[string][]byte{credentialFile: []byte(`not json`)},
+			want:  false,
+		},
+		{name: "nothing at all", files: nil, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bundleHasLogin(tc.files); got != tc.want {
+				t.Errorf("bundleHasLogin = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

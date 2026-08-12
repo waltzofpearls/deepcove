@@ -16,7 +16,7 @@ func TestToInstanceState(t *testing.T) {
 		want sandbox.InstanceState
 	}{
 		{"running is running", container.StateRunning, sandbox.InstanceRunning},
-		{"restarting still holds its resources", container.StateRestarting, sandbox.InstanceRunning},
+		{"restarting is a start in flight", container.StateRestarting, sandbox.InstanceStarting},
 		{"paused has not given its memory back", container.StatePaused, sandbox.InstanceRunning},
 		{"created exists but never ran", container.StateCreated, sandbox.InstanceStopped},
 		{"exited is stopped", container.StateExited, sandbox.InstanceStopped},

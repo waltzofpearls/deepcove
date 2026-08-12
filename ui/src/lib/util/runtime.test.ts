@@ -11,8 +11,8 @@ import {
 } from './runtime';
 
 describe('runtimeLabel', () => {
-  it('names runtimes by the isolation they give, not the implementation', () => {
-    expect(runtimeLabel(RUNTIME_DOCKER)).toContain('Container');
+  it('names each runtime the way it is talked about', () => {
+    expect(runtimeLabel(RUNTIME_DOCKER)).toBe('Docker');
     expect(runtimeLabel(RUNTIME_APPLEVF)).toContain('Virtual machine');
   });
 

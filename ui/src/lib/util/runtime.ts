@@ -30,12 +30,12 @@ export function runtimeMissingReason(code: string): string {
   }
 }
 
-// runtimeLabel names the runtime by what the user gets, not by its implementation. "Container" and
-// "Virtual machine" describe the isolation boundary, which is the thing being chosen.
+// runtimeLabel names the runtime the way it is talked about. "Virtual machine" describes the isolation
+// boundary; Docker is known by its name, so "Container (Docker)" only added a word.
 export function runtimeLabel(name: string): string {
   switch (name) {
     case RUNTIME_DOCKER:
-      return 'Container (Docker)';
+      return 'Docker';
     case RUNTIME_APPLEVF:
       return 'Virtual machine';
     default:

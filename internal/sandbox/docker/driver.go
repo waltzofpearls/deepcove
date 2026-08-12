@@ -145,8 +145,8 @@ func (d *Driver) ImagePull(ctx context.Context, ref string, onProgress func(sand
 }
 
 // Create makes a container from spec but does not start it. Returns
-// the container ID as a sandbox.Handle.
-func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.Handle, error) {
+// the container ID as a sandbox.ID.
+func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.ID, error) {
 	if err := sandbox.ValidateSpec(spec, d.allowedRoots); err != nil {
 		return "", err
 	}
@@ -189,21 +189,21 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 	if err != nil {
 		return "", normalizeErr(err)
 	}
-	return sandbox.Handle(resp.ID), nil
+	return sandbox.ID(resp.ID), nil
 }
 
-func (d *Driver) Start(ctx context.Context, h sandbox.Handle) error {
+func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
 	_, err := d.cli.ContainerStart(ctx, string(h), client.ContainerStartOptions{})
 	return normalizeErr(err)
 }
 
-func (d *Driver) Stop(ctx context.Context, h sandbox.Handle) error {
+func (d *Driver) Stop(ctx context.Context, h sandbox.ID) error {
 	// Empty options → Docker default (SIGTERM, 10s grace, then SIGKILL).
 	_, err := d.cli.ContainerStop(ctx, string(h), client.ContainerStopOptions{})
 	return normalizeErr(err)
 }
 
-func (d *Driver) Destroy(ctx context.Context, h sandbox.Handle) error {
+func (d *Driver) Destroy(ctx context.Context, h sandbox.ID) error {
 	// Force removes a running container in one shot. Anonymous volumes
 	// attached to the container are removed; bind mounts (host paths)
 	// stay on the host.
@@ -217,7 +217,7 @@ func (d *Driver) Destroy(ctx context.Context, h sandbox.Handle) error {
 // Exec creates an exec instance in the container and attaches to it.
 // The returned Process owns the hijacked connection; callers must
 // Wait or Close it (forgetting both leaks the connection).
-func (d *Driver) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpec) (sandbox.Process, error) {
+func (d *Driver) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSpec) (sandbox.Process, error) {
 	// AttachStdin is true whenever the caller might want to write
 	// input: explicitly via ExecSpec.Stdin (one-shot input ready at
 	// create time) OR interactively when a TTY is requested
@@ -250,26 +250,26 @@ func (d *Driver) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpe
 // Logs, CopyIn, CopyOut: stubs for the next pass. Return ErrNotSupported so callers can detect with
 // errors.Is and fall back.
 
-func (d *Driver) Logs(ctx context.Context, h sandbox.Handle, opts sandbox.LogOpts) (io.ReadCloser, error) {
+func (d *Driver) Logs(ctx context.Context, h sandbox.ID, opts sandbox.LogOpts) (io.ReadCloser, error) {
 	return nil, sandbox.ErrNotSupported
 }
 
-func (d *Driver) CopyIn(ctx context.Context, h sandbox.Handle, src, dst string) error {
+func (d *Driver) CopyIn(ctx context.Context, h sandbox.ID, src, dst string) error {
 	return sandbox.ErrNotSupported
 }
 
-func (d *Driver) CopyOut(ctx context.Context, h sandbox.Handle, src, dst string) error {
+func (d *Driver) CopyOut(ctx context.Context, h sandbox.ID, src, dst string) error {
 	return sandbox.ErrNotSupported
 }
 
 // Snapshot / Restore: Docker has no microVM-snapshot equivalent. The session layer degrades to a
 // fresh sandbox.
 
-func (d *Driver) Snapshot(ctx context.Context, h sandbox.Handle) (sandbox.SnapshotID, error) {
+func (d *Driver) Snapshot(ctx context.Context, h sandbox.ID) (sandbox.SnapshotID, error) {
 	return "", sandbox.ErrNotSupported
 }
 
-func (d *Driver) Restore(ctx context.Context, h sandbox.Handle, id sandbox.SnapshotID) error {
+func (d *Driver) Restore(ctx context.Context, h sandbox.ID, id sandbox.SnapshotID) error {
 	return sandbox.ErrNotSupported
 }
 

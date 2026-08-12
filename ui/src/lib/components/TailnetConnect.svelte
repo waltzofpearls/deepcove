@@ -124,7 +124,7 @@
   });
 </script>
 
-<section class="space-y-3">
+<section class="space-y-3 rounded-xl border border-border bg-card p-4">
   <h2 class="text-sm font-medium text-muted-foreground">Access from your other devices</h2>
 
   {#if !status || status.phase === 'stopped'}

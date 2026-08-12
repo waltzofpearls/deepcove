@@ -119,6 +119,11 @@ export const sessions = {
   get loading(): boolean {
     return loading;
   },
+  // reachable is what a status dot needs: false means every status we hold is the last one we saw,
+  // not what is true now.
+  get reachable(): boolean {
+    return error === null;
+  },
   get error(): string | null {
     return error;
   },

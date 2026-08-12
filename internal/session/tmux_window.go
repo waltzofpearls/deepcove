@@ -77,7 +77,7 @@ func (s *Service) ListTmuxWindows(ctx context.Context, id string) (*TmuxWindowsR
 	// only window we can't fully control is the agent's "main",
 	// which we name ourselves in the sandbox entrypoint.
 	out, err := s.execTmux(ctx, sess,
-		"list-windows", "-t", AgentTmuxWindowName,
+		"list-windows", "-t", tmuxSessionName(sess.ID),
 		"-F", "#{window_index} #{window_name} #{window_active}")
 	if err != nil {
 		return nil, s.tmuxFailure(ctx, sess, fmt.Errorf("session: list tmux windows: %w", err))
@@ -129,11 +129,11 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 		name = pickNextShellName(existingNames)
 	}
 
-	// -d: don't switch focus. -P -F: print the new window's index. The trailing colon
-	// on -t "main:" targets the SESSION (not the window of the same name); without
-	// it tmux tries to insert at the existing main window's index 0 and fails.
+	// -d: don't switch focus. -P -F: print the new window's index. The trailing colon targets the
+	// SESSION rather than a window inside it; without it tmux tries to insert at an existing window's
+	// index and fails.
 	args := []string{
-		"new-window", "-d", "-t", AgentTmuxWindowName + ":", "-n", name,
+		"new-window", "-d", "-t", tmuxSessionName(sess.ID) + ":", "-n", name,
 		"-P", "-F", "#{window_index}",
 	}
 	// SSH-mode shell window gets a wrapper that prints the MOTD before exec'ing the
@@ -164,7 +164,7 @@ func (s *Service) SelectTmuxWindow(ctx context.Context, id, name string) error {
 		return ErrSessionNotRunning
 	}
 	if _, err := s.execTmux(ctx, sess,
-		"select-window", "-t", AgentTmuxWindowName+":"+name); err != nil {
+		"select-window", "-t", tmuxSessionName(sess.ID)+":"+name); err != nil {
 		if isTmuxWindowNotFound(err) {
 			return ErrTmuxWindowNotFound
 		}
@@ -188,7 +188,7 @@ func (s *Service) DeleteTmuxWindow(ctx context.Context, id, name string) error {
 		return ErrSessionNotRunning
 	}
 	if _, err := s.execTmux(ctx, sess,
-		"kill-window", "-t", AgentTmuxWindowName+":"+name); err != nil {
+		"kill-window", "-t", tmuxSessionName(sess.ID)+":"+name); err != nil {
 		if isTmuxWindowNotFound(err) {
 			return ErrTmuxWindowNotFound
 		}
@@ -219,7 +219,7 @@ func (s *Service) execTmux(ctx context.Context, sess *Session, args ...string) (
 		return nil, err
 	}
 	cmd := append([]string{"tmux"}, args...)
-	proc, err := runtime.Exec(execCtx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
+	proc, err := runtime.Exec(execCtx, sandbox.ID(sess.SandboxID), sandbox.ExecSpec{
 		Cmd: cmd,
 		Tty: false,
 	})

@@ -1,8 +1,9 @@
 <script lang="ts">
   // First-run setup wizard (a full page, not an overlay). Tailscale-style: walk the user through
   // getting deepcove ready, including putting their two devices on the tailnet (session node required-
-  // ish, web node optional/skippable). Steps: Welcome → Sandbox → Connect → Done. The whole thing is
-  // skippable (deepcove works purely local), and finishing or skipping marks setup done (lib/setup).
+  // ish, web node optional/skippable). Steps: Welcome → Sandbox → Workspace → Connect → Done. The
+  // whole thing is skippable (deepcove works purely local), and finishing or skipping marks setup done
+  // (lib/setup).
   import { getContext } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
@@ -15,6 +16,9 @@
   import { NEW_SESSION_CTX } from '$lib/context';
   import { runtimeLabel, runtimeMissingReason } from '$lib/util/runtime';
   import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
+  import WorkspaceVMFields from '$lib/components/session/WorkspaceVMFields.svelte';
+  import { looksLikePath } from '$lib/util/path';
+  import { emptyResourceFields, parseResources } from '$lib/util/resources';
   import { Button } from '$lib/components/ui/button';
   import Logo from '$lib/components/layout/Logo.svelte';
   import TailscaleLogo from '$lib/components/TailscaleLogo.svelte';
@@ -25,12 +29,43 @@
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
 
-  const steps = ['Welcome', 'Sandbox', 'Connect', 'Done'];
+  const steps = ['Welcome', 'Sandbox', 'Workspace', 'Connect', 'Done'];
   // Deep link: the dashboard nudge sends ?step=connect to drop the user straight on the Connect step.
-  let step = $state(page.url.searchParams.get('step') === 'connect' ? 2 : 0);
+  let step = $state(page.url.searchParams.get('step') === 'connect' ? 3 : 0);
 
   $effect(() => preflight.subscribe());
   $effect(() => connect.subscribe());
+
+  // The workspace VM, offered here so a first run can set one up before creating anything. Skippable:
+  // without one, every session gets a VM of its own, which is how deepcove worked before.
+  let workspaceHostRoot = $state('');
+  let workspaceGuestRoot = $state('/workspace');
+  let workspaceFields = $state({ ...emptyResourceFields });
+  let workspaceError = $state<string | null>(null);
+  let savingWorkspace = $state(false);
+  const parsedWorkspace = $derived(parseResources(workspaceFields, true));
+
+  async function createWorkspaceVM() {
+    if (savingWorkspace) return;
+    if (parsedWorkspace.error) {
+      workspaceError = parsedWorkspace.error;
+      return;
+    }
+    savingWorkspace = true;
+    workspaceError = null;
+    try {
+      await api.saveWorkspaceVM({
+        host_root: workspaceHostRoot.trim(),
+        guest_root: workspaceGuestRoot.trim() || undefined,
+        resources: parsedWorkspace.resources,
+      });
+      step = 3;
+    } catch (e) {
+      workspaceError = e instanceof Error ? e.message : String(e);
+    } finally {
+      savingWorkspace = false;
+    }
+  }
 
   const runtimesReady = $derived(preflight.loaded && preflight.usableRuntimes.length > 0);
   // Only shown when nothing works, to say why. When something else can host a session, a runtime that
@@ -213,6 +248,40 @@
         </div>
       {:else if step === 2}
         <div class="space-y-4">
+          <h2 class="text-lg font-semibold">Share a folder with your sessions</h2>
+          <p class="text-sm text-muted-foreground">
+            One VM your sessions share, each working in its own folder inside the folder you pick.
+            Skip this and every session gets a VM of its own instead.
+          </p>
+          <WorkspaceVMFields
+            bind:hostRoot={workspaceHostRoot}
+            bind:guestRoot={workspaceGuestRoot}
+            bind:fields={workspaceFields}
+          />
+          {#if workspaceError}
+            <p class="text-sm text-destructive">{workspaceError}</p>
+          {/if}
+          <div class="flex items-center justify-between pt-2">
+            <Button variant="ghost" onclick={() => (step = 1)}>Back</Button>
+            <div class="flex items-center gap-4">
+              <button
+                type="button"
+                onclick={() => (step = 3)}
+                class="cursor-pointer text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+              >
+                Skip this
+              </button>
+              <Button
+                onclick={createWorkspaceVM}
+                disabled={savingWorkspace || !looksLikePath(workspaceHostRoot)}
+              >
+                {savingWorkspace ? 'Creating…' : 'Create it'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      {:else if step === 3}
+        <div class="space-y-4">
           <div class="flex items-center gap-2">
             <h2 class="text-lg font-semibold">Connect to Tailscale</h2>
             <span
@@ -286,10 +355,10 @@
           </div>
 
           <div class="flex items-center justify-between pt-2">
-            <Button variant="ghost" onclick={() => (step = 1)}>Back</Button>
+            <Button variant="ghost" onclick={() => (step = 2)}>Back</Button>
             <div class="flex items-center gap-4">
               {@render skipLink()}
-              <Button onclick={() => (step = 3)}>Continue</Button>
+              <Button onclick={() => (step = 4)}>Continue</Button>
             </div>
           </div>
         </div>
@@ -302,7 +371,7 @@
           </div>
           <h2 class="text-xl font-semibold">You're all set</h2>
           <p class="max-w-sm text-sm text-muted-foreground">
-            deepcove is ready. Create your first session to run a coding agent in its own sandbox.
+            deepcove is ready. Create your first session to run a coding agent in a sandbox.
           </p>
           <div class="mt-2 flex gap-2">
             <Button variant="outline" onclick={() => finish(false)}>Go to dashboard</Button>

@@ -7,7 +7,7 @@
 // the banner clears promptly once something can, and slow when healthy.
 
 import { api } from '$lib/api/client';
-import type { DockerStatus, RuntimesInfo } from '$lib/api/types';
+import type { DockerStatus, RuntimesInfo, SessionResources } from '$lib/api/types';
 import { usePolling } from '$lib/polling';
 import { usableRuntimes } from '$lib/util/runtime';
 
@@ -73,6 +73,11 @@ export const preflight = {
   },
   get usableRuntimes(): string[] {
     return usableRuntimes(runtimes);
+  },
+  // What a new workspace VM should be sized at on this host. Null until the first poll lands, so a form
+  // can tell "not asked yet" from "this host reports nothing".
+  get workspaceDefaults(): SessionResources | null {
+    return runtimes?.workspace_defaults ?? null;
   },
   // ready is the question the UI actually asks: can this node run a session at all. Before the first
   // poll lands we say yes, so a healthy node never flashes a "nothing can run" banner on load.

@@ -20,6 +20,8 @@ import type {
   SessionListResponse,
   SessionPreview,
   TmuxWindow,
+  WorkspaceVM,
+  WorkspaceVMRequest,
 } from './types';
 
 const BASE = '/api';
@@ -253,13 +255,40 @@ export const api = {
 
   // destroySandbox removes a sandbox no session owns. The server re-checks that ownership, so a stale
   // view cannot talk it into deleting something still in use.
-  destroySandbox(runtime: string, handle: string): Promise<void> {
+  destroySandbox(runtime: string, sandboxID: string): Promise<void> {
     return request(
-      `/runtimes/${encodeURIComponent(runtime)}/sandboxes/${encodeURIComponent(handle)}`,
+      `/runtimes/${encodeURIComponent(runtime)}/sandboxes/${encodeURIComponent(sandboxID)}`,
       {
         method: 'DELETE',
       },
     );
+  },
+
+  // workspaceVM is this node's shared machine, or null when there is none. Null is the normal state
+  // until someone creates one, so it is not an error.
+  async workspaceVM(host?: SessionHost, signal?: AbortSignal): Promise<WorkspaceVM | null> {
+    try {
+      return await request<WorkspaceVM>('/workspace-vm', { signal }, transportForHost(host));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  // saveWorkspaceVM records the machine or changes it. The VM itself is built when the first session
+  // lands on it, which is why this returns immediately.
+  saveWorkspaceVM(req: WorkspaceVMRequest, host?: SessionHost): Promise<WorkspaceVM> {
+    return request(
+      '/workspace-vm',
+      { method: 'PUT', body: JSON.stringify(req) },
+      transportForHost(host),
+    );
+  },
+
+  // deleteWorkspaceVM destroys the machine. withSessions deletes the sessions on it too; without it the
+  // server refuses with a 409 while any remain.
+  deleteWorkspaceVM(withSessions = false): Promise<void> {
+    return request(`/workspace-vm${withSessions ? '?sessions=delete' : ''}`, { method: 'DELETE' });
   },
 
   // imageExists reports whether an image ref is already downloaded, so

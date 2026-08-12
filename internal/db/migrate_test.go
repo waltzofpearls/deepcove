@@ -133,3 +133,101 @@ func sortedAppliedVersions(t *testing.T, db *sql.DB) []string {
 	sort.Strings(out)
 	return out
 }
+
+// onDisk is a file-backed database. The transaction crash this directive exists for only happens on a
+// real file, so an in-memory database would let the bug straight back in.
+func onDisk(t *testing.T) *sql.DB {
+	t.Helper()
+	database, err := sql.Open("duckdb", filepath.Join(t.TempDir(), "test.duckdb"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	return database
+}
+
+func TestMigrateWithoutATransaction(t *testing.T) {
+	database := onDisk(t)
+
+	files := fakeMigrations(map[string]string{
+		"0001_init.sql": `CREATE TABLE t (id TEXT PRIMARY KEY, owner TEXT, old_name TEXT);
+			CREATE INDEX t_owner_idx ON t(owner);
+			INSERT INTO t VALUES ('one', 'local', 'kept');`,
+		// Dropping an index and renaming a column in one transaction aborts the DuckDB process, so this
+		// is the shape the directive exists for.
+		"0002_rename.sql": `-- deepcove:no-transaction
+			DROP INDEX IF EXISTS t_owner_idx;
+			ALTER TABLE t RENAME COLUMN old_name TO new_name;
+			CREATE INDEX IF NOT EXISTS t_owner_idx ON t(owner);`,
+	})
+	if err := migrate(database, files, migrationsDir); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	var value string
+	if err := database.QueryRow(`SELECT new_name FROM t WHERE id = 'one'`).Scan(&value); err != nil {
+		t.Fatalf("read the renamed column: %v", err)
+	}
+	if value != "kept" {
+		t.Errorf("value %q, want it carried across the rename", value)
+	}
+	applied := mustLoadApplied(t, database)
+	if !applied["0002_rename.sql"] {
+		t.Error("the migration was not recorded")
+	}
+}
+
+// Without the directive a failure has to leave nothing behind, which is the whole reason the default
+// stays transactional.
+func TestMigrateRollsBackWithoutTheDirective(t *testing.T) {
+	database := onDisk(t)
+
+	files := fakeMigrations(map[string]string{
+		"0001_broken.sql": `CREATE TABLE a (id TEXT);
+			CREATE TABLE b (id TEXT);
+			THIS IS NOT SQL;`,
+	})
+	if err := migrate(database, files, migrationsDir); err == nil {
+		t.Fatal("migrate: want an error")
+	}
+
+	var tables int
+	if err := database.QueryRow(
+		`SELECT count(*) FROM duckdb_tables() WHERE table_name IN ('a', 'b')`).Scan(&tables); err != nil {
+		t.Fatalf("count tables: %v", err)
+	}
+	if tables != 0 {
+		t.Errorf("%d tables survived a failed migration, want none", tables)
+	}
+	if applied := mustLoadApplied(t, database); applied["0001_broken.sql"] {
+		t.Error("a failed migration was recorded as applied")
+	}
+}
+
+// The real rename, over a database holding a session, which is the case that crashed.
+func TestSessionSandboxIDMigration(t *testing.T) {
+	database := onDisk(t)
+	if err := Migrate(database); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO sessions (id, name, agent, image, owner_email, sandbox_id)
+		VALUES ('019ff000', 'placement', 'claude', 'alpine:3.20', 'local', 'applevf-abc123')`); err != nil {
+		t.Fatalf("insert a session: %v", err)
+	}
+
+	var sandboxID string
+	if err := database.QueryRow(`SELECT sandbox_id FROM sessions WHERE id = '019ff000'`).Scan(&sandboxID); err != nil {
+		t.Fatalf("read sandbox_id: %v", err)
+	}
+	if sandboxID != "applevf-abc123" {
+		t.Errorf("sandbox id %q, want applevf-abc123", sandboxID)
+	}
+	var indexes int
+	if err := database.QueryRow(
+		`SELECT count(*) FROM duckdb_indexes() WHERE table_name = 'sessions'`).Scan(&indexes); err != nil {
+		t.Fatalf("count indexes: %v", err)
+	}
+	if indexes != 3 {
+		t.Errorf("%d indexes on sessions, want the 3 the migration recreates", indexes)
+	}
+}

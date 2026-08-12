@@ -42,6 +42,9 @@ type RuntimesInfo struct {
 	// create form can show real numbers rather than the word "default". A runtime is absent from the map
 	// when it imposes no limit of its own, which is different from a limit of zero.
 	Defaults map[string]Resources `json:"defaults,omitempty"`
+	// WorkspaceDefaults is the size a new workspace VM gets on this host. Separate from Defaults, which
+	// is per runtime: this one is a property of the machine.
+	WorkspaceDefaults Resources `json:"workspace_defaults"`
 }
 
 // runtimeDefaults collects each runtime's own idea of a default size. Drivers that do not allocate a
@@ -81,6 +84,8 @@ func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 			Defaults:    s.runtimeDefaults(),
 			Unavailable: s.unavailableRuntimes(r.Context()),
 			Missing:     s.MissingRuntimes(),
+
+			WorkspaceDefaults: WorkspaceDefaults(s.dataDir),
 		},
 	})
 }
@@ -162,7 +167,7 @@ func (s *Service) handleImageExists(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, codeInvalidInput, "image query param is required")
 		return
 	}
-	runtime, err := s.runtimeNamed(r.URL.Query().Get("runtime"))
+	runtime, err := s.runtimeByName(r.URL.Query().Get("runtime"))
 	if err != nil {
 		writeErrorCode(w, http.StatusBadRequest, codeInvalidInput, err.Error())
 		return
@@ -207,7 +212,7 @@ func (s *Service) handlePullImage(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, codeInvalidInput, "image is required")
 		return
 	}
-	runtime, err := s.runtimeNamed(req.Runtime)
+	runtime, err := s.runtimeByName(req.Runtime)
 	if err != nil {
 		writeErrorCode(w, http.StatusBadRequest, codeInvalidInput, err.Error())
 		return
