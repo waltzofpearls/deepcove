@@ -129,6 +129,13 @@ func bringUp() (Config, error) {
 	}
 	mountShares(hostCfg.Mounts)
 	mountHome(hostCfg)
+	if hostCfg.SwapDevice != "" {
+		if err := enableSwap(hostCfg.SwapDevice); err != nil {
+			logf("WARNING: no swap, a large write can still exhaust memory: %v", err)
+		} else {
+			logf("swap enabled on %s", hostCfg.SwapDevice)
+		}
+	}
 
 	if err := fetchCredentials(cfg); err != nil {
 		logf("WARNING: could not restore credentials: %v", err)

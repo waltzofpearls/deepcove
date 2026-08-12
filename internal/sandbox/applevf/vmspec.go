@@ -24,6 +24,9 @@ type vmSpec struct {
 	// overlays on top. ScratchImage may be empty for a throwaway VM that overlays onto tmpfs instead.
 	BaseImage    string
 	ScratchImage string
+	// SwapImage is an optional raw disk the guest turns into swap. Attached after the scratch disk, so
+	// the guest device names follow the attach order rather than a fixed layout.
+	SwapImage string
 
 	CPUCount    uint
 	MemoryBytes uint64
