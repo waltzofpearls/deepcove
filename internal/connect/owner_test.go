@@ -8,14 +8,7 @@ import (
 )
 
 func TestOwnerPersistence(t *testing.T) {
-	database, err := db.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer func() { _ = database.Close() }()
-	if err := db.Migrate(database); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	database := db.OpenForTest(t)
 
 	// Unclaimed node -> nil.
 	if o, err := loadOwner(database); err != nil || o != nil {

@@ -74,12 +74,14 @@ func cmdStart(ctx context.Context, args []string) error {
 	clusterStore := session.NewClusterStore(sqlDB, clusterName)
 	logger.Info("cluster", "name", clusterStore.Name())
 
-	// Persistence: domain-owned SessionRepository over the shared DuckDB handle. Each domain package
+	// Persistence: domain-owned SessionRepository over the shared DuckDB connection. Each domain package
 	// owns its own CRUD wrapper (cohesion by bounded context); `internal/db` is just the connection
 	// lifecycle.
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
 	sessionSvc := session.NewService(sessionRepo, logger)
 	sessionSvc.SetClusterStore(clusterStore)
+	sessionSvc.SetWorkspaceVMStore(session.NewDuckDBWorkspaceVMStore(sqlDB))
+	sessionSvc.SetDataDir(cfg.DataDir)
 
 	runtimes, err := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger)
 	if err != nil {
@@ -102,9 +104,9 @@ func cmdStart(ctx context.Context, args []string) error {
 	// Bring the session table back in line with what the runtimes are actually hosting, then restart what
 	// was running. VM sessions died with the previous process, so without this they all sit stopped.
 	// Must run AFTER the runtimes are registered, or there is nothing to ask.
-	lost, err := sessionSvc.Reconcile(ctx)
+	lost, err := sessionSvc.MarkLostSessions(ctx)
 	if err != nil {
-		logger.Warn("could not reconcile sessions with their runtimes", "err", err)
+		logger.Warn("could not check sessions against their runtimes", "err", err)
 	}
 	if len(lost) > 0 {
 		// In the background: each VM takes seconds to boot, and the node should serve requests meanwhile.

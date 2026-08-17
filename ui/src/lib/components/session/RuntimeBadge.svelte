@@ -12,10 +12,12 @@
   // Which sandbox a session runs in, sat alongside the agent and cluster tags. Worth surfacing because
   // the isolation boundary changes what a session can do: a VM has its own kernel and (today) no access
   // to your files, a container shares the host kernel.
-  let { runtime }: { runtime: string } = $props();
+  let { runtime, shared = false }: { runtime: string; shared?: boolean } = $props();
 
   // A VM gets the distinct icon because it is the choice worth noticing.
   const isVM = $derived(runtime === RUNTIME_APPLEVF);
+  // Same words as the runtimes page: a VM is private or shared, never just "VM".
+  const label = $derived(isVM ? (shared ? 'Shared VM' : 'Private VM') : runtimeShortLabel(runtime));
 </script>
 
 {#if runtime}
@@ -32,11 +34,19 @@
             {:else}
               <Container class="size-3 shrink-0" />
             {/if}
-            <span class="truncate">{runtimeShortLabel(runtime)}</span>
+            <span class="truncate">{label}</span>
           </span>
         {/snippet}
       </TooltipTrigger>
-      <TooltipContent>{runtimeLabel(runtime)}</TooltipContent>
+      <TooltipContent>
+        {#if shared}
+          Workspace VM, shared with your other sessions
+        {:else if isVM}
+          Its own virtual machine, not shared with other sessions
+        {:else}
+          {runtimeLabel(runtime)}
+        {/if}
+      </TooltipContent>
     </Tooltip>
   </TooltipProvider>
 {/if}

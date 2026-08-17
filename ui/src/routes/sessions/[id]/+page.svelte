@@ -28,12 +28,14 @@
   import RemoteSignInPrompt from '$lib/components/session/RemoteSignInPrompt.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import SessionTags from '$lib/components/session/SessionTags.svelte';
+  import SessionInfoDialog from '$lib/components/session/SessionInfoDialog.svelte';
   import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
   import EditMountsDialog from '$lib/components/session/EditMountsDialog.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import HardDrive from '@lucide/svelte/icons/hard-drive';
+  import Info from '@lucide/svelte/icons/info';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import Maximize from '@lucide/svelte/icons/maximize';
   import Minimize from '@lucide/svelte/icons/minimize';
@@ -85,6 +87,7 @@
   // button; the sheet does its own PUT and writes the updated
   // session back to our `session` via bind:session.
   let editMountsOpen = $state(false);
+  let infoOpen = $state(false);
 
   // Inline rename of the session name in the toolbar. Click the name to
   // edit; Enter (or blur) commits, Esc cancels.
@@ -483,6 +486,22 @@
                   {...props}
                   variant="ghost"
                   size="icon"
+                  onclick={() => (infoOpen = true)}
+                  aria-label="Session info"
+                >
+                  <Info class="size-4" />
+                </Button>
+              {/snippet}
+            </TooltipTrigger>
+            <TooltipContent>Session info</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger>
+              {#snippet child({ props })}
+                <Button
+                  {...props}
+                  variant="ghost"
+                  size="icon"
                   onclick={() => (editMountsOpen = true)}
                   aria-label="Edit mounts"
                 >
@@ -536,6 +555,10 @@
   <!-- Edit-mounts sheet. Bind session so the sheet can write the
        updated row back after a successful PUT, which keeps the toolbar
        and the rest of the page in sync without an extra fetch. -->
+  {#if session}
+    <SessionInfoDialog bind:open={infoOpen} {session} />
+  {/if}
+
   <EditMountsDialog bind:open={editMountsOpen} bind:session {host} />
 
   <!-- Destroy confirmation. State-driven open via `destroyOpen` so

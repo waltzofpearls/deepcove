@@ -47,30 +47,50 @@ type RuntimeView struct {
 
 // SandboxView is one sandbox the driver is hosting, joined to the session that owns it.
 type SandboxView struct {
-	Handle string `json:"handle"`
-	State  string `json:"state"`
-	Image  string `json:"image,omitempty"`
+	SandboxID string `json:"sandbox_id"`
+	State     string `json:"state"`
+	Image     string `json:"image,omitempty"`
 	// Resources are what the driver actually gave the sandbox. All zero means the driver either applied
 	// its own defaults or cannot report them, so the UI shows the session's request instead.
 	Resources Resources `json:"resources"`
 	CreatedAt time.Time `json:"created_at"`
-	// SessionID and SessionName are empty when no session owns this sandbox. That is a leak: something
-	// is still allocated for work that is over, and it will not go away on its own.
-	SessionID   string `json:"session_id,omitempty"`
-	SessionName string `json:"session_name,omitempty"`
+	// Mounts are the host folders this sandbox shares, as the driver reports them.
+	Mounts []SandboxMount `json:"mounts"`
+	// Sessions are the sessions living on this sandbox, in creation order. A shared machine has several.
+	// Empty is a leak: something is still allocated for work that is over, and it will not go away on
+	// its own.
+	Sessions []SandboxSession `json:"sessions"`
+	// IsWorkspaceVM marks this node's shared machine, which is allowed to sit there with no sessions on
+	// it and is deleted through its own endpoint rather than as a leak.
+	IsWorkspaceVM bool `json:"is_workspace_vm,omitempty"`
 }
 
-// Leaked reports a sandbox with no session behind it.
-func (v SandboxView) Leaked() bool { return v.SessionID == "" }
+// SandboxMount is one host folder shared into a sandbox, and where it lands inside it.
+type SandboxMount struct {
+	HostPath  string `json:"host_path"`
+	GuestPath string `json:"guest_path"`
+	ReadOnly  bool   `json:"read_only,omitempty"`
+}
+
+// SandboxSession is one session on a sandbox, enough to name it and link to it.
+type SandboxSession struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status Status `json:"status"`
+}
+
+// Leaked reports a sandbox nothing owns: no sessions, and not the shared machine.
+func (v SandboxView) Leaked() bool { return len(v.Sessions) == 0 && !v.IsWorkspaceVM }
 
 // OrphanedSession is a session whose sandbox is gone. It cannot be started again as is, so the useful
 // action is to delete it, not to hunt for the sandbox.
 type OrphanedSession struct {
 	SessionID   string `json:"session_id"`
 	SessionName string `json:"session_name"`
-	// Handle is what the session row still points at, kept because it is what you would grep logs for.
-	Handle string `json:"handle,omitempty"`
-	Status Status `json:"status"`
+	// SandboxID is what the session row still points at, kept because it is what you would grep logs
+	// for.
+	SandboxID string `json:"sandbox_id,omitempty"`
+	Status    Status `json:"status"`
 }
 
 const runtimeViewPingTimeout = 3 * time.Second
@@ -88,9 +108,16 @@ func (s *Service) RuntimeViews(ctx context.Context) ([]RuntimeView, error) {
 	// first rather than each imposing its own idea.
 	names := s.Runtimes()
 
+	// The shared machine, if this node has one. Failing to read it only costs the marking, so the view
+	// still renders.
+	workspaceVM, err := s.WorkspaceVM(ctx)
+	if err != nil {
+		workspaceVM = nil
+	}
+
 	views := make([]RuntimeView, 0, len(names))
 	for _, name := range names {
-		views = append(views, s.runtimeView(ctx, name, sessions))
+		views = append(views, s.runtimeView(ctx, name, sessions, workspaceVM))
 	}
 	// After the registered ones, so the list reads as "what you have, then what you could have".
 	for _, name := range s.missingRuntimeNames() {
@@ -104,7 +131,12 @@ func (s *Service) RuntimeViews(ctx context.Context) ([]RuntimeView, error) {
 	return views, nil
 }
 
-func (s *Service) runtimeView(ctx context.Context, name string, sessions []*Session) RuntimeView {
+func (s *Service) runtimeView(
+	ctx context.Context,
+	name string,
+	sessions []*Session,
+	workspaceVM *WorkspaceVM,
+) RuntimeView {
 	view := RuntimeView{
 		Name:      name,
 		Default:   name == s.defaultRuntime,
@@ -138,41 +170,49 @@ func (s *Service) runtimeView(ctx context.Context, name string, sessions []*Sess
 		return view
 	}
 
-	// Index this runtime's sessions by the handle they claim. A session on another runtime is not this
-	// runtime's business, and one that never got a sandbox has nothing to match.
-	owners := make(map[string]*Session, len(sessions))
+	// Index this runtime's sessions by the sandbox they claim, several per sandbox since a machine can
+	// be shared. A session on another runtime is not this runtime's business.
+	onSandbox := make(map[string][]SandboxSession, len(sessions))
 	for _, sess := range sessions {
-		if sess.Runtime == name && sess.ContainerID != "" {
-			owners[sess.ContainerID] = sess
+		if sess.Runtime == name && sess.SandboxID != "" {
+			onSandbox[sess.SandboxID] = append(onSandbox[sess.SandboxID],
+				SandboxSession{ID: sess.ID, Name: sess.Name, Status: sess.Status})
 		}
 	}
 
 	matched := make(map[string]bool, len(instances))
 	for _, inst := range instances {
-		handle := string(inst.Handle)
+		sandboxID := string(inst.ID)
 		sv := SandboxView{
-			Handle:    handle,
-			State:     string(inst.State),
-			Image:     inst.Image,
-			Resources: fromSandboxResources(inst.Resources),
-			CreatedAt: inst.CreatedAt,
+			SandboxID:     sandboxID,
+			State:         string(inst.State),
+			Image:         inst.Image,
+			Resources:     fromSandboxResources(inst.Resources),
+			CreatedAt:     inst.CreatedAt,
+			Mounts:        sandboxMounts(inst.Mounts),
+			Sessions:      []SandboxSession{},
+			IsWorkspaceVM: workspaceVM != nil && sandboxID == workspaceVM.SandboxID,
 		}
-		if sess, ok := owners[handle]; ok {
-			matched[handle] = true
-			sv.SessionID = sess.ID
-			sv.SessionName = sess.Name
+		if found, ok := onSandbox[sandboxID]; ok {
+			matched[sandboxID] = true
+			sv.Sessions = found
 		}
 		view.Sandboxes = append(view.Sandboxes, sv)
 	}
 
+	// Only a session that says it is RUNNING can be orphaned. A stopped one has no machine by
+	// definition, and a starting one is having its machine built right now.
 	for _, sess := range sessions {
-		if sess.Runtime != name || matched[sess.ContainerID] {
+		if sess.Runtime != name || sess.Status != StatusRunning {
+			continue
+		}
+		if sess.SandboxID == "" || matched[sess.SandboxID] {
 			continue
 		}
 		view.Orphaned = append(view.Orphaned, OrphanedSession{
 			SessionID:   sess.ID,
 			SessionName: sess.Name,
-			Handle:      sess.ContainerID,
+			SandboxID:   sess.SandboxID,
 			Status:      sess.Status,
 		})
 	}
@@ -184,15 +224,32 @@ func (s *Service) runtimeView(ctx context.Context, name string, sessions []*Sess
 // session is the operation that cleans up both.
 var ErrSandboxHasSession = errors.New("session: this sandbox belongs to a session; delete the session instead")
 
-// ErrSandboxNotFound means the runtime is not hosting that handle, usually because something else
+// sandboxMounts converts the driver's mounts into the view's shape, host path first because that is the
+// side you recognise.
+func sandboxMounts(mounts []sandbox.Mount) []SandboxMount {
+	out := make([]SandboxMount, 0, len(mounts))
+	for _, m := range mounts {
+		out = append(out, SandboxMount{HostPath: m.Source, GuestPath: m.Target, ReadOnly: m.ReadOnly})
+	}
+	return out
+}
+
+// ErrSandboxIsWorkspaceVM refuses to delete the shared machine as if it were a leak.
+var ErrSandboxIsWorkspaceVM = errors.New("session: this is the workspace VM; delete it from its own page")
+
+// ErrSandboxNotFound means the runtime is not hosting that sandbox, usually because something else
 // already cleaned it up.
 var ErrSandboxNotFound = errors.New("session: this runtime is not hosting that sandbox")
 
 // DestroyLeakedSandbox destroys a sandbox that no session owns. It re-checks ownership against a fresh
 // listing rather than trusting the caller, because the view the user clicked from can be seconds stale
-// and a session could have claimed the handle since.
-func (s *Service) DestroyLeakedSandbox(ctx context.Context, runtimeName, handle string) error {
-	driver, err := s.runtimeNamed(runtimeName)
+// and a session could have claimed the sandbox since.
+func (s *Service) DestroyLeakedSandbox(ctx context.Context, runtimeName, sandboxID string) error {
+	// Not a leak, and its own endpoint also clears the record instead of leaving one pointing at nothing.
+	if vm, err := s.WorkspaceVM(ctx); err == nil && vm.SandboxID == sandboxID {
+		return ErrSandboxIsWorkspaceVM
+	}
+	driver, err := s.runtimeByName(runtimeName)
 	if err != nil {
 		return err
 	}
@@ -204,7 +261,7 @@ func (s *Service) DestroyLeakedSandbox(ctx context.Context, runtimeName, handle 
 	if err != nil {
 		return err
 	}
-	if !slices.ContainsFunc(instances, func(i sandbox.Instance) bool { return string(i.Handle) == handle }) {
+	if !slices.ContainsFunc(instances, func(i sandbox.Instance) bool { return string(i.ID) == sandboxID }) {
 		return ErrSandboxNotFound
 	}
 
@@ -213,15 +270,15 @@ func (s *Service) DestroyLeakedSandbox(ctx context.Context, runtimeName, handle 
 		return err
 	}
 	for _, sess := range sessions {
-		if sess.Runtime == runtimeName && sess.ContainerID == handle {
+		if sess.Runtime == runtimeName && sess.SandboxID == sandboxID {
 			return ErrSandboxHasSession
 		}
 	}
 
-	if err := driver.Destroy(ctx, sandbox.Handle(handle)); err != nil {
+	if err := driver.Destroy(ctx, sandbox.ID(sandboxID)); err != nil {
 		return err
 	}
-	s.logger.Info("leaked sandbox destroyed", "runtime", runtimeName, "handle", handle)
+	s.logger.Info("leaked sandbox destroyed", "runtime", runtimeName, "sandbox", sandboxID)
 	return nil
 }
 
@@ -255,16 +312,16 @@ type RuntimesViewResponse struct {
 	Runtimes []RuntimeView `json:"runtimes"`
 }
 
-// handleDestroySandbox serves DELETE /api/runtimes/{runtime}/sandboxes/{handle}, the cleanup for a
+// handleDestroySandbox serves DELETE /api/runtimes/{runtime}/sandboxes/{sandbox_id}, the cleanup for a
 // sandbox nothing owns. Refuses anything a session still points at.
 func (s *Service) handleDestroySandbox(w http.ResponseWriter, r *http.Request) {
-	err := s.DestroyLeakedSandbox(r.Context(), r.PathValue("runtime"), r.PathValue("handle"))
+	err := s.DestroyLeakedSandbox(r.Context(), r.PathValue("runtime"), r.PathValue("sandbox_id"))
 	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, ErrSandboxNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrSandboxHasSession):
+	case errors.Is(err, ErrSandboxHasSession), errors.Is(err, ErrSandboxIsWorkspaceVM):
 		writeErrorCode(w, http.StatusConflict, codeInvalidInput, err.Error())
 	default:
 		var unknown ErrUnknownRuntime

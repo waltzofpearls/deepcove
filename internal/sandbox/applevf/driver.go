@@ -38,7 +38,7 @@ type Driver struct {
 	allowedRoots []string
 
 	mu       sync.Mutex
-	machines map[sandbox.Handle]*session
+	machines map[sandbox.ID]*session
 }
 
 // session is one created sandbox: its spec, its resolved base image, and the VM once started.
@@ -46,6 +46,8 @@ type session struct {
 	spec      sandbox.SandboxSpec
 	baseImage string
 	machine   *machine
+	// starting is set while Start is booting this VM. Guarded by the driver's mutex, like machine.
+	starting  bool
 	createdAt time.Time
 }
 
@@ -93,7 +95,7 @@ func New(kernelPath, guestInitPath, stateDir string, opts ...Option) (*Driver, e
 		disks:     filepath.Join(stateDir, "vm-disks"),
 		kernel:    kernelPath,
 		guestInit: guestInitPath,
-		machines:  map[sandbox.Handle]*session{},
+		machines:  map[sandbox.ID]*session{},
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -101,7 +103,30 @@ func New(kernelPath, guestInitPath, stateDir string, opts ...Option) (*Driver, e
 	if d.logger == nil {
 		d.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	d.sweepSwapDisks()
 	return d, nil
+}
+
+// sweepSwapDisks removes swap disks left by a previous process.
+//
+// A VM dies with the process that ran it, so anything here at startup belongs to a sandbox that no
+// longer exists, and swap is worthless across a boot regardless. Destroy removes the swap of a machine
+// it tears down; this covers the machines it never got to, which is all of them after a restart.
+// Without it they accumulate one per sandbox, forever.
+func (d *Driver) sweepSwapDisks() {
+	matches, err := filepath.Glob(filepath.Join(d.disks, "swap-*.img"))
+	if err != nil || len(matches) == 0 {
+		return
+	}
+	removed := 0
+	for _, path := range matches {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			d.logger.Warn("could not remove a stale swap disk", "path", path, "err", err)
+			continue
+		}
+		removed++
+	}
+	d.logger.Info("removed stale swap disks", "count", removed)
 }
 
 var (
@@ -112,7 +137,7 @@ var (
 
 // Create resolves the session's image into a cached read only ext4 base and records the spec. The VM is
 // not booted until Start, mirroring the Docker driver's create then start split.
-func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.Handle, error) {
+func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.ID, error) {
 	if err := sandbox.ValidateSpec(spec, d.allowedRoots); err != nil {
 		return "", err
 	}
@@ -123,7 +148,7 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 	if err != nil {
 		return "", err
 	}
-	handle := sandbox.Handle(newHandleID())
+	handle := sandbox.ID(newHandleID())
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -133,7 +158,7 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 
 // Start boots the VM for a created sandbox and, when a credential store is configured, begins serving the
 // guest's credential requests.
-func (d *Driver) Start(ctx context.Context, h sandbox.Handle) error {
+func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
 	s, err := d.lookup(h)
 	if err != nil {
 		return err
@@ -141,6 +166,14 @@ func (d *Driver) Start(ctx context.Context, h sandbox.Handle) error {
 	if s.machine != nil {
 		return fmt.Errorf("applevf: sandbox %s is already started: %w", h, sandbox.ErrConflict)
 	}
+	d.mu.Lock()
+	s.starting = true
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		s.starting = false
+		d.mu.Unlock()
+	}()
 
 	shares, guestMounts := hostShares(s.spec.Mounts)
 	home, err := d.homeDisk(s.spec)
@@ -216,13 +249,17 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 	out := make([]sandbox.Instance, 0, len(d.machines))
 	for h, s := range d.machines {
 		state := sandbox.InstanceStopped
-		if s.machine != nil {
+		switch {
+		case s.machine != nil:
 			state = sandbox.InstanceRunning
+		case s.starting:
+			state = sandbox.InstanceStarting
 		}
 		out = append(out, sandbox.Instance{
-			Handle:    h,
+			ID:        h,
 			State:     state,
 			Image:     s.spec.Image,
+			Mounts:    hostMounts(s.spec.Mounts),
 			Resources: actualResources(s.spec.Resources),
 			CreatedAt: s.createdAt,
 		})
@@ -233,13 +270,25 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
 			return c
 		}
-		return strings.Compare(string(a.Handle), string(b.Handle))
+		return strings.Compare(string(a.ID), string(b.ID))
 	})
 	return out, nil
 }
 
 // DefaultResources implements sandbox.ResourceDefaulter: what a session gets when it names no size.
 func (d *Driver) DefaultResources() sandbox.Resources { return actualResources(sandbox.Resources{}) }
+
+// hostMounts keeps the shares that name a real host folder. A volume mount's source is a driver managed
+// name, which a VM has no equivalent for and a reader cannot act on.
+func hostMounts(mounts []sandbox.Mount) []sandbox.Mount {
+	out := make([]sandbox.Mount, 0, len(mounts))
+	for _, m := range mounts {
+		if m.Type != sandbox.MountVolume {
+			out = append(out, m)
+		}
+	}
+	return out
+}
 
 // hostShares turns the spec's mounts into virtio-fs shares and the matching guest side mount list.
 //
@@ -303,7 +352,7 @@ const bootTimeout = 20 * time.Second
 
 // Stop asks the guest to power itself off, which also gives it the chance to hand back refreshed
 // credentials. Stopping an already stopped sandbox is not an error.
-func (d *Driver) Stop(_ context.Context, h sandbox.Handle) error {
+func (d *Driver) Stop(_ context.Context, h sandbox.ID) error {
 	s, err := d.lookup(h)
 	if err != nil {
 		return err
@@ -326,7 +375,7 @@ func (d *Driver) Stop(_ context.Context, h sandbox.Handle) error {
 
 // Destroy stops the VM if it is running and forgets the sandbox. The cached base image survives, because
 // it is shared by every session using that image.
-func (d *Driver) Destroy(ctx context.Context, h sandbox.Handle) error {
+func (d *Driver) Destroy(ctx context.Context, h sandbox.ID) error {
 	if err := d.Stop(ctx, h); err != nil {
 		return err
 	}
@@ -345,7 +394,7 @@ func (d *Driver) Destroy(ctx context.Context, h sandbox.Handle) error {
 }
 
 // Exec runs a command inside a started VM over vsock.
-func (d *Driver) Exec(ctx context.Context, h sandbox.Handle, cmd sandbox.ExecSpec) (sandbox.Process, error) {
+func (d *Driver) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSpec) (sandbox.Process, error) {
 	m, err := d.runningMachine(h)
 	if err != nil {
 		return nil, err
@@ -384,7 +433,7 @@ func streamStdin(proc sandbox.Process, r io.Reader) {
 
 // Logs returns the guest's serial console, which carries kernel messages and the init's boot progress.
 // It is a live stream rather than a replayable buffer, so LogOpts is ignored.
-func (d *Driver) Logs(_ context.Context, h sandbox.Handle, _ sandbox.LogOpts) (io.ReadCloser, error) {
+func (d *Driver) Logs(_ context.Context, h sandbox.ID, _ sandbox.LogOpts) (io.ReadCloser, error) {
 	m, err := d.runningMachine(h)
 	if err != nil {
 		return nil, err
@@ -419,20 +468,20 @@ func (d *Driver) ImagePull(ctx context.Context, ref string, onProgress func(sand
 
 // CopyIn and CopyOut are not implemented yet. The session layer does not use them, and moving files into
 // a VM needs a guest side helper rather than a daemon API call.
-func (d *Driver) CopyIn(context.Context, sandbox.Handle, string, string) error {
+func (d *Driver) CopyIn(context.Context, sandbox.ID, string, string) error {
 	return fmt.Errorf("applevf: copy into a VM is not implemented: %w", sandbox.ErrNotSupported)
 }
 
-func (d *Driver) CopyOut(context.Context, sandbox.Handle, string, string) error {
+func (d *Driver) CopyOut(context.Context, sandbox.ID, string, string) error {
 	return fmt.Errorf("applevf: copy out of a VM is not implemented: %w", sandbox.ErrNotSupported)
 }
 
 // Snapshot and Restore are optional; the session layer falls back to cold starting a fresh VM.
-func (d *Driver) Snapshot(context.Context, sandbox.Handle) (sandbox.SnapshotID, error) {
+func (d *Driver) Snapshot(context.Context, sandbox.ID) (sandbox.SnapshotID, error) {
 	return "", sandbox.ErrNotSupported
 }
 
-func (d *Driver) Restore(context.Context, sandbox.Handle, sandbox.SnapshotID) error {
+func (d *Driver) Restore(context.Context, sandbox.ID, sandbox.SnapshotID) error {
 	return sandbox.ErrNotSupported
 }
 
@@ -485,7 +534,7 @@ func swapDiskBytes(memory uint64) int64 {
 //
 // Named by sandbox rather than by session, unlike the home disk: swap belongs to the machine and holds
 // nothing worth keeping, so a rebuilt sandbox gets a fresh one.
-func (d *Driver) swapDisk(h sandbox.Handle, memory uint64) (string, error) {
+func (d *Driver) swapDisk(h sandbox.ID, memory uint64) (string, error) {
 	size := swapDiskBytes(memory)
 	if size <= 0 {
 		return "", nil
@@ -573,7 +622,7 @@ func (d *Driver) Close() error {
 	return firstErr
 }
 
-func (d *Driver) lookup(h sandbox.Handle) (*session, error) {
+func (d *Driver) lookup(h sandbox.ID) (*session, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s, ok := d.machines[h]
@@ -583,7 +632,7 @@ func (d *Driver) lookup(h sandbox.Handle) (*session, error) {
 	return s, nil
 }
 
-func (d *Driver) runningMachine(h sandbox.Handle) (*machine, error) {
+func (d *Driver) runningMachine(h sandbox.ID) (*machine, error) {
 	s, err := d.lookup(h)
 	if err != nil {
 		return nil, err
@@ -600,10 +649,12 @@ func (d *Driver) runningMachine(h sandbox.Handle) (*machine, error) {
 // so an unset limit becomes a sensible default rather than zero.
 const (
 	defaultCPUCount uint = 2
-	// 4 GiB rather than 2. A coding agent is a big JavaScript runtime, the writable layer it installs
-	// into is tmpfs and therefore comes out of this same budget, and the guest has NO SWAP, so reaching
-	// the ceiling is not slow, it is a SIGKILL from the OOM killer mid conversation. The guest only
-	// consumes host memory for pages it actually touches, so a higher ceiling costs an idle VM nothing.
+	// 4 GiB rather than 2. A coding agent is a big JavaScript runtime, and the writable layer it installs
+	// into is tmpfs, so files written inside the VM come out of this same budget. Swap catches a spill
+	// now, but swap is a disk: it stops the OOM kill, it does not make 2 GiB feel like 4.
+	//
+	// A ceiling, not a reservation: the guest only consumes host memory for pages it touches, so a
+	// higher one costs an idle VM nothing and lowering it fits no more sessions.
 	defaultMemoryBytes uint64 = 4 << 30
 )
 

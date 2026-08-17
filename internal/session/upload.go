@@ -38,7 +38,7 @@ func (s *Service) UploadFile(ctx context.Context, id, origName string, data []by
 	if err != nil {
 		return nil, err
 	}
-	if sess.Status != StatusRunning || sess.ContainerID == "" {
+	if sess.Status != StatusRunning || sess.SandboxID == "" {
 		return nil, fmt.Errorf("session is not running")
 	}
 
@@ -53,7 +53,7 @@ func (s *Service) UploadFile(ctx context.Context, id, origName string, data []by
 	if err != nil {
 		return nil, err
 	}
-	proc, err := runtime.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
+	proc, err := runtime.Exec(ctx, sandbox.ID(sess.SandboxID), sandbox.ExecSpec{
 		Cmd:   []string{"sh", "-c", script},
 		Stdin: bytes.NewReader(data),
 		Tty:   false,

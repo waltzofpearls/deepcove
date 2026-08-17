@@ -99,7 +99,7 @@
     try {
       const updated = await api.editMounts(session.id, payload, host);
       // Push the updated session back to the parent; their preview
-      // / status row / tabs reflect the new container_id immediately.
+      // / status row / tabs reflect the new sandbox_id immediately.
       session = updated;
       open = false;
     } catch (e) {

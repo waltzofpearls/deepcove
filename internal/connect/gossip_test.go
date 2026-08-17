@@ -53,14 +53,7 @@ func TestObserveClusterKeepsChangeTime(t *testing.T) {
 }
 
 func TestNodeClusterTimestampSurvivesReload(t *testing.T) {
-	database, err := db.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer func() { _ = database.Close() }()
-	if err := db.Migrate(database); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	database := db.OpenForTest(t)
 	// Far-apart times so any TIMESTAMP timezone interpretation on read can't flip the ordering.
 	early := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	late := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

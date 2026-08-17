@@ -16,7 +16,10 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/preflight", s.handlePreflight)
 	mux.HandleFunc("POST /api/runtimes/{runtime}/setup", s.handleSetupRuntime)
 	mux.HandleFunc("GET /api/runtimes", s.handleRuntimes)
-	mux.HandleFunc("DELETE /api/runtimes/{runtime}/sandboxes/{handle}", s.handleDestroySandbox)
+	mux.HandleFunc("DELETE /api/runtimes/{runtime}/sandboxes/{sandbox_id}", s.handleDestroySandbox)
+	mux.HandleFunc("GET /api/workspace-vm", s.handleGetWorkspaceVM)
+	mux.HandleFunc("PUT /api/workspace-vm", s.handleSaveWorkspaceVM)
+	mux.HandleFunc("DELETE /api/workspace-vm", s.handleDeleteWorkspaceVM)
 	mux.HandleFunc("GET /api/fs/list", s.handleFsList)
 	mux.HandleFunc("GET /api/images/exists", s.handleImageExists)
 	mux.HandleFunc("POST /api/images/pull", s.handlePullImage)
@@ -64,7 +67,9 @@ func (s *Service) handleAgents(w http.ResponseWriter, r *http.Request) {
 // edit. Same generator the server uses when a name is omitted.
 // GET /api/sessions/suggest-name?agent=claude
 func (s *Service) handleSuggestName(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"name": generateName(r.URL.Query().Get("agent"))})
+	// Unique too: the form prefills with this, so offering a taken name just fails on submit.
+	name := s.generateUniqueName(r.Context(), r.URL.Query().Get("agent"))
+	writeJSON(w, http.StatusOK, map[string]string{"name": name})
 }
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {

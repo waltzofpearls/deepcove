@@ -52,20 +52,35 @@ func (s *CredentialStore) Load(agent string) (map[string][]byte, error) {
 	return files, nil
 }
 
-// Save replaces the stored bundle for an agent.
+// Save replaces the stored bundle for an agent, keeping the one it replaces.
+//
+// The previous copy is the way back from a push that turns out to be worthless: a guest that lost its
+// login once wiped every session's login this way.
 func (s *CredentialStore) Save(agent string, files map[string][]byte) error {
+	if previous, err := s.Load(agent); err == nil && len(previous) > 0 {
+		if err := s.write(previousKey(agent), previous); err != nil {
+			return err
+		}
+	}
+	return s.write(credentialKey(agent), files)
+}
+
+func (s *CredentialStore) write(key string, files map[string][]byte) error {
 	body, err := json.Marshal(files)
 	if err != nil {
-		return fmt.Errorf("session: encode credentials for %q: %w", agent, err)
+		return fmt.Errorf("session: encode credentials for %q: %w", key, err)
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO settings (key, value) VALUES (?, ?)
 		ON CONFLICT (key) DO UPDATE SET value = excluded.value
-	`, credentialKey(agent), string(body))
+	`, key, string(body))
 	if err != nil {
-		return fmt.Errorf("session: save credentials for %q: %w", agent, err)
+		return fmt.Errorf("session: save credentials for %q: %w", key, err)
 	}
 	return nil
 }
 
 func credentialKey(agent string) string { return credentialSettingPrefix + agent }
+
+// previousKey names the bundle a save replaced.
+func previousKey(agent string) string { return credentialSettingPrefix + agent + "/previous" }

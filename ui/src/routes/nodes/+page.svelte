@@ -149,7 +149,7 @@
   }
 </script>
 
-<div class="mx-auto max-w-2xl p-6">
+<div class="mx-auto max-w-5xl p-6">
   <div class="mb-6 flex items-center gap-3">
     <a
       href="/"

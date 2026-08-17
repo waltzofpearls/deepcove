@@ -25,7 +25,7 @@ func (r *fakeRepo) MarkRunning(context.Context, string, string, time.Time) error
 func (r *fakeRepo) MarkStopped(context.Context, string, string, time.Time) error    { return nil }
 func (r *fakeRepo) UpdateActivity(context.Context, string, string, time.Time) error { return nil }
 func (r *fakeRepo) Rename(context.Context, string, string, string, time.Time) error { return nil }
-func (r *fakeRepo) UpdateMountsAndContainer(context.Context, string, string, []MountRequest, string, time.Time) error {
+func (r *fakeRepo) UpdateMountsAndSandbox(context.Context, string, string, []MountRequest, string, time.Time) error {
 	return nil
 }
 func (r *fakeRepo) Delete(context.Context, string, string) error { return nil }
@@ -185,5 +185,33 @@ func TestListAggregated_SingleNode(t *testing.T) {
 	}
 	if resp.Self != nil || resp.Unreachable != nil {
 		t.Errorf("single-node should have no Self/Unreachable, got self=%v unreachable=%v", resp.Self, resp.Unreachable)
+	}
+}
+
+// A workspace session for another node is that node's business: this one must not read its own record
+// or build a machine, it must hand the request over.
+func TestCreateRoutedWorkspaceSessionGoesToThePeer(t *testing.T) {
+	svc, lister := workspaceService(t)
+	peer := NodeRef{StableNodeID: "n-peer", Hostname: "deepcove-peer"}
+	fed := &fakeFederation{self: NodeRef{StableNodeID: "n-self"}, peers: []NodeRef{peer}}
+	svc.SetFederation(fed)
+
+	built := len(lister.created)
+	sess, err := svc.CreateRouted(context.Background(), CreateRequest{
+		Agent:         "claude",
+		OnWorkspaceVM: true,
+		NodeID:        peer.StableNodeID,
+	})
+	if err != nil {
+		t.Fatalf("CreateRouted: %v", err)
+	}
+	if fed.createdOn != peer.StableNodeID {
+		t.Errorf("created on %q, want the peer %q", fed.createdOn, peer.StableNodeID)
+	}
+	if sess.ID != "remote-created" {
+		t.Errorf("got session %q, want the peer's", sess.ID)
+	}
+	if got := len(lister.created) - built; got != 0 {
+		t.Errorf("built %d machines locally, want none: the peer hosts it", got)
 	}
 }

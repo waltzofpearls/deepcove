@@ -9,45 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/waltzofpearls/deepcove/internal/db"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
-
-	_ "github.com/marcboeker/go-duckdb/v2"
 )
-
-// openTestDB opens an in-memory DuckDB and creates the sessions
-// schema. Mirrors the production migration but inline so tests don't
-// depend on the repository package's embed setup.
-func openTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("duckdb", "")
-	if err != nil {
-		t.Fatalf("open duckdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if _, err := db.Exec(`
-		CREATE TABLE sessions (
-			id               TEXT PRIMARY KEY,
-			name             TEXT NOT NULL UNIQUE,
-			agent            TEXT NOT NULL,
-			image            TEXT NOT NULL,
-			owner_email      TEXT NOT NULL,
-			status           TEXT NOT NULL DEFAULT 'created',
-			mounts           TEXT NOT NULL DEFAULT '[]',
-			env              TEXT NOT NULL DEFAULT '{}',
-			setup_script     TEXT NOT NULL DEFAULT '',
-			runtime          TEXT NOT NULL DEFAULT 'docker',
-			resources        TEXT NOT NULL DEFAULT '{}',
-			container_id     TEXT,
-			created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			last_activity_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`); err != nil {
-		t.Fatalf("create sessions: %v", err)
-	}
-	return db
-}
 
 // newTestService spins up a Service backed by an in-memory DuckDB
 // session repo and a fake sandbox. Returns the *sql.DB too so tests
@@ -55,18 +19,22 @@ func openTestDB(t *testing.T) *sql.DB {
 // so directly; that's a test-only escape hatch, not a public API.
 func newTestService(t *testing.T) (*Service, *fakeSandbox, string, *sql.DB) {
 	t.Helper()
-	db := openTestDB(t)
+	database := db.OpenForTest(t)
 	fake := newFakeSandbox()
 	dataDir := t.TempDir()
-	svc := newServiceWithRuntime(t, NewDuckDBSessionRepository(db), fake)
-	return svc, fake, dataDir, db
+	svc := newServiceWithRuntime(t, database, fake)
+	return svc, fake, dataDir, database
 }
 
 // newServiceWithRuntime wires a service with one registered runtime, standing in for what the CLI does
 // at startup now that the service no longer assumes a runtime of its own.
-func newServiceWithRuntime(t *testing.T, repo SessionRepository, sb sandbox.Sandbox) *Service {
+func newServiceWithRuntime(t *testing.T, database *sql.DB, sb sandbox.Sandbox) *Service {
 	t.Helper()
-	svc := NewService(repo, nil)
+	svc := NewService(NewDuckDBSessionRepository(database), nil)
+	svc.SetWorkspaceVMStore(NewDuckDBWorkspaceVMStore(database))
+	// Background work is dropped: a test asserting an exact driver call sequence cannot race a goroutine
+	// making its own exec calls. Tests that want it call the function directly.
+	svc.background = func(func()) {}
 	svc.RegisterRuntime(RuntimeDocker, sb)
 	// SetDefaultRuntime, not SelectDefaultRuntime: the latter probes for a reachable runtime, and a test
 	// asserting an exact driver call sequence should not carry that probe.
@@ -805,8 +773,8 @@ func TestService_EditMounts(t *testing.T) {
 				if len(updated.Mounts) != tc.wantMountsLen {
 					t.Errorf("updated.Mounts len: want %d, got %d (%+v)", tc.wantMountsLen, len(updated.Mounts), updated.Mounts)
 				}
-				if updated.ContainerID == "" {
-					t.Errorf("updated.ContainerID should be non-empty after recreate")
+				if updated.SandboxID == "" {
+					t.Errorf("updated.SandboxID should be non-empty after recreate")
 				}
 			}
 

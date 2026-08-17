@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -8,10 +9,32 @@ import (
 
 // generateName returns a Docker-style auto-name in the shape
 // "<agent>-<adjective>_<scientist>", e.g. "claude-witty_curie".
-// Collisions with existing names are the caller's problem to handle
-// (retry on a UNIQUE-constraint violation).
 func generateName(agent string) string {
 	return fmt.Sprintf("%s-%s_%s", agent, pickFrom(adjectives), pickFrom(scientists))
+}
+
+// nameAttempts bounds the search for a free name. Each try is independent, so a clash is likely but
+// staying stuck is not.
+const nameAttempts = 20
+
+// generateUniqueName returns a generated name no session is using. Falls back to a plain generated
+// name, which the unique constraint still catches, when the names cannot be read or every try was
+// taken.
+func (s *Service) generateUniqueName(ctx context.Context, agent string) string {
+	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
+	if err != nil {
+		return generateName(agent)
+	}
+	taken := make(map[string]bool, len(sessions))
+	for _, sess := range sessions {
+		taken[sess.Name] = true
+	}
+	for range nameAttempts {
+		if name := generateName(agent); !taken[name] {
+			return name
+		}
+	}
+	return generateName(agent)
 }
 
 // pickFrom returns a cryptographically-random element of the slice.
@@ -29,8 +52,8 @@ func pickFrom(words []string) string {
 	return words[n%uint64(len(words))]
 }
 
-// Wordlists kept small on purpose; collision probability with ~30 × ~30 = 900 combinations is
-// tolerable for a personal-scale node and uniqueness is enforced by the DB anyway.
+// Wordlists kept small on purpose. 900 combinations collide often enough at ten sessions that
+// generateUniqueName checks what is taken; the DB's unique constraint is the backstop.
 
 var adjectives = []string{
 	"witty", "bold", "calm", "eager", "fierce", "gentle", "happy",

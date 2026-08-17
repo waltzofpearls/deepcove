@@ -12,3 +12,10 @@ export function splitPath(v: string): { dir: string | undefined; prefix: string 
   if (idx < 0) return { dir: undefined, prefix: v };
   return { dir: v.slice(0, idx) || '/', prefix: v.slice(idx + 1) };
 }
+
+// looksLikePath is the cheap client side check on a host folder: absolute, and not something that was
+// never a path at all. The server still decides, since only it can tell whether the folder is there.
+export function looksLikePath(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith('/') && !trimmed.includes('\0');
+}

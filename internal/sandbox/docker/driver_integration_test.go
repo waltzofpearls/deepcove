@@ -235,7 +235,7 @@ func TestDriver_NotFound(t *testing.T) {
 	}
 	defer d.Close()
 
-	const missingHandle = sandbox.Handle("definitely-not-a-real-container-id-xyz")
+	const missingHandle = sandbox.ID("definitely-not-a-real-container-id-xyz")
 
 	tests := []struct {
 		name string

@@ -93,7 +93,7 @@
   }
 </script>
 
-<div class="mx-auto max-w-2xl p-6">
+<div class="mx-auto max-w-5xl p-6">
   <div class="mb-6 flex items-center gap-3">
     <a
       href="/"
@@ -105,12 +105,14 @@
     <h1 class="text-lg font-semibold">Settings</h1>
   </div>
 
-  <div class="space-y-8">
+  <!-- Two columns once there is room, one below md. Cards keep each group readable at any width; a full
+       width row leaves the label an inch from its control. -->
+  <div class="grid gap-4 md:grid-cols-2">
     <!-- Appearance -->
-    <section class="space-y-3">
-      <h2 class="text-sm font-medium text-muted-foreground">Appearance</h2>
-      <div class="flex items-center justify-between gap-4">
-        <div>
+    <section class="rounded-xl border border-border bg-card p-4">
+      <h2 class="mb-3 text-sm font-medium text-muted-foreground">Appearance</h2>
+      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+        <div class="min-w-0">
           <div class="text-sm font-medium">Theme</div>
           <div class="text-xs text-muted-foreground">
             {userPrefersMode.current === 'system'
@@ -135,11 +137,11 @@
     </section>
 
     <!-- Dashboard -->
-    <section class="space-y-4">
+    <section class="space-y-4 rounded-xl border border-border bg-card p-4">
       <h2 class="text-sm font-medium text-muted-foreground">Dashboard</h2>
 
-      <div class="flex items-center justify-between gap-4">
-        <div>
+      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+        <div class="min-w-0">
           <div class="text-sm font-medium">Default view</div>
           <div class="text-xs text-muted-foreground">How sessions are laid out.</div>
         </div>
@@ -149,8 +151,8 @@
         </select>
       </div>
 
-      <div class="flex items-center justify-between gap-4">
-        <div>
+      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+        <div class="min-w-0">
           <div class="text-sm font-medium">Refresh interval</div>
           <div class="text-xs text-muted-foreground">
             How often the dashboard and previews poll for updates.
@@ -168,17 +170,17 @@
     <TailnetConnect />
 
     <!-- Cluster -->
-    <section class="space-y-3">
+    <section class="space-y-3 rounded-xl border border-border bg-card p-4">
       <h2 class="text-sm font-medium text-muted-foreground">Cluster</h2>
-      <div class="flex items-start justify-between gap-4">
-        <div class="max-w-xs">
+      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start sm:gap-4">
+        <div class="min-w-0">
           <div class="text-sm font-medium">Cluster name</div>
           <div class="text-xs text-muted-foreground">
             Group this node with your others. Nodes that share a name are shown together on the
             dashboard. Leave it as <span class="font-mono">default</span> if you don't need groups.
           </div>
         </div>
-        <div class="flex shrink-0 items-center gap-2">
+        <div class="flex shrink-0 items-center gap-2 sm:justify-self-end">
           <input
             bind:value={clusterDraft}
             list="known-clusters"
@@ -209,7 +211,7 @@
     </section>
 
     <!-- About -->
-    <section class="space-y-3">
+    <section class="space-y-3 rounded-xl border border-border bg-card p-4">
       <h2 class="text-sm font-medium text-muted-foreground">About</h2>
       <div class="flex items-center justify-between gap-4 text-sm">
         <span class="font-medium">deepcove</span>

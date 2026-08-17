@@ -1,7 +1,7 @@
 // Package session manages the lifecycle of coding-agent sessions hosted on this node: the layer
 // between the API surface and the sandbox driver.
 //
-// A Session is a row in the sessions table plus a live sandbox handle. The Service handles
+// A Session is a row in the sessions table plus a live sandbox. The Service handles
 // create/list/get/stop/destroy with the sandbox driver, persisting state in DuckDB so it survives a
 // service restart.
 //
@@ -46,8 +46,14 @@ type Session struct {
 	// node can offer several, so stop, destroy, and exec must route back to the driver that created it.
 	Runtime string `json:"runtime"`
 	// Resources caps this session's CPU, memory, and disk. Zero fields mean the runtime's defaults.
-	Resources      Resources `json:"resources"`
-	ContainerID    string    `json:"container_id,omitempty"`
+	Resources Resources `json:"resources"`
+	SandboxID string    `json:"sandbox_id,omitempty"`
+	// OnWorkspaceVM means this session lives on the shared machine. Persisted, so a stopped session
+	// still knows where it belongs.
+	OnWorkspaceVM bool `json:"on_workspace_vm,omitempty"`
+	// WorkDir is where the agent and the shell start, a folder under the workspace root. Empty falls
+	// back to the first mount, then /workspace.
+	WorkDir        string    `json:"work_dir,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 	LastActivityAt time.Time `json:"last_activity_at"`
@@ -73,6 +79,12 @@ type CreateRequest struct {
 	// means create here; another node's id proxies the create to that node over the tailnet. The
 	// session lives on the node that creates it.
 	NodeID string `json:"node_id,omitempty"`
+	// OnWorkspaceVM puts the session on this node's shared machine instead of building it one. The
+	// machine owns the mounts, so a session on it takes none.
+	OnWorkspaceVM bool `json:"on_workspace_vm,omitempty"`
+	// WorkDir is the folder this session works in, created if missing. A bare name is taken as a folder
+	// under the workspace root; empty means one named after the session. Workspace sessions only.
+	WorkDir string `json:"work_dir,omitempty"`
 }
 
 // MountRequest is one entry in CreateRequest.Mounts: a host path mapped into the sandbox at a

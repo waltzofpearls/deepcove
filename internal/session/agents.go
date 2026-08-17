@@ -28,6 +28,10 @@ func Agents() []AgentInfo {
 	return out
 }
 
+// defaultAgent is the agent a machine is built for when no session picked one. v1 ships Claude only,
+// so the shared machine is a Claude machine.
+const defaultAgent = "claude"
+
 // DefaultSetup must be idempotent (`command -v <bin>` before installing); runs every
 // container boot. LaunchCmd runs in tmux window `main` and auto-restarts on agent exit;
 // SSH mode is the shell escape hatch.
@@ -43,27 +47,25 @@ var agents = map[string]AgentInfo{
 command -v claude >/dev/null 2>&1 || [ -x "$HOME/.local/bin/claude" ] || curl -fsSL https://claude.ai/install.sh | bash
 [ -x /root/.local/bin/claude ] && ln -sf /root/.local/bin/claude /usr/local/bin/claude`,
 		LaunchCmd: `export PATH="$HOME/.local/bin:$PATH"
-# Pick up the previous conversation when there is one, decided once per boot.
-#
-# A container keeps its agent process across a deepcove restart, so it never notices. A VM does not: it
-# is rebuilt from scratch, and the agent would start blank even though its history is sitting on the
-# session's persistent home. --continue resumes the most recent conversation in the working directory.
-#
-# Cleared after the agent exits, so a resume that cannot work falls back to a fresh session on the next
-# attempt instead of failing the same way forever.
-resume=""
-if ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1; then
-  resume="--continue"
-fi
+# The conversation is pinned to the deepcove session id, so a VM rebuild picks the history back up and
+# sessions sharing a machine and a directory never resume each other. Resolved per attempt: no file for
+# our id means start it, a file means continue it.
+conversation() {
+  [ -n "$DEEPCOVE_SESSION_ID" ] || return
+  if ls "$HOME"/.claude/projects/*/"$DEEPCOVE_SESSION_ID".jsonl >/dev/null 2>&1; then
+    echo "--resume $DEEPCOVE_SESSION_ID"
+  else
+    echo "--session-id $DEEPCOVE_SESSION_ID"
+  fi
+}
 # Consecutive out-of-memory kills. An OOM is deterministic: the session's memory does not grow between
 # attempts, so retrying forever just burns CPU and scrolls the explanation out of view. Reset on any
 # other exit, so an unlucky one-off spike still gets retried.
 ooms=0
 while true; do
   cd "${DEEPCOVE_WORKDIR:-/workspace}"
-  claude $resume
+  claude $(conversation)
   ec=$?
-  resume=""
   echo ""
   # 137 is SIGKILL, and in a VM with no swap that is almost always the kernel reclaiming memory. Say so
   # instead of printing a bare number: "code 137" sends you hunting through deepcove, when the answer is

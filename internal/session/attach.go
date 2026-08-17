@@ -96,8 +96,15 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// processes piling up inside the container after each toggle).
 	viewSession := "view-" + uuid.NewString()[:8]
 	setupCtx, cancelSetup := context.WithTimeout(ctx, 3*time.Second)
+
+	// The agent's session can be missing: its background start failed, or the machine rebooted.
+	// Idempotent, so just create it rather than fail the attach.
+	if err := s.startAgentSession(setupCtx, sess, sessionWorkdir(sess)); err != nil {
+		s.logger.Warn("attach: could not ensure the agent session", "id", id, "err", err)
+	}
+
 	if _, err := s.execTmux(setupCtx, sess,
-		"new-session", "-d", "-s", viewSession, "-t", AgentTmuxWindowName,
+		"new-session", "-d", "-s", viewSession, "-t", tmuxSessionName(sess.ID),
 	); err != nil {
 		cancelSetup()
 		s.logger.Warn("attach: view session setup failed", "id", id, "err", err)
@@ -141,7 +148,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("attach: unknown runtime", "id", id, "err", err)
 		return
 	}
-	proc, err := runtime.Exec(ctx, sandbox.Handle(sess.ContainerID), sandbox.ExecSpec{
+	proc, err := runtime.Exec(ctx, sandbox.ID(sess.SandboxID), sandbox.ExecSpec{
 		Cmd: cmd,
 		Tty: true,
 		// TERM is required for tmux to function; without it tmux

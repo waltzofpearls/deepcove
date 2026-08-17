@@ -44,6 +44,6 @@
       <span class="truncate">{remoteName}</span>
     </span>
   {/if}
-  <RuntimeBadge runtime={session.runtime} />
+  <RuntimeBadge runtime={session.runtime} shared={session.on_workspace_vm ?? false} />
   <ClusterBadge cluster={session.host?.cluster ?? ''} />
 </div>
