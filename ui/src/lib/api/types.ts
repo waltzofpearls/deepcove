@@ -24,6 +24,8 @@ export interface Session {
   sandbox_id?: string;
   // On this node's shared machine, rather than one of its own.
   on_workspace_vm?: boolean;
+  // LLM requests go to this node's LLM proxy instead of the agent's own login.
+  use_llm_proxy?: boolean;
   // The folder this session works in, inside the sandbox.
   work_dir?: string;
   created_at: string; // ISO-8601 timestamp
@@ -80,9 +82,17 @@ export interface CreateSessionRequest {
   // Put the session on this node's shared machine instead of building it one. The machine owns the
   // mounts, its runtime and its size, so those are ignored.
   on_workspace_vm?: boolean;
+  // Send this session's LLM requests to the node's LLM proxy. Omitted means no.
+  use_llm_proxy?: boolean;
   // The session's folder under the workspace root, created if missing. Empty means one named after the
   // session. Workspace sessions only.
   work_dir?: string;
+}
+
+// LLMProxy is where this node's sessions send LLM requests. An empty url means straight to the
+// provider, with the key inside the sandbox.
+export interface LLMProxy {
+  url: string;
 }
 
 // WorkspaceVM mirrors internal/session.WorkspaceVM: this node's shared machine, one per node. Sessions

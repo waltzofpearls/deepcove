@@ -26,7 +26,13 @@ func setupNetwork() error {
 
 // linkUp sets IFF_UP on an interface using ioctls directly, so it works without an `ip` or `ifconfig`
 // binary in the image.
-func linkUp(name string) error {
+func linkUp(name string) error { return setLinkFlag(name, true) }
+
+// linkDown clears IFF_UP. Used when the sandbox network cannot be restricted, where no network is the
+// safer answer.
+func linkDown(name string) error { return setLinkFlag(name, false) }
+
+func setLinkFlag(name string, up bool) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return fmt.Errorf("open control socket: %w", err)
@@ -40,9 +46,13 @@ func linkUp(name string) error {
 	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
 		return fmt.Errorf("read flags: %w", err)
 	}
-	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
+	if up {
+		ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
+	} else {
+		ifr.SetUint16(ifr.Uint16() &^ unix.IFF_UP)
+	}
 	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		return fmt.Errorf("set up: %w", err)
+		return fmt.Errorf("set flags: %w", err)
 	}
 	return nil
 }

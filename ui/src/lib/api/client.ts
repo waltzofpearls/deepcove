@@ -11,6 +11,7 @@ import type {
   CreateSessionRequest,
   CreateTmuxWindowRequest,
   FsListResponse,
+  LLMProxy,
   MountRequest,
   NodeInfo,
   Preflight,
@@ -262,6 +263,23 @@ export const api = {
         method: 'DELETE',
       },
     );
+  },
+
+  // llmProxy is where a node's sessions send LLM requests. The setting is per node, so a session on
+  // another node is asked about that node.
+  llmProxy(host?: SessionHost, signal?: AbortSignal): Promise<LLMProxy> {
+    return request('/llm-proxy', { signal }, transportForHost(host));
+  },
+
+  // An empty url sends sessions to the provider. Applies to machines built after it, not running ones.
+  saveLLMProxy(url: string): Promise<LLMProxy> {
+    return request('/llm-proxy', { method: 'PUT', body: JSON.stringify({ url }) });
+  },
+
+  // testLLMProxy asks this node to make one request to the configured proxy, so the UI can report
+  // whether it is reachable from here.
+  testLLMProxy(): Promise<{ result: string }> {
+    return request('/llm-proxy/test', { method: 'POST' });
   },
 
   // workspaceVM is this node's shared machine, or null when there is none. Null is the normal state
@@ -542,6 +560,19 @@ export const api = {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
+      },
+      transportForHost(host),
+    );
+  },
+
+  // setSessionUseLLMProxy turns the node's LLM proxy on or off for one session, restarting its agent.
+  setSessionUseLLMProxy(id: string, use: boolean, host?: SessionHost): Promise<Session> {
+    return request(
+      `/sessions/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ use_llm_proxy: use }),
       },
       transportForHost(host),
     );

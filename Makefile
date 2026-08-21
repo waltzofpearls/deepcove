@@ -199,6 +199,35 @@ guest-init: ## Build the Linux guest init binary into the package that embeds it
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GUEST_ARCH) \
 		go build -ldflags '-s -w' -o $(GUEST_INIT_EMBED) ./cmd/deepcove-guest-init
 
+.PHONY: aperture-relay
+aperture-relay: ## Build the Aperture relay for linux amd64 + arm64 into dist/relay/
+	@mkdir -p dist/relay
+	@for arch in amd64 arm64; do \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
+			go build -ldflags '-s -w' -o dist/relay/aperture-relay-linux-$$arch ./cmd/aperture-relay || exit 1; \
+		echo "built dist/relay/aperture-relay-linux-$$arch"; \
+	done
+
+.PHONY: relay-bundle
+relay-bundle: aperture-relay ## Package the relay with its installer into dist/relay/aperture-relay.tar.gz
+	@cp cmd/aperture-relay/deploy/install.sh cmd/aperture-relay/deploy/aperture-relay.service dist/relay/
+	@chmod +x dist/relay/install.sh
+	@tar -czf dist/relay/aperture-relay.tar.gz -C dist/relay \
+		aperture-relay-linux-amd64 aperture-relay-linux-arm64 install.sh aperture-relay.service
+	@echo "built dist/relay/aperture-relay.tar.gz"
+
+# HOST is anything ssh accepts. UPSTREAM and ALLOW are only needed the first time.
+#   make relay-deploy HOST=user@approved-vm UPSTREAM=aperture.example.ts.net:80 ALLOW=100.75.35.244/32
+.PHONY: relay-deploy
+relay-deploy: relay-bundle ## Copy the relay bundle to HOST over ssh and install it
+	@test -n "$(HOST)" || { echo "set HOST=<ssh target>"; exit 1; }
+	scp dist/relay/aperture-relay.tar.gz $(HOST):/tmp/aperture-relay.tar.gz
+	ssh $(HOST) 'rm -rf /tmp/aperture-relay && mkdir -p /tmp/aperture-relay \
+		&& tar -xzf /tmp/aperture-relay.tar.gz -C /tmp/aperture-relay \
+		&& sudo /tmp/aperture-relay/install.sh \
+			$(if $(UPSTREAM),--upstream $(UPSTREAM)) $(if $(ALLOW),--allow $(ALLOW)) $(if $(LISTEN),--listen $(LISTEN)) \
+		&& rm -rf /tmp/aperture-relay /tmp/aperture-relay.tar.gz'
+
 .PHONY: applevf-smoke
 applevf-smoke: ## Build + codesign the VF boot smoke harness (needs an Apple signing identity)
 	@mkdir -p dist/darwin-$(shell go env GOARCH)

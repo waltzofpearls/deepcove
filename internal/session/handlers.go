@@ -28,9 +28,12 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions/local", s.handleListLocal)
 	mux.HandleFunc("GET /api/cluster", s.handleGetCluster)
 	mux.HandleFunc("PUT /api/cluster", s.handleSetCluster)
+	mux.HandleFunc("GET /api/llm-proxy", s.handleGetLLMProxy)
+	mux.HandleFunc("PUT /api/llm-proxy", s.handleSetLLMProxy)
+	mux.HandleFunc("POST /api/llm-proxy/test", s.handleTestLLMProxy)
 	mux.HandleFunc("GET /api/sessions/suggest-name", s.handleSuggestName)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
-	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleRename)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatch)
 	mux.HandleFunc("POST /api/sessions/{id}/start", s.handleStart)
 	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
@@ -151,18 +154,69 @@ func (s *Service) handleSetCluster(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"cluster": s.clusterStore.Name()})
 }
 
-// handleRename updates a session's display name. PATCH /api/sessions/{id}
-// with {"name": "..."}; returns the updated session.
-func (s *Service) handleRename(w http.ResponseWriter, r *http.Request) {
+// handleGetLLMProxy serves GET /api/llm-proxy: where this node's sessions send LLM requests.
+func (s *Service) handleGetLLMProxy(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"url": s.LLMProxyURL()})
+}
+
+// handleSetLLMProxy serves PUT /api/llm-proxy. An empty url sends sessions to the provider.
+func (s *Service) handleSetLLMProxy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	url, err := s.SaveLLMProxy(req.URL)
+	if err != nil {
+		writeSandboxError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// handleTestLLMProxy serves POST /api/llm-proxy/test: one request to the configured address, so the UI
+// can report whether this node can reach it.
+func (s *Service) handleTestLLMProxy(w http.ResponseWriter, r *http.Request) {
+	result, err := s.TestLLMProxy(r.Context())
+	if err != nil {
+		writeSandboxError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"result": result})
+}
+
+// handlePatch updates one session. PATCH /api/sessions/{id} with any of {"name": "...",
+// "use_llm_proxy": true}. Fields left out are left alone, which is why they are pointers.
+func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Name string `json:"name"`
+		Name        *string `json:"name"`
+		UseLLMProxy *bool   `json:"use_llm_proxy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	sess, err := s.Rename(r.Context(), id, req.Name)
+	// Checked before anything is applied: a patch carrying both fields should not rename and then fail.
+	if req.Name != nil {
+		if _, err := validateSessionName(*req.Name); err != nil {
+			writeSandboxError(w, err)
+			return
+		}
+	}
+	var sess *Session
+	var err error
+	if req.Name != nil {
+		sess, err = s.Rename(r.Context(), id, *req.Name)
+	}
+	if err == nil && req.UseLLMProxy != nil {
+		sess, err = s.SetUseLLMProxy(r.Context(), id, *req.UseLLMProxy)
+	}
+	if err == nil && sess == nil {
+		sess, err = s.Get(r.Context(), id)
+	}
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return

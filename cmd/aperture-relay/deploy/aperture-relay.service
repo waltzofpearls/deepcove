@@ -1,0 +1,33 @@
+[Unit]
+Description=deepcove Aperture relay
+Documentation=https://github.com/waltzofpearls/deepcove
+# The relay binds this machine's tailnet address, which does not exist until Tailscale is up.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/deepcove/aperture-relay.env
+ExecStart=/usr/local/bin/aperture-relay -listen ${RELAY_LISTEN} -upstream ${RELAY_UPSTREAM} -allow ${RELAY_ALLOW}
+# A reboot can start this before the tailnet address exists. The bind fails, and we try again.
+Restart=always
+RestartSec=2
+
+# The relay needs no user, no files and no privileges of its own.
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+# Second lock on the door: the kernel drops anything off-tailnet before the relay sees it.
+# Localhost stays open for the DNS resolver.
+IPAddressDeny=any
+IPAddressAllow=100.64.0.0/10
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

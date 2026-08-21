@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"sync"
 
@@ -56,7 +57,7 @@ func (rs *runtimeSet) close() {
 // Each runtime is BUILT by its own constructor and REGISTERED here, so the list of what a node provides
 // reads in one place and every runtime joins it the same way. Which one becomes the default is decided
 // afterwards by the caller, from the session package's preference order.
-func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker.Store, logger *slog.Logger) (*runtimeSet, error) {
+func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker.Store, logger *slog.Logger, tailnetClient func() *http.Client) (*runtimeSet, error) {
 	roots := allowedMountRoots()
 	// The service checks a workspace VM's folder against the same list, so a folder it may not share is
 	// refused when you pick it rather than when the machine is built.
@@ -69,7 +70,7 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 	// The VM runtime is platform specific and depends on artifacts being present, so it declines rather
 	// than failing the node. When it declines on a machine that could host VMs it still names itself, so
 	// the gap is something the user can see and fix instead of a runtime that appears not to exist.
-	vm := newVMRuntime(cfg, roots, store, logger)
+	vm := newVMRuntime(svc, cfg, roots, store, logger, tailnetClient)
 	switch {
 	case vm.driver != nil:
 		entries = append(entries, vm)
@@ -84,7 +85,7 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 	}
 	// How to close the gap, if this machine could host VMs but is missing a piece. Registered even when
 	// the runtime is already available, since it costs nothing and keeps the wiring in one place.
-	registerVMInstaller(svc, cfg, roots, store, logger, set)
+	registerVMInstaller(svc, cfg, roots, store, logger, set, tailnetClient)
 	return set, nil
 }
 

@@ -9,7 +9,7 @@
 
 FROM alpine:3.20
 
-RUN apk add --no-cache curl bash tmux libgcc libstdc++ ripgrep
+RUN apk add --no-cache curl bash git tmux libgcc libstdc++ ripgrep
 
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && ln -sf /root/.local/bin/claude /usr/local/bin/claude

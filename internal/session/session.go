@@ -51,6 +51,9 @@ type Session struct {
 	// OnWorkspaceVM means this session lives on the shared machine. Persisted, so a stopped session
 	// still knows where it belongs.
 	OnWorkspaceVM bool `json:"on_workspace_vm,omitempty"`
+	// UseLLMProxy sends this session's LLM requests to the node's LLM proxy. False uses the agent's
+	// own login. Does nothing when the node has no proxy configured.
+	UseLLMProxy bool `json:"use_llm_proxy"`
 	// WorkDir is where the agent and the shell start, a folder under the workspace root. Empty falls
 	// back to the first mount, then /workspace.
 	WorkDir        string    `json:"work_dir,omitempty"`
@@ -82,6 +85,8 @@ type CreateRequest struct {
 	// OnWorkspaceVM puts the session on this node's shared machine instead of building it one. The
 	// machine owns the mounts, so a session on it takes none.
 	OnWorkspaceVM bool `json:"on_workspace_vm,omitempty"`
+	// UseLLMProxy sends this session to the node's LLM proxy. Omitted means no.
+	UseLLMProxy *bool `json:"use_llm_proxy,omitempty"`
 	// WorkDir is the folder this session works in, created if missing. A bare name is taken as a folder
 	// under the workspace root; empty means one named after the session. Workspace sessions only.
 	WorkDir string `json:"work_dir,omitempty"`

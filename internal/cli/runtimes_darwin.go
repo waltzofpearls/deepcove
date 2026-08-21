@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -24,7 +25,7 @@ import (
 // It is deliberately quiet about failure: a node that cannot run VMs still runs sessions in containers,
 // which is a working node rather than a broken one. So an unavailable VM runtime is a zero entry, not an
 // error, with the reason logged for a user who expected it to be there.
-func newVMRuntime(cfg *config.Config, allowedRoots []string, store credbroker.Store, logger *slog.Logger) runtimeEntry {
+func newVMRuntime(svc *session.Service, cfg *config.Config, allowedRoots []string, store credbroker.Store, logger *slog.Logger, tailnetClient func() *http.Client) runtimeEntry {
 	kernel, ok := resolveKernel(cfg)
 	if !ok {
 		logger.Info("apple vf runtime needs setup: no guest kernel downloaded",
@@ -39,7 +40,10 @@ func newVMRuntime(cfg *config.Config, allowedRoots []string, store credbroker.St
 
 	driver, err := applevf.New(kernel, guestInit, cfg.DataDir,
 		applevf.WithCredentialStore(store), applevf.WithLogger(logger),
-		applevf.WithAllowedMountRoots(allowedRoots...))
+		applevf.WithAllowedMountRoots(allowedRoots...),
+		applevf.WithNetworkAllow(cfg.AllowSandboxHosts...),
+		applevf.WithTailnetClient(tailnetClient),
+		applevf.WithLLMProxyURL(svc.LLMProxyURL))
 	if err != nil {
 		logger.Warn("apple vf runtime unavailable", "err", err)
 		return runtimeEntry{}
@@ -119,6 +123,7 @@ func registerVMInstaller(
 	store credbroker.Store,
 	logger *slog.Logger,
 	set *runtimeSet,
+	tailnetClient func() *http.Client,
 ) {
 	svc.SetRuntimeInstaller(session.RuntimeAppleVF, func(ctx context.Context, report func(sandbox.PullProgress)) error {
 		if _, err := vmkernel.NewStore(kernelDir(cfg)).Fetch(ctx, func(complete, total int64) {
@@ -128,7 +133,7 @@ func registerVMInstaller(
 		}
 
 		report(sandbox.PullProgress{Status: "Starting the runtime"})
-		entry := newVMRuntime(cfg, roots, store, logger)
+		entry := newVMRuntime(svc, cfg, roots, store, logger, tailnetClient)
 		if entry.driver == nil {
 			// Something else is still missing, so say which rather than reporting a vague failure.
 			return fmt.Errorf("the runtime still needs setup after downloading: %s", entry.missing)

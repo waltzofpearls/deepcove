@@ -9,7 +9,7 @@
   import { createConverter, CARD_FONT_SIZE } from './ansiToHtml';
   import StatusIndicator from './StatusIndicator.svelte';
   import SessionTags from './SessionTags.svelte';
-  import SessionInfoDialog from './SessionInfoDialog.svelte';
+  import SessionSettingsDialog from './SessionSettingsDialog.svelte';
   import {
     DropdownMenu,
     DropdownMenuTrigger,
@@ -41,10 +41,10 @@
   import Globe from '@lucide/svelte/icons/globe';
   import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
   import Loader2 from '@lucide/svelte/icons/loader-2';
-  import Info from '@lucide/svelte/icons/info';
+  import Settings from '@lucide/svelte/icons/settings';
   import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
-  import Square from '@lucide/svelte/icons/square';
+  import Power from '@lucide/svelte/icons/power';
   import Trash from '@lucide/svelte/icons/trash-2';
 
   // Card preview uses an unmounted xterm.js instance (via the shared
@@ -295,7 +295,7 @@
           <DropdownMenuContent align="end" class="w-36">
             {#if session.status === 'running'}
               <DropdownMenuItem onclick={doStop}>
-                <Square class="size-4" />
+                <Power class="size-4" />
                 Stop
               </DropdownMenuItem>
             {:else if session.status === 'starting'}
@@ -310,8 +310,8 @@
               </DropdownMenuItem>
             {/if}
             <DropdownMenuItem onclick={() => (infoOpen = true)}>
-              <Info class="size-4" />
-              Session info
+              <Settings class="size-4" />
+              Settings
             </DropdownMenuItem>
             <DropdownMenuItem onclick={openRename}>
               <Pencil class="size-4" />
@@ -332,7 +332,7 @@
   </div>
 </div>
 
-<SessionInfoDialog bind:open={infoOpen} {session} />
+<SessionSettingsDialog bind:open={infoOpen} {session} {host} />
 
 <AlertDialog bind:open={destroyOpen}>
   <AlertDialogContent>

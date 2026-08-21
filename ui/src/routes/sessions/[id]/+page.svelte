@@ -28,21 +28,19 @@
   import RemoteSignInPrompt from '$lib/components/session/RemoteSignInPrompt.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import SessionTags from '$lib/components/session/SessionTags.svelte';
-  import SessionInfoDialog from '$lib/components/session/SessionInfoDialog.svelte';
+  import SessionSettingsDialog from '$lib/components/session/SessionSettingsDialog.svelte';
   import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
-  import EditMountsDialog from '$lib/components/session/EditMountsDialog.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
-  import HardDrive from '@lucide/svelte/icons/hard-drive';
-  import Info from '@lucide/svelte/icons/info';
+  import Settings from '@lucide/svelte/icons/settings';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import Maximize from '@lucide/svelte/icons/maximize';
   import Minimize from '@lucide/svelte/icons/minimize';
   import Pause from '@lucide/svelte/icons/pause';
   import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
-  import Square from '@lucide/svelte/icons/square';
+  import Power from '@lucide/svelte/icons/power';
   import Trash from '@lucide/svelte/icons/trash-2';
   import X from '@lucide/svelte/icons/x';
 
@@ -83,11 +81,9 @@
   // (it stays inside a TooltipTrigger like its siblings), so opening
   // the dialog is a plain onclick.
   let destroyOpen = $state(false);
-  // Bound to the EditMountsDialog. Opens via the topbar HardDrive
-  // button; the sheet does its own PUT and writes the updated
-  // session back to our `session` via bind:session.
-  let editMountsOpen = $state(false);
-  let infoOpen = $state(false);
+  // Bound to the SessionSettingsDialog, which the cog opens. It writes an updated session back through
+  // bind:session, so a folder change lands here without another fetch.
+  let settingsOpen = $state(false);
 
   // Inline rename of the session name in the toolbar. Click the name to
   // edit; Enter (or blur) commits, Esc cancels.
@@ -129,7 +125,7 @@
 
   // Mode lives in the URL (?mode=agent|ssh|split) so it's
   // shareable / refreshable. Default agent (omitted from URL).
-  // effectiveMode falls back to 'agent' when the URL says 'split'
+  // currentMode falls back to 'agent' when the URL says 'split'
   // but the viewport is too narrow. This keeps the URL honest while
   // refusing to render a useless side-by-side on phones. Widening
   // the window snaps back to split automatically.
@@ -142,12 +138,12 @@
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   });
-  const effectiveMode = $derived<SessionMode>(mode === 'split' && !isWide ? 'agent' : mode);
+  const currentMode = $derived<SessionMode>(mode === 'split' && !isWide ? 'agent' : mode);
 
   // Keep the URL honest: if `?mode=split` is opened on a narrow
   // viewport (refresh, deep link, shared URL), rewrite to drop the
   // mode param so the URL matches what's actually rendered. The
-  // effectiveMode fallback above handles the in-render transition;
+  // currentMode fallback above handles the in-render transition;
   // this $effect closes the loop on URL state. No loop risk because
   // the goto drops the param and the guard then short-circuits.
   $effect(() => {
@@ -162,24 +158,48 @@
     }
   });
 
+  // The shell window lives in the sandbox's tmux, so a rebuilt sandbox has none, while the URL still
+  // says SSH. Without this the attach quietly lands on the agent's window instead.
+  let shellReady = $state(false);
+  $effect(() => {
+    const needsShell = currentMode === 'ssh' || currentMode === 'split';
+    const ready = session?.status === 'running';
+    // Re-runs when the sandbox is replaced, since the new one has no shell window either.
+    void session?.sandbox_id;
+    if (!needsShell || !ready || !session) {
+      shellReady = false;
+      return;
+    }
+    let cancelled = false;
+    const sess = untrack(() => session);
+    const h = untrack(() => host);
+    void ensureShellWindow(sess, h).then((ok) => {
+      if (!cancelled) shellReady = ok;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  // 409 means it is already there, which is success for us.
+  async function ensureShellWindow(
+    sess: Session | null,
+    h: SessionHost | undefined,
+  ): Promise<boolean> {
+    if (!sess) return false;
+    try {
+      await api.createTmuxWindow(sess.id, { name: 'shell' }, h);
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) return true;
+      actionError = `Failed to open the shell window: ${e instanceof Error ? e.message : String(e)}`;
+      return false;
+    }
+  }
+
   async function switchMode(next: SessionMode): Promise<void> {
     if (!session) return;
     actionError = null;
-
-    // Lazy-create the "shell" window the first time the user picks
-    // a mode that needs it. Idempotent on the server side via the
-    // 409 ("already exists") response, which we treat as success.
-    if (next === 'ssh' || next === 'split') {
-      try {
-        await api.createTmuxWindow(session.id, { name: 'shell' }, host);
-      } catch (e) {
-        if (!(e instanceof ApiError && e.status === 409)) {
-          actionError = `Failed to ensure shell window: ${e instanceof Error ? e.message : String(e)}`;
-          return;
-        }
-      }
-    }
-
     const url = new URL(page.url);
     if (next === 'agent') {
       url.searchParams.delete('mode');
@@ -437,7 +457,7 @@
          phone). Only visible while the session is attachable. -->
     <div class="hidden flex-1 md:block"></div>
     {#if session?.status === 'running'}
-      <ModeToggle mode={effectiveMode} onChange={switchMode} />
+      <ModeToggle mode={currentMode} onChange={switchMode} />
     {/if}
     <div class="hidden flex-1 md:block"></div>
 
@@ -454,7 +474,7 @@
                   onclick={stop}
                   aria-label="Stop session"
                 >
-                  <Square class="size-4" />
+                  <Power class="size-4" />
                 </Button>
               {/snippet}
             </TooltipTrigger>
@@ -486,30 +506,14 @@
                   {...props}
                   variant="ghost"
                   size="icon"
-                  onclick={() => (infoOpen = true)}
-                  aria-label="Session info"
+                  onclick={() => (settingsOpen = true)}
+                  aria-label="Session settings"
                 >
-                  <Info class="size-4" />
+                  <Settings class="size-4" />
                 </Button>
               {/snippet}
             </TooltipTrigger>
-            <TooltipContent>Session info</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger>
-              {#snippet child({ props })}
-                <Button
-                  {...props}
-                  variant="ghost"
-                  size="icon"
-                  onclick={() => (editMountsOpen = true)}
-                  aria-label="Edit mounts"
-                >
-                  <HardDrive class="size-4" />
-                </Button>
-              {/snippet}
-            </TooltipTrigger>
-            <TooltipContent>Edit mounts</TooltipContent>
+            <TooltipContent>Session settings</TooltipContent>
           </Tooltip>
         {/if}
         <Tooltip>
@@ -556,10 +560,8 @@
        updated row back after a successful PUT, which keeps the toolbar
        and the rest of the page in sync without an extra fetch. -->
   {#if session}
-    <SessionInfoDialog bind:open={infoOpen} {session} />
+    <SessionSettingsDialog bind:open={settingsOpen} bind:session {host} />
   {/if}
-
-  <EditMountsDialog bind:open={editMountsOpen} bind:session {host} />
 
   <!-- Destroy confirmation. State-driven open via `destroyOpen` so
        the Trash button can keep its Tooltip wrapper instead of
@@ -617,23 +619,33 @@
            node, which needs a sign-in. Takes precedence over the terminal/preview while we wait. -->
       <RemoteSignInPrompt hostName={host?.hostname} />
     {:else if session?.status === 'running'}
-      {#if effectiveMode === 'split'}
+      {#if currentMode === 'split'}
         <!-- Split mode: two side-by-side terminals, each pinned to
              its own tmux window via the ?tmux_window= query param
              (per-client window state is a tmux native). Desktop
-             only, since effectiveMode handles the mobile fallback. -->
+             only, since currentMode handles the mobile fallback. -->
         <div class="grid h-full grid-cols-2 divide-x divide-border">
           <Terminal sessionId={session.id} tmuxWindow="main" {host} />
-          <Terminal sessionId={session.id} tmuxWindow="shell" {host} />
+          {#if shellReady}
+            <Terminal sessionId={session.id} tmuxWindow="shell" {host} />
+          {:else}
+            <div class="flex h-full items-center justify-center text-sm text-muted-foreground">
+              opening shell…
+            </div>
+          {/if}
         </div>
-      {:else}
+      {:else if currentMode === 'agent' || shellReady}
         <!-- Single-pane: Agent or SSH. Terminal re-attaches
              reactively when tmuxWindow changes (see step 6). -->
         <Terminal
           sessionId={session.id}
-          tmuxWindow={effectiveMode === 'ssh' ? 'shell' : 'main'}
+          tmuxWindow={currentMode === 'ssh' ? 'shell' : 'main'}
           {host}
         />
+      {:else}
+        <div class="flex h-full items-center justify-center text-sm text-muted-foreground">
+          opening shell…
+        </div>
       {/if}
     {:else if session}
       <!-- Not running: render the last cached preview dimmed, with

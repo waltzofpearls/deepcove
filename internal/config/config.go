@@ -42,6 +42,11 @@ type Config struct {
 	// Docker on nodes that cannot provide VMs.
 	DefaultRuntime string `env:"DEEPCOVE_DEFAULT_RUNTIME"`
 
+	// AllowSandboxHosts are private addresses a sandbox may still reach, which are otherwise blocked.
+	// Command line only, on purpose: no env tag, no API, no stored setting, so there is nothing a public
+	// build could read to open one.
+	AllowSandboxHosts []string
+
 	// Computed values, should not read from env
 	Hostname string
 }

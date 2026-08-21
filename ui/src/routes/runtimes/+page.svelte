@@ -18,8 +18,9 @@
     AlertDialogTitle,
   } from '$lib/components/ui/alert-dialog';
   import WorkspaceVMDialog from '$lib/components/session/WorkspaceVMDialog.svelte';
+  import EditSharedFolderDialog from '$lib/components/session/EditSharedFolderDialog.svelte';
   import { formatResources } from '$lib/util/resources';
-  import type { RuntimeView, SandboxView, WorkspaceVM } from '$lib/api/types';
+  import type { RuntimeView, SandboxView, Session, WorkspaceVM } from '$lib/api/types';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Box from '@lucide/svelte/icons/box';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -33,7 +34,7 @@
   let runtimes = $state<RuntimeView[] | null>(null);
   let error = $state<string | null>(null);
 
-  // This node's shared machine, or null when it has none. Polled with the runtimes so the card and the
+  // This node's workspace VM, or null when it has none. Polled with the runtimes so the card and the
   // sandbox rows never disagree about whether it exists.
   let workspaceVM = $state<WorkspaceVM | null>(null);
 
@@ -95,6 +96,22 @@
     }
   }
 
+  // The session whose folders are being edited. A private machine hosts exactly one session, so its row
+  // edits that one. Null closes the dialog.
+  let mountsSession = $state<Session | null>(null);
+  let mountsOpen = $state(false);
+
+  function editFolders(sandbox: SandboxView) {
+    mountsSession = sessions.list.find((s) => s.id === sandbox.sessions[0]?.id) ?? null;
+    if (!mountsSession) {
+      // The row knows the session's id, the store has not caught up. Better to say so than to swallow
+      // the click.
+      error = 'That session is still loading. Try again in a moment.';
+      return;
+    }
+    mountsOpen = true;
+  }
+
   // The sandbox the destroy confirm is about. Held as a pair because the handle alone does not say
   // which runtime to ask.
   let pending = $state<{ runtime: string; sandbox: SandboxView } | null>(null);
@@ -134,7 +151,7 @@
   function kindOf(sandbox: SandboxView): string {
     if (sandbox.is_workspace_vm) return 'Workspace VM';
     if (sandbox.sessions.length === 0) return 'Unused';
-    return 'Private VM';
+    return 'Session VM';
   }
 
   // A sandbox nothing owns. Sorted to the top of its runtime, because it is the only row here that
@@ -302,7 +319,7 @@
                   <div class="min-w-0 flex-1">
                     <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                       {#if sandbox.sessions.length > 0}
-                        <!-- Every name, wrapping when they do not fit: a shared machine can carry a
+                        <!-- Every name, wrapping when they do not fit: the workspace VM can carry a
                              dozen, and hiding some would leave nowhere to see them. -->
                         <span
                           class="flex min-w-0 flex-wrap items-center gap-x-1.5 text-sm font-medium"
@@ -363,6 +380,16 @@
                       aria-label="Destroy this sandbox"
                     >
                       <Trash2 class="size-4" />
+                    </Button>
+                  {:else}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="shrink-0"
+                      disabled={!sessions.list.some((s) => s.id === sandbox.sessions[0]?.id)}
+                      onclick={() => editFolders(sandbox)}
+                    >
+                      Edit
                     </Button>
                   {/if}
                 </li>
@@ -425,6 +452,13 @@
 </AlertDialog>
 
 <WorkspaceVMDialog bind:open={editOpen} vm={workspaceVM} onsaved={() => load()} />
+
+<EditSharedFolderDialog
+  bind:open={mountsOpen}
+  bind:session={mountsSession}
+  host={mountsSession ? sessions.hostFor(mountsSession) : undefined}
+  onsaved={() => load()}
+/>
 
 <AlertDialog bind:open={deleteWorkspaceOpen}>
   <AlertDialogContent>

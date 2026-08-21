@@ -117,6 +117,13 @@ type Lister interface {
 	ListSandboxes(ctx context.Context) ([]Instance, error)
 }
 
+// LLMForwarder is a runtime that carries a sandbox's LLM traffic itself, so the sandbox never reaches
+// the gateway over the network and the request carries this node's identity.
+type LLMForwarder interface {
+	// LLMEndpoint is the URL a sandbox calls instead of the provider.
+	LLMEndpoint() string
+}
+
 // InstanceState is a sandbox's lifecycle state as the driver sees it, normalized across backends. A
 // driver with a richer native vocabulary (Docker's paused, restarting, exited, dead) maps onto these,
 // because the view exists to answer "is this thing still holding resources", not to mirror Docker.

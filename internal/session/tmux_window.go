@@ -134,6 +134,9 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 	// index and fails.
 	args := []string{
 		"new-window", "-d", "-t", tmuxSessionName(sess.ID) + ":", "-n", name,
+		// Start where the agent works, not wherever tmux would land: the shell tab is for poking at the
+		// same code the agent has open.
+		"-c", sessionWorkdir(sess),
 		"-P", "-F", "#{window_index}",
 	}
 	// SSH-mode shell window gets a wrapper that prints the MOTD before exec'ing the

@@ -274,3 +274,20 @@ func filepathBase(p string) string {
 	}
 	return p
 }
+
+// A command run over this channel inherits the server process's environment. That is how the agent gets
+// the session's variables now that deepcove starts it here rather than from the entrypoint: init puts
+// them on itself, and everything it spawns picks them up.
+func TestExecInheritsTheServerEnvironment(t *testing.T) {
+	t.Setenv("DEEPCOVE_INHERITED", "from-init")
+
+	client := startPair(t, ExecRequest{Argv: []string{"/bin/sh", "-c", "echo $DEEPCOVE_INHERITED"}})
+
+	out, _ := io.ReadAll(client.Stdout())
+	if got := string(out); !strings.Contains(got, "from-init") {
+		t.Errorf("output = %q, want the inherited value", got)
+	}
+	if _, err := client.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}

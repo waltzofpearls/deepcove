@@ -431,3 +431,24 @@ func TestTmuxFailureDuringSetup(t *testing.T) {
 		t.Fatalf("error = %v, want ErrSessionStarting", err)
 	}
 }
+
+// The shell tab exists to poke at the code the agent has open, so it starts in the same folder.
+func TestCreateTmuxWindowStartsInTheWorkDir(t *testing.T) {
+	svc, lister := workspaceService(t)
+	sess := onWorkspace(t, svc, "deepcove", "deepcove")
+
+	lister.execResponses = []execResponse{
+		{stdout: "0 main 1\n", exit: 0}, // ListTmuxWindows
+		{stdout: "1\n", exit: 0},        // new-window
+	}
+	lister.execCalls = nil
+
+	if _, err := svc.CreateTmuxWindow(context.Background(), sess.ID, CreateTmuxWindowRequest{}); err != nil {
+		t.Fatalf("CreateTmuxWindow: %v", err)
+	}
+
+	create := strings.Join(lister.execCalls[len(lister.execCalls)-1], " ")
+	if !strings.Contains(create, "-c "+workspaceDir+"/deepcove") {
+		t.Errorf("new-window did not start in the work dir: %s", create)
+	}
+}
