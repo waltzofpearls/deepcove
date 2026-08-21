@@ -23,10 +23,11 @@ jobs:
       - working-directory: ui
         run: npm ci
       - run: make ui-build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ui-build
           path: ui/build
+          retention-days: 1
 
   build:
     name: build (${{ matrix.name }})
@@ -62,7 +63,7 @@ jobs:
             artifact: dist/linux-arm64/deepcove
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: ui-build
           path: ui/build
@@ -74,7 +75,7 @@ jobs:
       - if: matrix.mingw
         run: brew list mingw-w64 >/dev/null 2>&1 || brew install mingw-w64
       - run: make ${{ matrix.make }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: deepcove-${{ matrix.name }}
           path: ${{ matrix.artifact }}
