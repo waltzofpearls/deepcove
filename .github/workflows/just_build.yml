@@ -1,10 +1,7 @@
-name: build
+name: just build
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    tags: ['v*']
 
 permissions:
   contents: read
@@ -15,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version-file: ui/package.json
@@ -30,53 +29,47 @@ jobs:
           retention-days: 1
 
   build:
-    name: build (${{ matrix.name }})
+    name: build (${{ matrix.os }}-${{ matrix.arch }})
     needs: ui
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: darwin-arm64
+          - os: darwin
+            arch: arm64
             runner: macos-latest
-            make: build-darwin-arm64
-            artifact: dist/darwin-arm64/deepcove
-            needs_go: true
-          - name: darwin-amd64
+          - os: darwin
+            arch: amd64
             runner: macos-latest
-            make: build-darwin-amd64
-            artifact: dist/darwin-amd64/deepcove
-            needs_go: true
-          - name: windows-amd64
+          - os: windows
+            arch: amd64
             runner: macos-latest
-            make: build-windows-amd64
-            artifact: dist/windows-amd64/deepcove.exe
-            needs_go: true
             mingw: true
-          - name: linux-amd64
+          - os: linux
+            arch: amd64
             runner: ubuntu-latest
-            make: build-linux-amd64
-            artifact: dist/linux-amd64/deepcove
-          - name: linux-arm64
+          - os: linux
+            arch: arm64
             runner: ubuntu-24.04-arm
-            make: build-linux-arm64
-            artifact: dist/linux-arm64/deepcove
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v7
         with:
           name: ui-build
           path: ui/build
-      - if: matrix.needs_go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
       - if: matrix.mingw
         run: brew list mingw-w64 >/dev/null 2>&1 || brew install mingw-w64
-      - run: make ${{ matrix.make }}
+      - run: make build-${{ matrix.os }}-${{ matrix.arch }}
+      - run: make package OS=${{ matrix.os }} ARCH=${{ matrix.arch }}
       - uses: actions/upload-artifact@v6
         with:
-          name: deepcove-${{ matrix.name }}
-          path: ${{ matrix.artifact }}
+          name: deepcove-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/release/*
           retention-days: 7

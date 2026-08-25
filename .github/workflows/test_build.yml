@@ -1,0 +1,71 @@
+name: test build
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ui/package.json
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - working-directory: ui
+        run: npm ci
+      - run: make ui-build
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ui-build
+          path: ui/build
+          retention-days: 1
+
+  build:
+    name: build (${{ matrix.os }}-${{ matrix.arch }})
+    needs: ui
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+          - os: darwin
+            arch: amd64
+            runner: macos-latest
+          - os: windows
+            arch: amd64
+            runner: macos-latest
+            mingw: true
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: ui-build
+          path: ui/build
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - if: matrix.mingw
+        run: brew list mingw-w64 >/dev/null 2>&1 || brew install mingw-w64
+      - run: make build-${{ matrix.os }}-${{ matrix.arch }}
+      - run: make package OS=${{ matrix.os }} ARCH=${{ matrix.arch }}
