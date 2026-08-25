@@ -1,0 +1,107 @@
+name: build and release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ui/package.json
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - working-directory: ui
+        run: npm ci
+      - run: make ui-build
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ui-build
+          path: ui/build
+          retention-days: 1
+
+  build:
+    name: build (${{ matrix.os }}-${{ matrix.arch }})
+    needs: ui
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+          - os: darwin
+            arch: amd64
+            runner: macos-latest
+          - os: windows
+            arch: amd64
+            runner: macos-latest
+            mingw: true
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: ui-build
+          path: ui/build
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - if: matrix.mingw
+        run: brew list mingw-w64 >/dev/null 2>&1 || brew install mingw-w64
+      - if: matrix.os == 'darwin'
+        uses: Apple-Actions/import-codesign-certs@v6
+        with:
+          p12-file-base64: ${{ secrets.APPLE_DEVELOPER_CERTIFICATES_P12_BASE64 }}
+          p12-password: ${{ secrets.APPLE_DEVELOPER_CERTIFICATES_PASSWORD }}
+      - run: make build-${{ matrix.os }}-${{ matrix.arch }}
+        env:
+          CODE_SIGN_IDENTITY: "${{ matrix.os == 'darwin' && 'Developer ID Application: Ruo-Lei Ma (L2AR6TDY65)' || '' }}"
+      - if: matrix.os == 'darwin'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: L2AR6TDY65
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: make notarize-darwin ARCH=${{ matrix.arch }}
+      - run: make package OS=${{ matrix.os }} ARCH=${{ matrix.arch }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: deepcove-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/release/*
+          retention-days: 1
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: deepcove-*
+          merge-multiple: true
+          path: dist/release
+      - run: make checksums
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber

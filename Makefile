@@ -9,6 +9,12 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo v
 # DWARF + symbol table to shrink the binary; injects VERSION.
 LDFLAGS_NATIVE := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 
+CODE_SIGN_IDENTITY ?=
+APPLE_ID ?=
+APPLE_TEAM_ID ?=
+APPLE_PASSWORD ?=
+APPLE_KEYCHAIN_PROFILE ?=
+
 # The guest init is embedded into the deepcove binary from this path, so it is built into the package
 # that embeds it rather than into dist/. Defined here because prerequisites are expanded as make reads
 # each rule, so a definition further down would expand to nothing.
@@ -35,16 +41,27 @@ ui/build/index.html:
 # rebuilt init was never picked up and sessions silently booted stale code.
 build: guest-init ui-build ## Build the deepcove binary for the host (builds the guest init + UI first)
 	CGO_ENABLED=1 go build -ldflags '$(LDFLAGS_NATIVE)' -o deepcove ./cmd/deepcove
-	@$(MAKE) --no-print-directory sign-if-darwin BIN=deepcove
+	@$(MAKE) --no-print-directory sign-darwin BIN=deepcove
 
 # Running a VM needs the com.apple.security.virtualization entitlement, so the binary that hosts
-# sessions has to be codesigned or the Apple VF runtime fails at session create time. Ad-hoc signing is
-# enough for local use; set CODESIGN_IDENTITY for a real identity. No-op off macOS.
-.PHONY: sign-if-darwin
-sign-if-darwin:
-	@if [ "$$(go env GOOS)" = "darwin" ]; then \
-		codesign -f --entitlements build/virtualization.entitlements -s "$${CODESIGN_IDENTITY:--}" $(BIN) \
-			&& echo "signed $(BIN) for virtualization (identity: $${CODESIGN_IDENTITY:-ad-hoc})"; \
+# sessions has to be codesigned or the Apple VF runtime fails at session create time. A signature with
+# no certificate is enough to run it here. Does nothing when not on macOS.
+#
+# CODE_SIGN_IDENTITY switches this to a distribution signature: your certificate plus the hardened
+# runtime, which notarization requires and which blocks debugger attach.
+.PHONY: sign-darwin
+sign-darwin: ## Sign a darwin binary, e.g. make sign-darwin ARCH=arm64 [CODE_SIGN_IDENTITY=...]
+	@[ "$$(go env GOOS)" = "darwin" ] || exit 0; \
+	bin="$(BIN)"; [ -n "$(ARCH)" ] && bin="dist/darwin-$(ARCH)/deepcove"; \
+	test -n "$$bin" || { echo "set ARCH=<arm64|amd64> or BIN=<path>"; exit 1; }; \
+	if [ -n "$(CODE_SIGN_IDENTITY)" ]; then \
+		codesign -f --options runtime --timestamp \
+			--entitlements build/virtualization.entitlements -s "$(CODE_SIGN_IDENTITY)" "$$bin"; \
+		codesign --verify --strict "$$bin"; \
+		echo "signed $$bin with $(CODE_SIGN_IDENTITY)"; \
+	else \
+		codesign -f --entitlements build/virtualization.entitlements -s - "$$bin"; \
+		echo "signed $$bin for virtualization"; \
 	fi
 
 # Darwin builds use the host toolchain — macOS does not support fully
@@ -62,7 +79,7 @@ build-darwin-arm64: ui/build/index.html ## Build a darwin/arm64 binary into dist
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -ldflags '$(LDFLAGS_NATIVE)' \
 		-o dist/darwin-arm64/deepcove ./cmd/deepcove
-	@$(MAKE) --no-print-directory sign-if-darwin BIN=dist/darwin-arm64/deepcove
+	@$(MAKE) --no-print-directory sign-darwin ARCH=arm64
 
 # Cross-compiles to darwin/amd64 from Apple Silicon. Xcode's clang
 # ships with the x86_64 SDK stubs by default (universal binary support),
@@ -80,6 +97,7 @@ build-darwin-amd64: ui/build/index.html ## Build a darwin/amd64 binary (cross-co
 		CXX="clang++ -arch x86_64" \
 		go build -ldflags '$(LDFLAGS_NATIVE)' \
 		-o dist/darwin-amd64/deepcove ./cmd/deepcove
+	@$(MAKE) --no-print-directory sign-darwin ARCH=amd64
 
 # Cross-compiles to windows/amd64 via mingw-w64. Prerequisite on macOS:
 # `brew install mingw-w64` (preinstalled on macos-latest GitHub runners).
@@ -135,6 +153,71 @@ build-linux-arm64: ## Build a linux/arm64 binary (glibc, dynamic)
 		-f build/linux.Dockerfile \
 		--build-arg VERSION=$(VERSION) \
 		--output=type=local,dest=./dist/linux-arm64 .
+
+.PHONY: notarize-darwin
+notarize-darwin: ## Notarize one darwin binary, e.g. make notarize-darwin ARCH=arm64
+	@test -n "$(ARCH)" || { echo "set ARCH=<arm64|amd64>"; exit 1; }
+	@test -n "$(APPLE_KEYCHAIN_PROFILE)$(APPLE_ID)" \
+		|| { echo "set APPLE_KEYCHAIN_PROFILE, or APPLE_ID with APPLE_TEAM_ID and APPLE_PASSWORD"; exit 1; }
+	@test -n "$(APPLE_KEYCHAIN_PROFILE)" || test -n "$(APPLE_TEAM_ID)" || { echo "set APPLE_TEAM_ID"; exit 1; }
+	@test -n "$(APPLE_KEYCHAIN_PROFILE)" || test -n "$(APPLE_PASSWORD)" || { echo "set APPLE_PASSWORD"; exit 1; }
+	rm -rf dist/notarize dist/notarize.zip
+	mkdir -p dist/notarize
+	cp dist/darwin-$(ARCH)/deepcove dist/notarize/deepcove-darwin-$(ARCH)
+	ditto -c -k dist/notarize dist/notarize.zip
+	# Apple records the result against each binary's signature, not against this zip. The zip is only a
+	# way to send them, and the files in dist/darwin-*/ are the ones that come out notarized.
+	# Rebuilding or re-signing them afterwards breaks the match.
+	@if [ -n "$(APPLE_KEYCHAIN_PROFILE)" ]; then \
+		xcrun notarytool submit dist/notarize.zip \
+			--keychain-profile "$(APPLE_KEYCHAIN_PROFILE)" --wait --timeout 30m; \
+	else \
+		xcrun notarytool submit dist/notarize.zip \
+			--apple-id "$(APPLE_ID)" --team-id "$(APPLE_TEAM_ID)" --password "$(APPLE_PASSWORD)" \
+			--wait --timeout 30m; \
+	fi
+	rm -rf dist/notarize dist/notarize.zip
+
+.PHONY: release-darwin
+release-darwin: ## Build, sign and notarize the darwin binaries for distribution
+	@test -n "$(CODE_SIGN_IDENTITY)" || { echo "set CODE_SIGN_IDENTITY"; exit 1; }
+	@$(MAKE) --no-print-directory build-darwin
+	@for arch in arm64 amd64; do \
+		$(MAKE) --no-print-directory notarize-darwin ARCH=$$arch; \
+	done
+
+RELEASE_DIR := dist/release
+
+.PHONY: package
+package: ## Archive one platform's binary, e.g. make package OS=darwin ARCH=arm64
+	@test -n "$(OS)$(ARCH)" || { echo "set OS=<darwin|linux|windows> and ARCH=<arm64|amd64>"; exit 1; }
+	@mkdir -p $(RELEASE_DIR) && rm -rf dist/stage && mkdir -p dist/stage
+	@case "$(OS)" in \
+		windows) cp dist/$(OS)-$(ARCH)/deepcove.exe dist/stage/ ;; \
+		*)       cp dist/$(OS)-$(ARCH)/deepcove dist/stage/ ;; \
+	esac
+	@cp LICENSE README.md dist/stage/
+	@case "$(OS)" in \
+		darwin)  ditto -c -k --norsrc --noextattr dist/stage $(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).zip ;; \
+		windows) (cd dist/stage && zip -q ../../$(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).zip deepcove.exe LICENSE README.md) ;; \
+		*)       tar -czf $(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).tar.gz -C dist/stage . ;; \
+	esac
+	@rm -rf dist/stage
+	@ls -1 $(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).*
+
+.PHONY: package-all
+package-all: ## Archive every platform already built in dist/
+	@for dir in dist/darwin-arm64 dist/darwin-amd64 dist/linux-amd64 dist/linux-arm64 dist/windows-amd64; do \
+		[ -d $$dir ] || continue; \
+		p=$$(basename $$dir); \
+		$(MAKE) --no-print-directory package OS=$${p%-*} ARCH=$${p#*-}; \
+	done
+
+.PHONY: checksums
+checksums: ## Write SHA256SUMS over the archives in $(RELEASE_DIR)
+	@cd $(RELEASE_DIR) && rm -f SHA256SUMS && \
+		if command -v sha256sum >/dev/null; then sha256sum deepcove_*; else shasum -a 256 deepcove_*; fi > SHA256SUMS
+	@cat $(RELEASE_DIR)/SHA256SUMS
 
 .PHONY: build-all
 build-all: build-darwin build-windows build-linux ## Build release binaries for every supported OS/arch into dist/
@@ -232,9 +315,9 @@ relay-deploy: relay-bundle ## Copy the relay bundle to HOST over ssh and install
 applevf-smoke: ## Build + codesign the VF boot smoke harness (needs an Apple signing identity)
 	@mkdir -p dist/darwin-$(shell go env GOARCH)
 	CGO_ENABLED=1 go build -o dist/darwin-$(shell go env GOARCH)/applevf-smoke ./cmd/applevf-smoke
-	codesign -f --entitlements build/virtualization.entitlements -s "$${CODESIGN_IDENTITY:--}" \
+	codesign -f --entitlements build/virtualization.entitlements -s "$${CODE_SIGN_IDENTITY:--}" \
 		dist/darwin-$(shell go env GOARCH)/applevf-smoke
-	@echo "Signed dist/darwin-$(shell go env GOARCH)/applevf-smoke (identity: $${CODESIGN_IDENTITY:-ad-hoc})"
+	@echo "Signed dist/darwin-$(shell go env GOARCH)/applevf-smoke (identity: $${CODE_SIGN_IDENTITY:-none})"
 
 .PHONY: clean
 clean: ## Remove built binaries
