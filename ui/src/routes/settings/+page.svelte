@@ -311,7 +311,7 @@
       <div class="flex items-center gap-2">
         <input
           bind:value={proxyDraft}
-          placeholder="http://100.75.35.244:9000"
+          placeholder="http://100.75.35.244:9001"
           class="{inputClass} min-w-0 flex-1"
         />
         <Button

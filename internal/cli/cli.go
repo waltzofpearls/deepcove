@@ -21,7 +21,8 @@ type command struct {
 }
 
 var commands = []command{
-	{"start", "run the background service", cmdStart},
+	{"start", "run deepcove in the foreground", cmdStart},
+	{"service", "install deepcove as a background service", cmdService},
 	{"dashboard", "open the dashboard", cmdDashboard},
 	{"session", "create or attach to a session", cmdSession},
 	{"version", "print version", cmdVersion},

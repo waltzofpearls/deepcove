@@ -33,7 +33,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("aperture-relay", flag.ContinueOnError)
 	// Localhost by default. This machine may have a public interface, and a relay to an AI gateway is
 	// not something to expose by accident, so reaching it from elsewhere is an explicit choice.
-	listen := fs.String("listen", "127.0.0.1:9000",
+	listen := fs.String("listen", "127.0.0.1:9001",
 		"address to listen on; set the tailnet address to be reachable from other machines")
 	upstream := fs.String("upstream", "", "host or host:port to forward to (required)")
 	var allow repeatedFlag

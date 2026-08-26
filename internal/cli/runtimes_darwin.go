@@ -73,9 +73,15 @@ func resolveKernel(cfg *config.Config) (string, bool) {
 func kernelDir(cfg *config.Config) string { return filepath.Join(cfg.DataDir, "vm-kernel") }
 
 // defaultKernelPaths is where a developer's own build lands, so a checkout that has one keeps working
-// without downloading anything.
+// without downloading anything. Relative to the binary, not the working directory: a service starts
+// wherever launchd or systemd puts it, and a kernel that only exists when you happen to be standing in
+// the repo is a silent downgrade to another runtime.
 func defaultKernelPaths() []string {
-	matches, _ := filepath.Glob("dist/kernel/vmlinux-*")
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), "dist", "kernel", "vmlinux-*"))
 	return matches
 }
 
