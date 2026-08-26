@@ -14,19 +14,25 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      # The build jobs need ui/build, and an artifact is the usual way to hand it over. This uses the
+      # cache instead: same handoff, and it draws on the per-repo cache allowance rather than the
+      # artifact one, which a few runs can exhaust for a whole billing cycle.
+      - id: ui-cache
+        uses: actions/cache@v4
+        with:
+          path: ui/build
+          key: ui-build-${{ github.sha }}
       - uses: actions/setup-node@v6
+        if: steps.ui-cache.outputs.cache-hit != 'true'
         with:
           node-version-file: ui/package.json
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - working-directory: ui
+        if: steps.ui-cache.outputs.cache-hit != 'true'
         run: npm ci
       - run: make ui-build
-      - uses: actions/upload-artifact@v6
-        with:
-          name: ui-build
-          path: ui/build
-          retention-days: 1
+        if: steps.ui-cache.outputs.cache-hit != 'true'
 
   build:
     name: build (${{ matrix.os }}-${{ matrix.arch }})
@@ -56,10 +62,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v7
+      - uses: actions/cache/restore@v4
         with:
-          name: ui-build
           path: ui/build
+          key: ui-build-${{ github.sha }}
+          fail-on-cache-miss: true
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
