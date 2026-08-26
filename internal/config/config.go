@@ -11,7 +11,7 @@ import (
 
 type Config struct {
 	IsDev    bool   `env:"IS_DEV, default=false"`
-	Addr     string `env:"ADDR, default=127.0.0.1:8080"`
+	Addr     string `env:"ADDR, default=127.0.0.1:9000"`
 	DataDir  string `env:"DATA_DIR"`
 	NodeName string `env:"NODE_NAME"`
 	LogLevel string `env:"LOG_LEVEL"`

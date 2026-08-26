@@ -46,8 +46,8 @@ if [ ! -f "$CONF" ]; then
 	[ -n "$upstream" ] || { echo "--upstream is required on a first install" >&2; exit 1; }
 	[ -n "$allow" ] || { echo "--allow is required on a first install; pass the addresses that may use the relay" >&2; exit 1; }
 	if [ -z "$listen" ]; then
-		listen="$(tailscale ip -4 2>/dev/null || true):9000"
-		[ "$listen" != ":9000" ] || { echo "could not find this machine's tailnet address; pass --listen" >&2; exit 1; }
+		listen="$(tailscale ip -4 2>/dev/null || true):9001"
+		[ "$listen" != ":9001" ] || { echo "could not find this machine's tailnet address; pass --listen" >&2; exit 1; }
 	fi
 	check_value --upstream "$upstream"
 	check_value --allow "$allow"

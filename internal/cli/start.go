@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/api"
@@ -19,6 +20,7 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/connect"
 	"github.com/waltzofpearls/deepcove/internal/db"
 	"github.com/waltzofpearls/deepcove/internal/session"
+	"github.com/waltzofpearls/deepcove/internal/tailnet"
 	"github.com/waltzofpearls/deepcove/internal/ui"
 	"golang.org/x/sync/errgroup"
 )
@@ -46,7 +48,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Addr, "addr", cfg.Addr, "address to listen on; keep the 127.0.0.1 prefix unless you mean to be reachable")
 	// Persisted like --cluster, so it survives a restart and the UI can edit it later.
 	llmProxyFlag := fs.String("llm-proxy-url", "",
-		"send every session's LLM requests here instead of to the provider, e.g. http://100.75.35.244:9000 (persisted)")
+		"send every session's LLM requests here instead of to the provider, e.g. http://100.75.35.244:9001 (persisted)")
 	// Repeatable, and the only way to open a hole in the sandbox network block. Not an env var and not
 	// a setting: a build nobody passed this to cannot have one.
 	var allowSandboxHosts repeatedFlag
@@ -61,6 +63,8 @@ func cmdStart(ctx context.Context, args []string) error {
 	cfg.AllowSandboxHosts = allowSandboxHosts
 
 	logger := newLogger(cfg)
+	// Tailscale's own logging is not slog, so the level has to be handed to it explicitly.
+	tailnet.SetVerbose(strings.EqualFold(cfg.LogLevel, "debug"))
 	if len(cfg.AllowSandboxHosts) > 0 {
 		// Loud on purpose. Every session on this node gets these holes, so it should never be a surprise.
 		logger.Warn("sandboxes on this node can reach these private addresses",

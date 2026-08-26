@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"os"
+	"strings"
 	"testing"
 
 	"tailscale.com/client/local"
@@ -53,6 +54,25 @@ func TestFilteredLogf(t *testing.T) {
 			args:     []any{"100.86.239.55", 0},
 			wantDrop: true,
 		},
+		{
+			name:     "drops tailscale's verbose lines by default",
+			format:   "[v1] peer keys: %s",
+			args:     []any{"[P3pgw]"},
+			wantDrop: true,
+		},
+		{
+			// Tailscale's other marker, where the level rides in a JSON tag with a NUL in it.
+			name:     "drops the json tagged verbose lines too",
+			format:   "control: [v\x00JSON]1{\"controltime\":%q}",
+			args:     []any{"2026-08-26T09:15:47Z"},
+			wantDrop: true,
+		},
+		{
+			name:     "keeps connection events, which carry no marker",
+			format:   "magicsock: adding connection to derp-4 for %s",
+			args:     []any{"[P3pgw]"},
+			wantDrop: false,
+		},
 		{name: "keeps status line", format: "tsnet running: %s", args: []any{"deepcove-host"}, wantDrop: false},
 		{name: "keeps unrelated line", format: "some diagnostic", wantDrop: false},
 	}
@@ -68,5 +88,30 @@ func TestFilteredLogf(t *testing.T) {
 				t.Error("expected line to pass through, got nothing")
 			}
 		})
+	}
+}
+
+// At debug level the verbose lines are the point, so they have to come through.
+func TestSetVerbosePassesTailscaleDetailThrough(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	SetVerbose(true)
+	t.Cleanup(func() {
+		SetVerbose(false)
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
+
+	filteredLogf("[v1] peer keys: %s", "[P3pgw]")
+	if got := buf.String(); !strings.Contains(got, "peer keys") {
+		t.Errorf("verbose line was dropped at debug level, got %q", got)
+	}
+
+	// The named noise stays out whatever the level: it is not detail, it is repetition.
+	buf.Reset()
+	filteredLogf("To start this tsnet server, restart with TS_AUTHKEY set, or go to: %s", "https://example")
+	if got := buf.String(); got != "" {
+		t.Errorf("auth reminder came back at debug level: %q", got)
 	}
 }

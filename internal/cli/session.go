@@ -9,7 +9,7 @@ import (
 
 // cmdSession is the router for `deepcove session ...`.
 //
-// Shape:
+// Usage:
 //
 //	deepcove session <agent> [--name <name>] [flags]   # create + attach
 //	deepcove session attach <id-or-name>               # attach existing

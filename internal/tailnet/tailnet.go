@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"tailscale.com/client/local"
 	"tailscale.com/ipn"
@@ -116,11 +117,30 @@ var noisyLogFragments = []string{
 	"decrementing connsInFlightByClient",
 }
 
+// Tailscale marks its own verbose lines with a [v1] or [v2] prefix, which its uploader parses into a
+// level and gates on. A plain Logf like ours just receives the prefix as text, so we gate on it here.
+// The third form is the JSON-tagged level, "[v\x00JSON]" followed by the digit.
+// Errors are never tagged, so dropping these loses nothing but per-packet and per-peer detail.
+var verboseLogMarkers = []string{"[v1]", "[v2]", "[v\x00JSON]"}
+
+// verbose is set once at startup by the CLI, and read from tsnet's own goroutines.
+var verbose atomic.Bool
+
+// SetVerbose passes tailscale's verbose lines through. Off unless the node is running at debug level.
+func SetVerbose(on bool) { verbose.Store(on) }
+
 func filteredLogf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	for _, frag := range noisyLogFragments {
 		if strings.Contains(msg, frag) {
 			return
+		}
+	}
+	if !verbose.Load() {
+		for _, marker := range verboseLogMarkers {
+			if strings.Contains(msg, marker) {
+				return
+			}
 		}
 	}
 	log.Print(msg)
