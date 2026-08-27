@@ -174,7 +174,9 @@ func (c *Client) Download(ctx context.Context, rel Release, name, dir string, re
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	file, err := os.CreateTemp(dir, ".deepcove-download-*")
+	// The asset name goes on the end so the temp file keeps the real extension, which makes a file
+	// left behind by a crash identifiable.
+	file, err := os.CreateTemp(dir, ".deepcove-download-*-"+name)
 	if err != nil {
 		return "", fmt.Errorf("upgrade: %w", err)
 	}
@@ -241,9 +243,16 @@ func checksumFor(sums []byte, name string) (string, error) {
 
 // ExtractBinary writes the named binary from the archive into dir and returns its path. The caller
 // removes the file.
+//
+// The format comes from the first bytes rather than the name, so it cannot be fooled by whatever the
+// caller happened to call the file.
 func ExtractBinary(archivePath, name, dir string) (string, error) {
 	open := openTarGz
-	if strings.HasSuffix(archivePath, ".zip") {
+	zipped, err := isZip(archivePath)
+	if err != nil {
+		return "", err
+	}
+	if zipped {
 		open = openZip
 	}
 	source, closeSource, err := open(archivePath, name)
@@ -316,6 +325,20 @@ func openTarGz(archivePath, name string) (io.Reader, func(), error) {
 			}, nil
 		}
 	}
+}
+
+// isZip reports whether the file starts with the PKZip magic number, which no gzip stream can.
+func isZip(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("upgrade: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	var magic [2]byte
+	if _, err := io.ReadFull(file, magic[:]); err != nil {
+		return false, fmt.Errorf("upgrade: %s: %w", path, err)
+	}
+	return string(magic[:]) == "PK", nil
 }
 
 // Replace puts newPath at target, keeping the permissions target already had.

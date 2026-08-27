@@ -88,7 +88,7 @@ func cmdServiceInstall(manager service.Manager, args []string) error {
 	if err := manager.Install(after, service.InstallOptions{Linger: !*noLinger}); err != nil {
 		return err
 	}
-	fmt.Println("deepcove is installed and running. It starts again with your session.")
+	fmt.Println("deepcove is installed. It starts now, and again with your session.")
 	return printServiceStatus(manager)
 }
 

@@ -1,15 +1,11 @@
 # deepcove
 
-A self-hosted studio for running coding agents in isolated sandboxes, on machines you own.
+A web dashboard for running coding agent sessions in isolated sandboxes across your own machines.
 
-Every session gets its own sandbox, and the agent runs inside it with your code. You drive it from a
-web terminal in the dashboard. Nothing runs the agent on your own machine, and nothing leaves your
-machines. Add Tailscale and the same dashboard reaches every node you run it on, from anywhere,
-without exposing anything to the internet.
-
-## Status
-
-Early, and moving fast. There are no releases yet, so building from source is the only way to run it.
+deepcove runs each agent in a sandbox on one of your machines and puts its terminal in your browser.
+The dashboard shows a live preview of every session, so you can see what each agent is doing without
+opening it. Sessions keep running after you close the browser, and a session on another machine
+behaves exactly like one on your laptop.
 
 ## Sandboxes
 
@@ -17,6 +13,15 @@ Early, and moving fast. There are no releases yet, so building from source is th
 kernel, so it is isolated from the host and from every other session.
 
 **Docker**. Shares the host kernel, starts fastest, and keeps the agent's login between sessions.
+
+## Your machines
+
+One machine needs nothing but deepcove. To use more than one, sign each of them into your Tailscale
+network and they find each other on their own: the dashboard lists every session on every machine, and
+starting one somewhere else is the same click.
+
+Nothing is published to the internet. The dashboard listens on 127.0.0.1, and over your tailnet only
+your own Tailscale identity is let in.
 
 ## Build
 

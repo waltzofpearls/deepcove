@@ -12,18 +12,18 @@ jobs:
     name: ui
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # The build jobs need ui/build, and an artifact is the usual way to hand it over. This uses the
       # cache instead: same handoff, and it draws on the per-repo cache allowance rather than the
       # artifact one, which a few runs can exhaust for a whole billing cycle.
       - id: ui-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ui/build
           key: ui-build-${{ github.sha }}
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.ui-cache.outputs.cache-hit != 'true'
         with:
           node-version-file: ui/package.json
@@ -60,15 +60,15 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: ui/build
           key: ui-build-${{ github.sha }}
           fail-on-cache-miss: true
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -89,7 +89,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         run: make notarize-darwin ARCH=${{ matrix.arch }}
       - run: make package OS=${{ matrix.os }} ARCH=${{ matrix.arch }}
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: deepcove-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/release/*
@@ -102,8 +102,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: deepcove-*
           merge-multiple: true

@@ -260,20 +260,27 @@ func TestExtractBinary(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "zip",
+			name: "zip with no extension in the name",
 			build: func(t *testing.T, dir string) string {
-				return writeZip(t, dir, "release.zip", map[string]string{
+				return writeZip(t, dir, ".deepcove-download-123", map[string]string{
 					"deepcove": "the binary", "LICENSE": "text",
 				})
 			},
 			want: "the binary",
 		},
 		{
-			name: "tar.gz with a leading dot",
+			name: "tar.gz with no extension in the name",
 			build: func(t *testing.T, dir string) string {
-				return writeTarGz(t, dir, "release.tar.gz", map[string]string{
+				return writeTarGz(t, dir, ".deepcove-download-456", map[string]string{
 					"./deepcove": "the binary", "./README.md": "text",
 				})
+			},
+			want: "the binary",
+		},
+		{
+			name: "content wins over a misleading name",
+			build: func(t *testing.T, dir string) string {
+				return writeZip(t, dir, "looks-like.tar.gz", map[string]string{"deepcove": "the binary"})
 			},
 			want: "the binary",
 		},
