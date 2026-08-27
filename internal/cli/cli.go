@@ -25,6 +25,7 @@ var commands = []command{
 	{"service", "install deepcove as a background service", cmdService},
 	{"dashboard", "open the dashboard", cmdDashboard},
 	{"session", "create or attach to a session", cmdSession},
+	{"upgrade", "replace this binary with the newest release", cmdUpgrade},
 	{"version", "print version", cmdVersion},
 }
 
