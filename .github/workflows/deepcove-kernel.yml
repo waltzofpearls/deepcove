@@ -29,7 +29,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Both architectures in one job, so a single buildx run publishes one index rather than two
       # manifests that have to be stitched together afterwards.
