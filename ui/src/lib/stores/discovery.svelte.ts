@@ -1,5 +1,5 @@
-// Dashboard-mode cluster discovery. In `deepcove dashboard` (cross-tailnet thin client) there is no
-// server node to fan out for us: the in-browser Tailscale node has to find the cluster itself. This
+// Dashboard-mode node discovery. In `deepcove dashboard` (cross-tailnet thin client) there is no
+// server node to fan out for us: the in-browser Tailscale node has to find your nodes itself. This
 // store brings that node up (reusing ensureTailnet for the login lifecycle), then polls its view of the
 // tailnet (network.status()) for the user's deepcove nodes.
 //
@@ -10,7 +10,7 @@
 //     reads as remote (badged with its host).
 //   - a "primary" node, set as the boot transport target for incidental app-level calls (agent
 //     registry, suggest-name, preflight). The sessions list never depends on it (it fans out across
-//     every node), so a primary going offline only re-points those reads, never stalls the cluster view.
+//     every node), so a primary going offline only re-points those reads, never stalls the node list.
 //
 // Only used in discover mode (transport.discoveryRequired()); connected mode talks to a server that
 // fans out and never touches this.
@@ -146,7 +146,7 @@ export const discovery = {
     }
   },
 
-  // start brings up the in-browser node and begins polling for the cluster. Idempotent. The login
+  // start brings up the in-browser node and begins polling for your nodes. Idempotent. The login
   // lifecycle drives tailnetAuth (shown by TailnetGate); discovery proper begins once it's running.
   async start(): Promise<void> {
     if (started) return;

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -23,6 +24,8 @@ func bootVM(spec vmSpec) (*machine, error) {
 	return nil, fmt.Errorf("applevf: the Apple Virtualization.framework runtime requires macOS: %w", sandbox.ErrNotSupported)
 }
 
+func (m *machine) setLogger(*slog.Logger)      {}
+func (m *machine) unresponsive() bool          { return false }
 func (m *machine) Console() io.ReadWriteCloser { return nil }
 func (m *machine) Stop() error                 { return nil }
 

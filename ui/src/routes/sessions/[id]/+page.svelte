@@ -3,8 +3,6 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api/client';
-  import { transport } from '$lib/api/transport';
-  import { tailnetAuth } from '$lib/api/wasm';
   import { sessions } from '$lib/stores/sessions.svelte';
   import type { Session, SessionHost, SessionPreview } from '$lib/api/types';
   import { Button } from '$lib/components/ui/button';
@@ -25,7 +23,6 @@
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
   import Terminal from '$lib/components/session/Terminal.svelte';
-  import RemoteSignInPrompt from '$lib/components/session/RemoteSignInPrompt.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import SessionTags from '$lib/components/session/SessionTags.svelte';
   import SessionSettingsDialog from '$lib/components/session/SessionSettingsDialog.svelte';
@@ -60,14 +57,6 @@
   const listed = $derived(sessions.find(id));
   const host = $derived<SessionHost | undefined>(listed ? sessions.hostFor(listed) : undefined);
   const hostKey = $derived(host?.dns_name ?? '');
-
-  // Connected (direct) mode + a remote session = the per-session calls ride the in-browser Tailscale
-  // node (WASM), which isn't signed in here by default. Until it's running, surface an inline sign-in
-  // prompt instead of an indefinite "loading…". Dashboard (wasm) mode never hits this, since its global
-  // gate already handles the login; local sessions (no host) don't either.
-  const needsWasmSignin = $derived(
-    transport.mode === 'direct' && !!host && $tailnetAuth.phase !== 'running',
-  );
 
   let session = $state<Session | null>(null);
   // loadError is the initial-load failure (no session to show at all).
@@ -574,8 +563,8 @@
         <AlertDialogTitle>Destroy session?</AlertDialogTitle>
         <AlertDialogDescription>
           {#if session}
-            This permanently destroys <span class="font-mono">{session.name}</span> and its workspace.
-            This action cannot be undone.
+            This permanently destroys <span class="font-mono">{session.name}</span>
+            and its workspace. This action cannot be undone.
           {:else}
             This permanently destroys the session and its workspace. This action cannot be undone.
           {/if}
@@ -614,11 +603,7 @@
        toolbar above is excluded from real fullscreen, matching the
        intent (the terminal alone, edge-to-edge). -->
   <div bind:this={containerEl} class="relative flex-1 overflow-hidden bg-[var(--term-bg)]">
-    {#if needsWasmSignin}
-      <!-- Remote session in connected mode: must reach the owning node over the in-browser Tailscale
-           node, which needs a sign-in. Takes precedence over the terminal/preview while we wait. -->
-      <RemoteSignInPrompt hostName={host?.hostname} />
-    {:else if session?.status === 'running'}
+    {#if session?.status === 'running'}
       {#if currentMode === 'split'}
         <!-- Split mode: two side-by-side terminals, each pinned to
              its own tmux window via the ?tmux_window= query param

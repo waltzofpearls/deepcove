@@ -5,6 +5,8 @@ package applevf
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 )
@@ -55,12 +57,23 @@ func (m *machine) consoleHint() string {
 	return "\nlast guest console output:\n" + strings.Join(lines, "\n")
 }
 
-// captureConsole starts draining the guest console into a bounded buffer. It must run for every VM the
-// driver owns: the console is a pipe, so an undrained one eventually blocks the guest on a write.
-func (m *machine) captureConsole() {
+// captureConsole starts draining the guest console into a bounded buffer, and into path when one is
+// given. It must run for every VM the driver owns: the console is a pipe, so an undrained one eventually
+// blocks the guest on a write.
+//
+// The file is the part that outlives the process. A guest panic or an OOM report is printed there and
+// nowhere else.
+func (m *machine) captureConsole(path string) {
 	if m.consoleLog != nil {
 		return
 	}
 	m.consoleLog = newConsoleBuffer()
-	go m.consoleLog.drain(m.console)
+	reader := io.Reader(m.console)
+	if path != "" {
+		if file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+			m.closers = append(m.closers, file)
+			reader = io.TeeReader(reader, file)
+		}
+	}
+	go m.consoleLog.drain(reader)
 }

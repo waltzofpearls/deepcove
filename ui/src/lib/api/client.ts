@@ -1,6 +1,6 @@
 // Thin typed wrapper over the /api/* endpoints. All traffic goes through
 // `transport` (lib/api/transport.ts): Direct (native fetch/WebSocket) today and
-// WASM later, so this file never has to know how the bytes reach the cluster.
+// WASM later, so this file never has to know how the bytes reach the node.
 
 import { transport, transportForHost, type DeepcoveSocket, type Transport } from './transport';
 import { mergeAggregated, nodeHost } from './sessions';
@@ -91,19 +91,10 @@ async function request<T>(path: string, init?: RequestInit, t: Transport = trans
   return (await requestRaw<T>(path, init, t)).data;
 }
 
-// mirrors session.ClusterHeader; read in browser fan-out to tag each peer's sessions.
-const CLUSTER_HEADER = 'X-Deepcove-Cluster';
-
 // peerFanoutTimeoutMs bounds each per-node /api/sessions/local fetch in the browser-side fan-out
 // (dashboard mode), mirroring the Go peerFanoutTimeout. A node that doesn't answer in time is reported
 // unreachable so one slow node never stalls the whole cross-node list.
 const peerFanoutTimeoutMs = 2000;
-
-// nodeClustersTimeoutMs bounds /nodes/clusters. The WASM transport ignores AbortSignal, so a hung dial
-// to a dead-but-stale-online primary would otherwise stall the poll forever (usePolling awaits each
-// tick). Racing a timeout lets the tick reject and retry, by when discovery may have re-pointed the boot
-// transport at a live primary. The backend answers from cache, so this only ever fires on a bad dial.
-const nodeClustersTimeoutMs = 4000;
 
 // withTimeout rejects if p doesn't settle within ms. For calls over the WASM transport, which can hang
 // on a dead peer (it doesn't honor AbortSignal); the orphaned promise may still settle later, discarded.
@@ -130,15 +121,14 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 function fetchNodeSessions(
   node: NodeInfo,
   opts: { all?: boolean; signal?: AbortSignal },
-): Promise<{ sessions: Session[]; cluster: string }> {
+): Promise<{ sessions: Session[] }> {
   const q = opts.all ? '?all=true' : '';
-  // requestRaw so we can read the cluster header ourselves (no server aggregator in browser fan-out)
   const fetchP = requestRaw<Session[]>(
     `/sessions/local${q}`,
     { signal: opts.signal },
     transportForHost(nodeHost(node)),
-  ).then(({ data, resp }) => ({ sessions: data, cluster: resp.headers.get(CLUSTER_HEADER) ?? '' }));
-  return new Promise<{ sessions: Session[]; cluster: string }>((resolve, reject) => {
+  ).then(({ data }) => ({ sessions: data }));
+  return new Promise<{ sessions: Session[] }>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('node fan-out timeout')), peerFanoutTimeoutMs);
     const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
     opts.signal?.addEventListener('abort', onAbort);
@@ -250,18 +240,26 @@ export const api = {
 
   // runtimes reports what this node's runtimes are hosting, joined against the session table. Always
   // this node: which machine a sandbox runs on is the whole question, so there is nothing to fan out.
-  runtimes(signal?: AbortSignal): Promise<RuntimesViewResponse> {
-    return request('/runtimes', { signal });
+  runtimes(host?: SessionHost, signal?: AbortSignal): Promise<RuntimesViewResponse> {
+    return request('/runtimes', { signal }, transportForHost(host));
   },
 
   // destroySandbox removes a sandbox no session owns. The server re-checks that ownership, so a stale
   // view cannot talk it into deleting something still in use.
-  destroySandbox(runtime: string, sandboxID: string): Promise<void> {
+  destroySandbox(runtime: string, sandboxID: string, host?: SessionHost): Promise<void> {
     return request(
       `/runtimes/${encodeURIComponent(runtime)}/sandboxes/${encodeURIComponent(sandboxID)}`,
-      {
-        method: 'DELETE',
-      },
+      { method: 'DELETE' },
+      transportForHost(host),
+    );
+  },
+
+  // restartSandbox stops and starts a VM with its saved settings, so an edited size or folder applies.
+  restartSandbox(runtime: string, sandboxID: string, host?: SessionHost): Promise<void> {
+    return request(
+      `/runtimes/${encodeURIComponent(runtime)}/sandboxes/${encodeURIComponent(sandboxID)}/restart`,
+      { method: 'POST' },
+      transportForHost(host),
     );
   },
 
@@ -305,8 +303,12 @@ export const api = {
 
   // deleteWorkspaceVM destroys the machine. withSessions deletes the sessions on it too; without it the
   // server refuses with a 409 while any remain.
-  deleteWorkspaceVM(withSessions = false): Promise<void> {
-    return request(`/workspace-vm${withSessions ? '?sessions=delete' : ''}`, { method: 'DELETE' });
+  deleteWorkspaceVM(withSessions = false, host?: SessionHost): Promise<void> {
+    return request(
+      `/workspace-vm${withSessions ? '?sessions=delete' : ''}`,
+      { method: 'DELETE' },
+      transportForHost(host),
+    );
   },
 
   // imageExists reports whether an image ref is already downloaded, so
@@ -363,10 +365,12 @@ export const api = {
   async setupRuntime(
     name: string,
     onProgress: (p: { status: string; percent: number }) => void,
+    host?: SessionHost,
   ): Promise<void> {
-    const resp = await transport.fetch(`${BASE}/runtimes/${encodeURIComponent(name)}/setup`, {
-      method: 'POST',
-    });
+    const resp = await transportForHost(host).fetch(
+      `${BASE}/runtimes/${encodeURIComponent(name)}/setup`,
+      { method: 'POST' },
+    );
     if (!resp.ok) {
       let msg = resp.statusText;
       let code: string | undefined;
@@ -421,51 +425,6 @@ export const api = {
     return request('/nodes/web', { signal });
   },
 
-  // nodeClusters maps each session node's stable id to its cluster label (SPEC §5.12). Connected mode:
-  // the boot transport reaches this node's server, which gossips server-side. See nodeClustersFromNodes
-  // for the dashboard-mode variant.
-  nodeClusters(signal?: AbortSignal): Promise<Record<string, string>> {
-    return withTimeout(
-      request<Record<string, string>>('/nodes/clusters', { signal }),
-      nodeClustersTimeoutMs,
-      'nodeClusters',
-    );
-  },
-
-  // nodeClustersFromNodes is the dashboard-mode variant: it asks every online node for /nodes/clusters
-  // concurrently and takes the first success, instead of the single boot-transport primary. That primary
-  // can be a dead-but-still-"online" node whose dial hangs on a never-completing WireGuard handshake, and
-  // the netmap can keep it "online" for minutes. Gossip makes every node's answer consistent, so any
-  // reachable one is correct.
-  async nodeClustersFromNodes(nodes: NodeInfo[]): Promise<Record<string, string>> {
-    const attempts = nodes
-      .filter((n) => n.online && n.dns_name)
-      .map((n) =>
-        withTimeout(
-          request<Record<string, string>>('/nodes/clusters', {}, transportForHost(nodeHost(n))),
-          nodeClustersTimeoutMs,
-          'nodeClusters',
-        ),
-      );
-    if (attempts.length === 0) return {}; // no online node to ask -> nothing to group
-    // Rejects (AggregateError) only if EVERY node failed; the caller keeps the spinner and retries
-    // rather than flipping clustersLoaded on an empty result.
-    return Promise.any(attempts);
-  },
-
-  // getCluster / setCluster read and change this node's cluster label (SPEC §5.12). setCluster is
-  // persisted and effective immediately; an empty name resets to the default cluster.
-  getCluster(signal?: AbortSignal): Promise<{ cluster: string }> {
-    return request('/cluster', { signal });
-  },
-  setCluster(cluster: string): Promise<{ cluster: string }> {
-    return request('/cluster', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cluster }),
-    });
-  },
-
   // Aggregated across all the user's nodes (each session tagged with its host; unreachable peers
   // reported). On a single node it's just this machine's sessions.
   listSessions(opts: { all?: boolean; signal?: AbortSignal } = {}): Promise<SessionListResponse> {
@@ -487,10 +446,10 @@ export const api = {
     const perNode = await Promise.all(
       online.map(async (node) => {
         try {
-          const { sessions, cluster } = await fetchNodeSessions(node, opts);
-          return { node, sessions, cluster };
+          const { sessions } = await fetchNodeSessions(node, opts);
+          return { node, sessions };
         } catch {
-          return { node, sessions: null, cluster: '' }; // timed out, aborted, or errored, so unreachable
+          return { node, sessions: null }; // timed out, aborted, or errored, so unreachable
         }
       }),
     );

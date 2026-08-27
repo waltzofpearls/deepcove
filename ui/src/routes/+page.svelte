@@ -9,7 +9,6 @@
   import { connect } from '$lib/stores/connect.svelte';
   import { NEW_SESSION_CTX } from '$lib/context';
   import type { Session } from '$lib/api/types';
-  import { DEFAULT_CLUSTER } from '$lib/util/cluster';
   import SessionCard from '$lib/components/session/SessionCard.svelte';
   import SessionListView from '$lib/components/session/SessionListView.svelte';
   import Boxes from '@lucide/svelte/icons/boxes';
@@ -83,35 +82,7 @@
     });
   });
 
-  // Group sessions by host-node cluster (SPEC §5.12); chrome only appears with more than one cluster.
-  const clusterOf = (s: Session) => s.host?.cluster || DEFAULT_CLUSTER;
-  // From the FULL list, not `filtered`: a transient empty search would otherwise wipe the persisted filter.
-  const allClusters = $derived([...new Set(sessions.list.map(clusterOf))].sort());
-  const showClusters = $derived(allClusters.length > 1);
-
-  // Reset the persisted filter only when the selected cluster no longer exists at all.
-  $effect(() => {
-    if (preferences.clusterFilter !== 'all' && !allClusters.includes(preferences.clusterFilter)) {
-      preferences.clusterFilter = 'all';
-    }
-  });
-
-  const visible = $derived(
-    preferences.clusterFilter === 'all'
-      ? filtered
-      : filtered.filter((s) => clusterOf(s) === preferences.clusterFilter),
-  );
-  // Sessions grouped by cluster (name-sorted) for the "all clusters" overview.
-  const grouped = $derived.by(() => {
-    const m = new Map<string, Session[]>();
-    for (const s of filtered) {
-      const c = clusterOf(s);
-      const arr = m.get(c);
-      if (arr) arr.push(s);
-      else m.set(c, [s]);
-    }
-    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
-  });
+  const visible = $derived(filtered);
 </script>
 
 {#if showConnectNudge}
@@ -147,7 +118,9 @@
 {:else if sessions.loading}
   <!-- Skeletons rather than a bare "Loading…" line so the layout
        doesn't jump when cards arrive. -->
-  <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+  <div
+    class="grid grid-cols-[repeat(auto-fill,minmax(min(20rem,100%),1fr))] gap-4 p-6 lg:grid-cols-[repeat(auto-fill,minmax(29rem,1fr))]"
+  >
     {#each Array(16) as _, i (i)}
       <div
         class="flex aspect-[4/3] animate-pulse flex-col overflow-hidden rounded-lg border border-border bg-card"
@@ -237,16 +210,6 @@
         Running
       </button>
     </div>
-    {#if showClusters}
-      <select
-        bind:value={preferences.clusterFilter}
-        class="h-9 shrink-0 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-        aria-label="Filter by cluster"
-      >
-        <option value="all">All clusters</option>
-        {#each allClusters as c (c)}<option value={c}>{c}</option>{/each}
-      </select>
-    {/if}
     <button
       onclick={refreshDashboard}
       disabled={refreshing}
@@ -259,28 +222,12 @@
 
   {#if filtered.length === 0}
     <div class="p-8 text-center text-sm text-muted-foreground">No sessions match your filters.</div>
-  {:else if showClusters && preferences.clusterFilter === 'all'}
-    <!-- Grouped by cluster: a header per cluster, then that cluster's sessions. -->
-    {#each grouped as [cluster, group] (cluster)}
-      <div class="flex items-center gap-2 px-6 pb-1 pt-6">
-        <Layers class="size-4 shrink-0 text-muted-foreground" />
-        <h3 class="text-sm font-semibold">{cluster}</h3>
-        <span class="text-xs text-muted-foreground">{group.length}</span>
-        <div class="ml-1 h-px flex-1 bg-border"></div>
-      </div>
-      {#if preferences.viewMode === 'cards'}
-        <div class="grid grid-cols-1 gap-4 px-6 pb-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {#each group as session (session.id)}
-            <SessionCard {session} />
-          {/each}
-        </div>
-      {:else}
-        <SessionListView sessions={group} />
-      {/if}
-    {/each}
-    <div class="pb-4"></div>
   {:else if preferences.viewMode === 'cards'}
-    <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <!-- A card size rather than a column count: the grid fits as many as the real width allows, so the
+         sidebar and the window are accounted for, and a laptop and a 32 inch monitor both read well. -->
+    <div
+      class="grid grid-cols-[repeat(auto-fill,minmax(min(20rem,100%),1fr))] gap-4 p-6 lg:grid-cols-[repeat(auto-fill,minmax(29rem,1fr))]"
+    >
       {#each visible as session (session.id)}
         <SessionCard {session} />
       {/each}

@@ -36,7 +36,7 @@
   // up on boot and gate the dashboard until it's running. Direct mode never
   // touches this. `tailnetAuth` stays idle and `gated` is false. In dashboard
   // discover mode there's also no server to fan out, so the in-browser node
-  // discovers the cluster itself (discovery.start brings the node up too).
+  // discovers your nodes itself (discovery.start brings the node up too).
   onMount(() => {
     if (transport.mode === 'wasm') {
       if (discoveryRequired()) void discovery.start();
@@ -49,7 +49,7 @@
     // and reconnects async and the UI updates reactively.
     if (hasWebNodeSignIn()) void ensureTailnet().catch(() => {});
   });
-  // Gate until the node is running, and in discover mode until the cluster has been discovered (a
+  // Gate until the node is running, and in discover mode until your nodes have been discovered (a
   // primary picked), because otherwise the boot transport has no target and the app would fire calls
   // into the void.
   let gated = $derived(

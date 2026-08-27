@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"time"
 )
@@ -14,14 +15,11 @@ const peerFanoutTimeout = 2 * time.Second
 // ErrNodeNotFound means a create targeted a NodeID that isn't one of the user's known nodes.
 var ErrNodeNotFound = errors.New("session: target node not found")
 
-// NodeRef identifies a deepcove node for host-tagging sessions and for fan-out dialing. Cluster is the
-// node's self-declared cluster label (SPEC §5.12), used to group sessions in the UI; empty means the
-// default cluster.
+// NodeRef identifies a deepcove node for host-tagging sessions and for fan-out dialing.
 type NodeRef struct {
 	StableNodeID string `json:"stable_node_id"`
 	Hostname     string `json:"hostname"`
 	DNSName      string `json:"dns_name,omitempty"`
-	Cluster      string `json:"cluster,omitempty"`
 }
 
 // Federation supplies the cross-node view the aggregated list needs. The connect manager implements
@@ -31,20 +29,19 @@ type Federation interface {
 	Self() NodeRef
 	// Peers are the user's other deepcove nodes to fan out to.
 	Peers() []NodeRef
-	// FetchSessions GETs a peer's local sessions over the tailnet, plus the peer's cluster label (which
-	// it reports in the response) so the aggregator can tag that peer's sessions with it.
-	FetchSessions(ctx context.Context, peer NodeRef, includeAll bool) ([]*Session, string, error)
+	// FetchSessions GETs a peer's local sessions over the tailnet.
+	FetchSessions(ctx context.Context, peer NodeRef, includeAll bool) ([]*Session, error)
 	// CreateSession proxies a create to a peer over the tailnet; the session is hosted there.
 	CreateSession(ctx context.Context, peer NodeRef, req CreateRequest) (*Session, error)
+	// TailnetClient dials other nodes. Nil until this node is on the tailnet.
+	TailnetClient() *http.Client
+	// FindSessionHost returns the node hosting a session, or false if no node claims it.
+	FindSessionHost(ctx context.Context, sessionID string) (NodeRef, bool)
 }
 
 // SetFederation wires the cross-node source. Optional: without it, ListAggregated returns only this
 // node's sessions (rung 1, or any single-machine setup).
 func (s *Service) SetFederation(f Federation) { s.federation = f }
-
-// SetClusterStore wires this node's cluster label, reported on /api/sessions/local. Optional; a nil
-// store reads back as the default cluster.
-func (s *Service) SetClusterStore(cs *ClusterStore) { s.clusterStore = cs }
 
 // SessionListResponse is the aggregated GET /api/sessions payload: sessions across all your nodes,
 // each tagged with the node hosting it, plus any peers whose deepcove API didn't answer in time.
@@ -86,12 +83,11 @@ func (s *Service) ListAggregated(ctx context.Context, filter ListFilter) (*Sessi
 		go func(peer NodeRef) {
 			peerCtx, cancel := context.WithTimeout(ctx, peerFanoutTimeout)
 			defer cancel()
-			remote, cluster, err := s.federation.FetchSessions(peerCtx, peer, filter.IncludeAll)
+			remote, err := s.federation.FetchSessions(peerCtx, peer, filter.IncludeAll)
 			if err != nil {
 				results <- fanoutResult{peer: peer, ok: false}
 				return
 			}
-			peer.Cluster = cluster
 			tagHost(remote, peer)
 			results <- fanoutResult{peer: peer, sessions: remote, ok: true}
 		}(peer)

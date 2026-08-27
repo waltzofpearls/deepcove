@@ -16,9 +16,8 @@ const consoleTailBytes = 64 << 10
 // guest fails to come up, the tail is the only evidence of why, so a readiness failure can say what the
 // guest was doing instead of just reporting a timeout.
 type consoleBuffer struct {
-	mu   sync.Mutex
-	buf  []byte
-	full bool // the buffer has wrapped, so the oldest bytes were dropped
+	mu  sync.Mutex
+	buf []byte
 }
 
 func newConsoleBuffer() *consoleBuffer {
@@ -47,7 +46,6 @@ func (c *consoleBuffer) append(p []byte) {
 	if len(c.buf) > consoleTailBytes {
 		// Keep the newest bytes: a boot failure is explained by what happened last, not first.
 		c.buf = c.buf[len(c.buf)-consoleTailBytes:]
-		c.full = true
 	}
 }
 
@@ -58,12 +56,4 @@ func (c *consoleBuffer) Tail() []byte {
 	out := make([]byte, len(c.buf))
 	copy(out, c.buf)
 	return out
-}
-
-// Truncated reports whether output was dropped, so a caller can say so rather than imply it has the
-// whole log.
-func (c *consoleBuffer) Truncated() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.full
 }

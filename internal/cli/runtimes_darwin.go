@@ -148,6 +148,12 @@ func registerVMInstaller(
 		svc.RegisterRuntime(entry.name, entry.driver)
 		set.add(entry)
 		svc.MarkRuntimeReady(entry.name)
+		// The node picked its default before this runtime existed. Pick again, or it keeps using Docker
+		// until the next restart.
+		if err := svc.SelectDefaultRuntime(ctx, cfg.DefaultRuntime); err != nil {
+			logger.Warn("keeping the current default runtime after setup",
+				"requested", cfg.DefaultRuntime, "err", err)
+		}
 		return nil
 	})
 }

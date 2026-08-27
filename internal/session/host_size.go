@@ -33,8 +33,17 @@ func WorkspaceDefaults(dataDir string) Resources {
 	return Resources{
 		CPU:      float64(clampInt(host.cores/2, minWorkspaceCPU, maxWorkspaceCPU)),
 		MemoryMB: clampMB(host.memoryMB/4, minWorkspaceMemoryMB, maxWorkspaceMemoryMB),
-		DiskMB:   clampMB(host.freeDiskMB/4, minWorkspaceDiskMB, maxWorkspaceDiskMB),
+		// Whole GiB: the field is in GiB, and 120.56 is noise nobody wants to read or type.
+		DiskMB: roundToGiB(clampMB(host.freeDiskMB/4, minWorkspaceDiskMB, maxWorkspaceDiskMB)),
 	}
+}
+
+// roundToGiB rounds a size in MiB to the nearest whole GiB, never below one.
+func roundToGiB(mb int64) int64 {
+	if mb < 1024 {
+		return 1024
+	}
+	return ((mb + 512) / 1024) * 1024
 }
 
 func clampInt(v, lo, hi int) int {

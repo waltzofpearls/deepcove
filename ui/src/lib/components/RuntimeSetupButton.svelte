@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { SessionHost } from '$lib/api/types';
   // Downloads whatever a runtime is missing, then tells the page to refresh. The runtime is usable as
   // soon as this finishes, so there is deliberately no "restart deepcove" instruction anywhere here.
   import { api } from '$lib/api/client';
@@ -6,7 +7,8 @@
   import Download from '@lucide/svelte/icons/download';
   import Loader2 from '@lucide/svelte/icons/loader-2';
 
-  let { runtime, ondone }: { runtime: string; ondone?: () => void } = $props();
+  let { runtime, host, ondone }: { runtime: string; host?: SessionHost; ondone?: () => void } =
+    $props();
 
   let busy = $state(false);
   // -1 until the download reports a total, which is what the indeterminate case looks like.
@@ -19,10 +21,14 @@
     error = null;
     percent = -1;
     try {
-      await api.setupRuntime(runtime, (p) => {
-        status = p.status;
-        percent = p.percent;
-      });
+      await api.setupRuntime(
+        runtime,
+        (p) => {
+          status = p.status;
+          percent = p.percent;
+        },
+        host,
+      );
       ondone?.();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);

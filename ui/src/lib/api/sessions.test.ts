@@ -92,18 +92,6 @@ describe('mergeAggregated', () => {
     expect(out.unreachable?.map((u) => u.stable_node_id)).toEqual(['down']);
   });
 
-  it('stamps each node cluster (from its header) onto its sessions, leaving others untagged', () => {
-    const out = mergeAggregated(
-      [
-        { node: node('a'), sessions: [s('a1', '2026-06-01T10:00:00Z')], cluster: 'dev' },
-        { node: node('b'), sessions: [s('b1', '2026-06-01T09:00:00Z')] }, // no cluster header
-      ],
-      browser,
-    );
-    expect(out.sessions.find((x) => x.id === 'a1')?.host?.cluster).toBe('dev');
-    expect(out.sessions.find((x) => x.id === 'b1')?.host?.cluster).toBeUndefined();
-  });
-
   it('orders by parsed instant, not raw string (survives timezone offsets, matching Go)', () => {
     const out = mergeAggregated(
       [

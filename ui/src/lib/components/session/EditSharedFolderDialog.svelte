@@ -22,10 +22,22 @@
     host?: SessionHost;
     onsaved?: () => void;
   } = $props();
+
+  // The dialog's own element, focused on open so the folder field does not take it.
+  let contentRef = $state<HTMLElement | null>(null);
 </script>
 
 <Dialog bind:open>
-  <DialogContent class="max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl gap-0 p-0 sm:max-w-2xl">
+  <DialogContent
+    class="max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl gap-0 p-0 sm:max-w-2xl"
+    bind:ref={contentRef}
+    tabindex={-1}
+    onOpenAutoFocus={(e) => {
+      // Focus would land on the folder field, whose suggestions then cover the dialog.
+      e.preventDefault();
+      contentRef?.focus();
+    }}
+  >
     <DialogHeader class="border-b border-border px-6 py-4">
       <DialogTitle>{session?.name ?? 'Edit folders'}</DialogTitle>
       <DialogDescription>

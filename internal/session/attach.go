@@ -57,11 +57,11 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, err := s.Get(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "session not found")
+		writeNotHostedHere(w)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	if sess.Status != StatusRunning {
@@ -108,7 +108,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		cancelSetup()
 		s.logger.Warn("attach: view session setup failed", "id", id, "err", err)
-		writeError(w, http.StatusInternalServerError, "view session setup: "+err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, "view session setup: "+err.Error())
 		return
 	}
 	cancelSetup()
@@ -126,10 +126,8 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{AttachSubprotocol},
-		// We deliberately do not check Origin here; this listener
-		// is local TCP, not exposed to the network. Once tsnet
-		// listener lands the policy gets stricter.
-		InsecureSkipVerify: true,
+		// The library's default origin check: a browser may open this socket only from a page this node
+		// served. The in-browser Tailscale node sends no Origin header, which the library allows.
 	})
 	if err != nil {
 		s.logger.Warn("attach: ws accept failed", "id", id, "err", err)

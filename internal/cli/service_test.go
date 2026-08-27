@@ -23,9 +23,9 @@ func TestSplitAtDashDash(t *testing.T) {
 		},
 		{
 			name:       "flags on both sides",
-			args:       []string{"--no-linger", "--", "--cluster", "prod"},
+			args:       []string{"--no-linger", "--", "--addr", "127.0.0.1:9090"},
 			wantBefore: []string{"--no-linger"},
-			wantAfter:  []string{"--cluster", "prod"},
+			wantAfter:  []string{"--addr", "127.0.0.1:9090"},
 		},
 		{
 			name:      "only flags for start",

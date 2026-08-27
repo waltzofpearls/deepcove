@@ -30,15 +30,22 @@ func newTestService(t *testing.T) (*Service, *fakeSandbox, string, *sql.DB) {
 // at startup now that the service no longer assumes a runtime of its own.
 func newServiceWithRuntime(t *testing.T, database *sql.DB, sb sandbox.Sandbox) *Service {
 	t.Helper()
+	return newServiceWithNamedRuntime(t, database, sb, RuntimeDocker)
+}
+
+// newServiceWithNamedRuntime registers the fake under a chosen runtime name. Workspace VM tests need a
+// VM runtime, because a workspace VM is refused on anything else.
+func newServiceWithNamedRuntime(t *testing.T, database *sql.DB, sb sandbox.Sandbox, name string) *Service {
+	t.Helper()
 	svc := NewService(NewDuckDBSessionRepository(database), nil)
 	svc.SetWorkspaceVMStore(NewDuckDBWorkspaceVMStore(database))
 	// Background work is dropped: a test asserting an exact driver call sequence cannot race a goroutine
 	// making its own exec calls. Tests that want it call the function directly.
 	svc.background = func(func()) {}
-	svc.RegisterRuntime(RuntimeDocker, sb)
+	svc.RegisterRuntime(name, sb)
 	// SetDefaultRuntime, not SelectDefaultRuntime: the latter probes for a reachable runtime, and a test
 	// asserting an exact driver call sequence should not carry that probe.
-	if err := svc.SetDefaultRuntime(RuntimeDocker); err != nil {
+	if err := svc.SetDefaultRuntime(name); err != nil {
 		t.Fatalf("SetDefaultRuntime: %v", err)
 	}
 	return svc
@@ -967,8 +974,8 @@ func TestAgents(t *testing.T) {
 	}
 }
 
-// TestStartingStatus covers the in-flight status: it is reported while a start runs, it never
-// overwrites a running row, and it disappears when the start finishes.
+// TestStartingStatus covers the in-flight status: it is reported while a start runs, and it disappears
+// when the start finishes.
 func TestStartingStatus(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -978,7 +985,7 @@ func TestStartingStatus(t *testing.T) {
 	}{
 		{name: "a stopped session with a start in flight reads as starting", row: StatusStopped, inFlight: true, want: StatusStarting},
 		{name: "a new session with a start in flight reads as starting", row: StatusCreated, inFlight: true, want: StatusStarting},
-		{name: "a running session is never relabelled", row: StatusRunning, inFlight: true, want: StatusRunning},
+		{name: "a running session reads as starting while its machine restarts", row: StatusRunning, inFlight: true, want: StatusStarting},
 		{name: "no start in flight leaves the row alone", row: StatusStopped, inFlight: false, want: StatusStopped},
 	}
 	for _, tc := range cases {

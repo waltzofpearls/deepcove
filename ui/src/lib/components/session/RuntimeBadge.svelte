@@ -9,7 +9,7 @@
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
 
-  // Which sandbox a session runs in, sat alongside the agent and cluster tags. Worth surfacing because
+  // Which sandbox a session runs in, sat alongside the agent tag. Worth surfacing because
   // the isolation boundary changes what a session can do: a VM has its own kernel and (today) no access
   // to your files, a container shares the host kernel.
   let { runtime, shared = false }: { runtime: string; shared?: boolean } = $props();

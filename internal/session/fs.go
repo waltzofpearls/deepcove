@@ -34,7 +34,7 @@ type FsListResponse struct {
 func (s *Service) handleFsList(w http.ResponseWriter, r *http.Request) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		writeError(w, http.StatusInternalServerError, "cannot resolve home directory")
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, "cannot resolve home directory")
 		return
 	}
 	home = filepath.Clean(home)
@@ -49,6 +49,22 @@ func (s *Service) handleFsList(w http.ResponseWriter, r *http.Request) {
 
 	// Confine to the home subtree. Allow home itself and anything beneath it.
 	if path != home && !strings.HasPrefix(path, home+string(os.PathSeparator)) {
+		// A folder on the way to home points at home instead of refusing. Typing "/" or "/Users" then
+		// suggests the one place listing is allowed, rather than a 403 per keystroke.
+		if onTheWayTo(home, path) {
+			// Named relative to what was typed, so the client's own prefix filter still matches it.
+			// Building it by trimming a prefix broke at "/", where the prefix is "//" and nothing
+			// matches, leaving the whole path as the name.
+			name, err := filepath.Rel(path, home)
+			if err != nil {
+				name = home
+			}
+			writeJSON(w, http.StatusOK, FsListResponse{Path: path, Entries: []FsEntry{{
+				Name: name,
+				Path: home,
+			}}})
+			return
+		}
 		writeError(w, http.StatusForbidden, "path is outside the allowed home directory")
 		return
 	}
@@ -59,7 +75,7 @@ func (s *Service) handleFsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot read path")
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, "cannot read path")
 		return
 	}
 	if !info.IsDir() {
@@ -86,4 +102,16 @@ func (s *Service) handleFsList(w http.ResponseWriter, r *http.Request) {
 		parent = filepath.Dir(path)
 	}
 	writeJSON(w, http.StatusOK, FsListResponse{Path: path, Parent: parent, Entries: entries})
+}
+
+// onTheWayTo reports whether dir is an ancestor of target, such as "/" or "/Users" for a home under
+// "/Users/you".
+func onTheWayTo(target, dir string) bool {
+	if dir == target {
+		return false
+	}
+	if dir == string(os.PathSeparator) {
+		return true
+	}
+	return strings.HasPrefix(target, dir+string(os.PathSeparator))
 }

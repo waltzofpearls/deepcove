@@ -35,7 +35,7 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	client := newSessionClient(cfg)
+	client := newAPIClient(cfg)
 	sess, err := resolveSession(ctx, client, target)
 	if err != nil {
 		return err
@@ -124,7 +124,7 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 
 // resolveSession looks up a session by id prefix or name. We list all sessions and match; fine for
 // personal-scale node counts, and avoids needing a dedicated lookup endpoint.
-func resolveSession(ctx context.Context, client *sessionClient, target string) (*session.Session, error) {
+func resolveSession(ctx context.Context, client *apiClient, target string) (*session.Session, error) {
 	all, err := client.List(ctx, true /* includeAll */)
 	if err != nil {
 		return nil, err

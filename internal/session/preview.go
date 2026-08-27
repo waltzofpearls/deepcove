@@ -26,6 +26,8 @@ const previewCacheMaxEntries = 256
 // per poll, simplifies the schema).
 type PreviewResponse struct {
 	Ansi string `json:"ansi"`
+	// Stale means this could not be captured now, so it is the last picture we had, or nothing.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // previewCache holds the most recent successful capture per session.
@@ -116,10 +118,13 @@ func (s *Service) Preview(ctx context.Context, id string) (*PreviewResponse, err
 		return resp, nil
 	}
 
+	// The capture failed, so whatever we hand back is old. A copy, because the cache keeps the original.
 	if cached := s.previewCache.Get(id); cached != nil {
-		return cached, nil
+		old := *cached
+		old.Stale = true
+		return &old, nil
 	}
-	return &PreviewResponse{}, nil
+	return &PreviewResponse{Stale: true}, nil
 }
 
 // fetchLivePreview execs `tmux capture-pane -p -e -t main` and returns
@@ -169,11 +174,11 @@ func (s *Service) handlePreview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	resp, err := s.Preview(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "session not found")
+		writeNotHostedHere(w)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

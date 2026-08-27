@@ -12,7 +12,7 @@ import (
 
 // cmdSessionCreate handles `deepcove session <agent>` with optional --name and repeatable --mount
 // flags. Creates a session on the local background service via the API, printing the id + name.
-// Attach is a separate command (TODO).
+// Attaching is its own command, `deepcove session attach`.
 //
 // If --name is omitted, the service auto-generates one in the form "<agent>-<adjective>_<scientist>"
 // (Docker-style).
@@ -41,7 +41,7 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	client := newSessionClient(cfg)
+	client := newAPIClient(cfg)
 	sess, err := client.Create(ctx, session.CreateRequest{
 		Agent:       agent,
 		Name:        name,

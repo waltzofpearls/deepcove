@@ -13,23 +13,23 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// sessionClient is a thin HTTP client the CLI uses to talk to the running deepcove service. It prefers
+// apiClient is a thin HTTP client the CLI uses to talk to the running deepcove service. It prefers
 // the local control Unix socket (filesystem-permission scoped, and not subject to the local TCP
 // listener's token gate), falling back to the TCP address when the socket is absent (older server,
-// or dev). It exists in this file so each session_*.go command stays small and focused.
-type sessionClient struct {
+// or dev). It exists in this file so each command file stays small and focused.
+type apiClient struct {
 	baseURL string
 	http    *http.Client
 }
 
-func newSessionClient(cfg *config.Config) *sessionClient {
+func newAPIClient(cfg *config.Config) *apiClient {
 	if sock := socketPath(cfg.DataDir); socketAvailable(sock) {
-		return &sessionClient{
+		return &apiClient{
 			baseURL: "http://unix", // host is ignored; the transport dials the socket
 			http:    socketHTTPClient(sock),
 		}
 	}
-	return &sessionClient{
+	return &apiClient{
 		baseURL: "http://" + cfg.Addr,
 		http:    http.DefaultClient,
 	}
@@ -46,7 +46,7 @@ func (e *errAPI) Error() string {
 	return fmt.Sprintf("api %d: %s", e.Status, e.Body)
 }
 
-func (c *sessionClient) Create(ctx context.Context, req session.CreateRequest) (*session.Session, error) {
+func (c *apiClient) Create(ctx context.Context, req session.CreateRequest) (*session.Session, error) {
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/sessions", bytes.NewReader(body))
 	if err != nil {
@@ -70,7 +70,7 @@ func (c *sessionClient) Create(ctx context.Context, req session.CreateRequest) (
 	return &out, nil
 }
 
-func (c *sessionClient) List(ctx context.Context, includeAll bool) ([]*session.Session, error) {
+func (c *apiClient) List(ctx context.Context, includeAll bool) ([]*session.Session, error) {
 	// The CLI is a single-machine tool, so it lists this node's sessions (a bare array). The
 	// aggregated /api/sessions (cross-node, enveloped) is the browser dashboard's endpoint.
 	url := c.baseURL + "/api/sessions/local"

@@ -49,7 +49,9 @@ type RuntimeView struct {
 type SandboxView struct {
 	SandboxID string `json:"sandbox_id"`
 	State     string `json:"state"`
-	Image     string `json:"image,omitempty"`
+	// Unresponsive means the machine is up but not answering. A restart is what fixes it.
+	Unresponsive bool   `json:"unresponsive,omitempty"`
+	Image        string `json:"image,omitempty"`
 	// Resources are what the driver actually gave the sandbox. All zero means the driver either applied
 	// its own defaults or cannot report them, so the UI shows the session's request instead.
 	Resources Resources `json:"resources"`
@@ -186,6 +188,7 @@ func (s *Service) runtimeView(
 		sv := SandboxView{
 			SandboxID:     sandboxID,
 			State:         string(inst.State),
+			Unresponsive:  inst.Unresponsive,
 			Image:         inst.Image,
 			Resources:     fromSandboxResources(inst.Resources),
 			CreatedAt:     inst.CreatedAt,
@@ -300,7 +303,7 @@ func fromSandboxResources(r sandbox.Resources) Resources {
 func (s *Service) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 	views, err := s.RuntimeViews(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, RuntimesViewResponse{Runtimes: views})
@@ -355,7 +358,7 @@ func (s *Service) handleSetupRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming unsupported on this connection")
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, "streaming unsupported on this connection")
 		return
 	}
 

@@ -14,4 +14,4 @@ func (m *machine) waitReady(context.Context, time.Duration) error {
 	return fmt.Errorf("applevf: requires macOS: %w", sandbox.ErrNotSupported)
 }
 
-func (m *machine) captureConsole() {}
+func (m *machine) captureConsole(string) {}

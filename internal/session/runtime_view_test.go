@@ -327,7 +327,7 @@ func TestRuntimeViewListsEverySessionOnASandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	view := viewFor(t, views, RuntimeDocker)
+	view := viewFor(t, views, RuntimeAppleVF)
 	if len(view.Sandboxes) != 1 {
 		t.Fatalf("got %d sandboxes, want 1", len(view.Sandboxes))
 	}

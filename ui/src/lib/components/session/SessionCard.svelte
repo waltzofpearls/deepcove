@@ -3,9 +3,8 @@
   import { api } from '$lib/api/client';
   import { preferences } from '$lib/stores/preferences.svelte';
   import { sessions } from '$lib/stores/sessions.svelte';
-  import { tailnetAuth } from '$lib/api/wasm';
   import { usePolling } from '$lib/polling';
-  import { ageOf } from '$lib/format';
+  import { relativeAge } from '$lib/format';
   import { createConverter, CARD_FONT_SIZE } from './ansiToHtml';
   import StatusIndicator from './StatusIndicator.svelte';
   import SessionTags from './SessionTags.svelte';
@@ -38,7 +37,6 @@
   import { Button } from '$lib/components/ui/button';
   import Pause from '@lucide/svelte/icons/pause';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
-  import Globe from '@lucide/svelte/icons/globe';
   import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import Settings from '@lucide/svelte/icons/settings';
@@ -65,10 +63,14 @@
   // whether that's even possible so the card can show a helpful placeholder rather than a perpetual
   // "waiting…", and so we don't force the wasm client to load just to poll a thumbnail.
   const isRemote = $derived(sessions.isRemote(session));
-  const webReady = $derived($tailnetAuth.phase === 'running');
 
   let preview = $state<SessionPreview | null>(null);
   let previewError = $state(false);
+
+  // Consecutive polls that could not capture the terminal. One is normal around a restart; several in a
+  // row means the machine stopped answering.
+  let staleTicks = $state(0);
+  const notResponding = $derived(staleTicks >= 3);
   let html = $state('');
 
   // One converter per card; disposed on unmount. We avoid a module
@@ -78,6 +80,37 @@
   // preview that arrives before the converter resolves would leave
   // the card blank until the next poll tick.
   let converter = $state<Awaited<ReturnType<typeof createConverter>> | undefined>(undefined);
+
+  // A pane is captured at whatever size the last attach set, so it is often wider than the card. The
+  // drawing is scaled down to fit, which shows the whole width instead of a slice.
+  let frame = $state<HTMLElement | null>(null);
+  let body = $state<HTMLElement | null>(null);
+  let scale = $state(1);
+
+  // A floor so a runaway pane cannot shrink the text to nothing. Low, because a clipped preview reads
+  // worse than a small one.
+  const minPreviewScale = 0.35;
+
+  // Pinned to the bottom only when the drawing is taller than the card, so the newest lines show. A
+  // short session fits, and stays at the top where the terminal draws it.
+  let pinBottom = $state(true);
+
+  $effect(() => {
+    const rendered = html;
+    const f = frame;
+    const b = body;
+    if (!rendered || !f || !b) return;
+    const fit = () => {
+      const natural = b.scrollWidth;
+      if (natural <= 0) return;
+      scale = Math.min(1, Math.max(minPreviewScale, (f.clientWidth - 16) / natural));
+      pinBottom = b.scrollHeight * scale > f.clientHeight - 16;
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(f);
+    return () => ro.disconnect();
+  });
 
   $effect(() => {
     let cancelled = false;
@@ -101,14 +134,12 @@
   // doesn't leak its connection slot. See client.ts for the pool-exhaustion
   // story.
   $effect(() => {
-    // A remote preview routes over the in-browser web node; polling before it's signed in would force
-    // the wasm client to load just for a card thumbnail. Skip, and let the placeholder explain why.
-    if (isRemote && !webReady) return;
     const ac = new AbortController();
     const stop = usePolling(
       async () => {
         try {
           preview = await api.sessionPreview(session.id, host, ac.signal);
+          staleTicks = preview.stale ? staleTicks + 1 : 0;
           previewError = false;
         } catch (e) {
           // Aborts are normal on unmount. A real failure on a remote session means its node is
@@ -217,26 +248,35 @@
     aria-label="Open session {session.name}"
   ></a>
 
-  <div class="relative flex-1 overflow-hidden bg-[var(--term-bg)]">
+  <div class="relative flex-1 overflow-hidden bg-[var(--term-bg)]" bind:this={frame}>
+    {#if notResponding}
+      <div
+        class="absolute right-2 top-2 z-20 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 ring-1 ring-inset ring-amber-600/30 dark:text-amber-300"
+      >
+        not responding
+      </div>
+    {/if}
     {#if html}
       <div
-        class="ansi-card absolute inset-0 overflow-hidden p-2"
+        class="ansi-card absolute inset-0 flex overflow-hidden p-2"
+        class:items-end={pinBottom}
+        class:items-start={!pinBottom}
         class:opacity-40={session.status !== 'running'}
-        style="white-space: pre; line-height: 1.2;"
       >
-        {@html html}
+        <div
+          bind:this={body}
+          class="shrink-0"
+          style="white-space: pre; line-height: 1.2; transform: scale({scale}); transform-origin: {pinBottom
+            ? 'bottom left'
+            : 'top left'};"
+        >
+          {@html html}
+        </div>
       </div>
     {/if}
 
     {#if session.status === 'running' && !html}
-      {#if isRemote && !webReady}
-        <div
-          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-3 text-center"
-        >
-          <Globe class="size-8 text-muted-foreground" />
-          <span class="text-xs text-muted-foreground">Sign in the web node to preview</span>
-        </div>
-      {:else if isRemote && previewError}
+      {#if isRemote && previewError}
         <div
           class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-3 text-center"
         >
@@ -268,23 +308,13 @@
     {/if}
   </div>
 
-  <div class="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
-    <div class="flex min-w-0 items-center gap-2">
+  <div class="flex flex-col gap-1.5 border-t border-border px-3 py-2">
+    <div class="flex items-center gap-2">
       <StatusIndicator status={session.status} />
-      <div class="min-w-0">
-        <div class="truncate font-mono text-sm font-medium">{session.name}</div>
-        <div class="mt-1">
-          <SessionTags {session} />
-        </div>
-      </div>
-    </div>
-    <div class="flex shrink-0 items-center gap-1.5">
-      <span class="text-xs text-muted-foreground">Active {ageOf(session.last_activity_at)} ago</span
-      >
-      <!-- relative z-20 raises just the menu above the full-card nav
-           link; the rest of the footer stays below it so a click there
-           still opens the session. -->
-      <div class="relative z-20">
+      <div class="min-w-0 flex-1 truncate font-mono text-sm font-medium">{session.name}</div>
+      <!-- relative z-20 raises just the menu above the full-card nav link; the rest of the footer
+           stays below it so a click there still opens the session. -->
+      <div class="relative z-20 shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label="Session actions"
@@ -328,6 +358,14 @@
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <div class="min-w-0 flex-1">
+        <SessionTags {session} />
+      </div>
+      <span class="shrink-0 text-xs text-muted-foreground">
+        {relativeAge(session.last_activity_at)}
+      </span>
     </div>
   </div>
 </div>

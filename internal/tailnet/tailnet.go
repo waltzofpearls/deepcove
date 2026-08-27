@@ -7,6 +7,7 @@ package tailnet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -47,6 +48,8 @@ type Identity struct {
 	LoginName     string         `json:"login_name"`
 	DisplayName   string         `json:"display_name"`
 	ProfilePicURL string         `json:"profile_pic_url,omitempty"`
+	// Every tagged device in a tailnet reports the same user, so this identity names a machine.
+	FromTaggedDevice bool `json:"from_tagged_device,omitempty"`
 }
 
 // State is the bus-driven connection state. The reachable URL is NOT here; it depends on live
@@ -103,6 +106,13 @@ func New(stateDir, hostname string) *Node {
 		state: State{Phase: PhaseStopped},
 	}
 }
+
+// UseAuthKey enrols this node with a Tailscale auth key instead of an interactive sign-in. Call it
+// before Start; afterwards the node has already chosen how to authenticate.
+//
+// tsnet falls back to the TS_AUTHKEY and TS_AUTH_KEY environment variables on its own, so this is for
+// a key that arrives some other way, such as over the local socket.
+func (n *Node) UseAuthKey(key string) { n.srv.AuthKey = key }
 
 // noisyLogFragments are tsnet/netstack log lines deepcove suppresses because they are high-volume and
 // not actionable for us:
@@ -210,7 +220,7 @@ func (n *Node) onRunning() {
 	n.state.Phase = PhaseRunning
 	n.state.LoginURL = ""
 	if err == nil && status.Self != nil {
-		owner := &Identity{UserID: status.Self.UserID}
+		owner := &Identity{UserID: status.Self.UserID, FromTaggedDevice: status.Self.IsTagged()}
 		if up, ok := status.User[status.Self.UserID]; ok {
 			owner.LoginName = up.LoginName
 			owner.DisplayName = up.DisplayName
@@ -376,11 +386,23 @@ func (n *Node) WhoIs(ctx context.Context, remoteAddr string) (*Identity, error) 
 		return nil, fmt.Errorf("tailnet: no user profile for %q", remoteAddr)
 	}
 	return &Identity{
-		UserID:        who.UserProfile.ID,
-		LoginName:     who.UserProfile.LoginName,
-		DisplayName:   who.UserProfile.DisplayName,
-		ProfilePicURL: who.UserProfile.ProfilePicURL,
+		UserID:           who.UserProfile.ID,
+		LoginName:        who.UserProfile.LoginName,
+		DisplayName:      who.UserProfile.DisplayName,
+		ProfilePicURL:    who.UserProfile.ProfilePicURL,
+		FromTaggedDevice: who.Node != nil && who.Node.IsTagged(),
 	}, nil
+}
+
+// StartLogin asks for a fresh sign-in on a node that is already up, which is how a key close to expiry
+// gets extended. The URL arrives on the bus like any other login, so callers read it from State.
+//
+// This is what `tailscale up --force-reauth` does underneath.
+func (n *Node) StartLogin(ctx context.Context) error {
+	if n.localClient == nil {
+		return errors.New("tailnet: this node is not running")
+	}
+	return n.localClient.StartLoginInteractive(ctx)
 }
 
 // Logout deregisters the node from the tailnet (removing the device + freeing

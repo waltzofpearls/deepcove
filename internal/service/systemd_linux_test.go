@@ -21,9 +21,9 @@ func newTestManager(t *testing.T) (*systemdManager, *fakeRunner) {
 }
 
 func TestUnitText(t *testing.T) {
-	text := unitText([]string{"/usr/local/bin/deepcove", "start", "--cluster", "prod"})
+	text := unitText([]string{"/usr/local/bin/deepcove", "start", "--addr", "127.0.0.1:9090"})
 
-	if !strings.Contains(text, "ExecStart=/usr/local/bin/deepcove start --cluster prod") {
+	if !strings.Contains(text, "ExecStart=/usr/local/bin/deepcove start --addr 127.0.0.1:9090") {
 		t.Errorf("unit runs the wrong thing:\n%s", text)
 	}
 	// on-failure, not always: a deliberate exit has to stay exited.
@@ -41,7 +41,7 @@ func TestUnitText(t *testing.T) {
 
 func TestInstallWritesTheUnitThenEnablesIt(t *testing.T) {
 	manager, runner := newTestManager(t)
-	if err := manager.Install([]string{"--cluster", "prod"}, InstallOptions{}); err != nil {
+	if err := manager.Install([]string{"--addr", "127.0.0.1:9090"}, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -49,7 +49,7 @@ func TestInstallWritesTheUnitThenEnablesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unit not written: %v", err)
 	}
-	if !strings.Contains(string(written), "--cluster prod") {
+	if !strings.Contains(string(written), "--addr 127.0.0.1:9090") {
 		t.Error("the flags asked for at install time are missing from the unit")
 	}
 	want := []string{
@@ -104,7 +104,7 @@ func TestUninstallDisablesThenRemoves(t *testing.T) {
 
 func TestStatusReportsWhatIsInstalledAndRunning(t *testing.T) {
 	manager, runner := newTestManager(t)
-	if err := manager.Install([]string{"--cluster", "prod"}, InstallOptions{}); err != nil {
+	if err := manager.Install([]string{"--addr", "127.0.0.1:9090"}, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	runner.stdout["systemctl"] = "active\n"
@@ -116,7 +116,7 @@ func TestStatusReportsWhatIsInstalledAndRunning(t *testing.T) {
 	if !status.Installed || !status.Running {
 		t.Errorf("installed=%v running=%v, want both true", status.Installed, status.Running)
 	}
-	want := []string{"/usr/local/bin/deepcove", "start", "--cluster", "prod"}
+	want := []string{"/usr/local/bin/deepcove", "start", "--addr", "127.0.0.1:9090"}
 	if !slices.Equal(status.StartCommand, want) {
 		t.Errorf("start command %v, want %v", status.StartCommand, want)
 	}

@@ -34,12 +34,16 @@ func (s *Service) Bootstrap(ctx context.Context, id string) (*BootstrapResponse,
 	if err != nil {
 		return nil, err
 	}
-	// Stopped/errored sessions report ready so the UI doesn't sit on a loading spinner;
-	// the stopped/errored states have their own UI elsewhere.
-	if sess.Status != StatusRunning {
+	// Stopped/errored sessions report ready so the UI doesn't sit on a loading spinner; those states
+	// have their own UI elsewhere. A starting session is asked, because its machine is coming up.
+	if sess.Status != StatusRunning && sess.Status != StatusStarting {
 		return &BootstrapResponse{Status: BootstrapReady}, nil
 	}
+	return s.bootstrapOf(ctx, sess), nil
+}
 
+// bootstrapOf asks the machine how far its setup has got.
+func (s *Service) bootstrapOf(ctx context.Context, sess *Session) *BootstrapResponse {
 	// Each read gets its own budget. Sharing one made the supplementary log read starve the status
 	// read, so a slow log turned into a spurious status change and a flickering spinner.
 	// A VM exec carries more setup than a container exec, so the budget is per call rather than shared.
@@ -66,7 +70,7 @@ func (s *Service) Bootstrap(ctx context.Context, id string) (*BootstrapResponse,
 	if raw, ok := s.execCapture(logCtx, sess, []string{"tail", "-c", "8192", bootstrapLogPath}); ok {
 		log = string(raw)
 	}
-	return &BootstrapResponse{Status: status, Log: log}, nil
+	return &BootstrapResponse{Status: status, Log: log}
 }
 
 // bootstrapReadTimeout bounds each bootstrap read. Generous enough for a VM exec, which pays a vsock
@@ -77,11 +81,11 @@ func (s *Service) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	resp, err := s.Bootstrap(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "session not found")
+		writeNotHostedHere(w)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

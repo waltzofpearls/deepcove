@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -46,13 +47,21 @@ func Run() error {
 	return nil
 }
 
+// serviceRestartDelay is how long to wait before standing a vsock service back up.
+const serviceRestartDelay = time.Second
+
 // serveExec starts the vsock exec service the host dials to run commands and attach terminals. A failure
 // here is logged rather than fatal: the agent is already running, so losing exec is a degraded session
 // rather than a dead one.
 func serveExec(children *processTable) {
 	go func() {
-		if err := guestexec.ListenAndServe(context.Background(), children); err != nil {
-			logf("WARNING: exec service stopped: %v", err)
+		// Stood back up when it ends: losing it for the life of the guest is what turns a passing
+		// failure into a VM the host can neither drive nor shut down.
+		for {
+			if err := guestexec.ListenAndServe(context.Background(), children, logf); err != nil {
+				logf("WARNING: exec service stopped: %v", err)
+			}
+			time.Sleep(serviceRestartDelay)
 		}
 	}()
 	logf("exec service listening on vsock port %d", guestexec.Port)
@@ -74,8 +83,11 @@ func serveControl(cfg Config) {
 		},
 	}
 	go func() {
-		if err := guestctl.ListenAndServe(context.Background(), handler); err != nil {
-			logf("WARNING: control service stopped: %v", err)
+		for {
+			if err := guestctl.ListenAndServe(context.Background(), handler, logf); err != nil {
+				logf("WARNING: control service stopped: %v", err)
+			}
+			time.Sleep(serviceRestartDelay)
 		}
 	}()
 	logf("control service listening on vsock port %d", guestctl.Port)
@@ -90,6 +102,11 @@ func bringUp() (Config, error) {
 		if err := os.Setenv(k, v); err != nil {
 			return Config{}, fmt.Errorf("set %s: %w", k, err)
 		}
+	}
+	// The vsock services are the only way into a VM, and their accept loops fail once this process runs
+	// out of descriptors.
+	if err := raiseFileLimit(); err != nil {
+		logf("WARNING: could not raise the open file limit: %v", err)
 	}
 	if err := mountPseudo(); err != nil {
 		return Config{}, err
@@ -269,6 +286,16 @@ func holdConsole(children *processTable) {
 // observable and a failing step is obvious.
 func logf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stdout, "[deepcove-init] "+format+"\n", args...)
+}
+
+// raiseFileLimit lifts the soft open file limit to the kernel's hard limit.
+func raiseFileLimit() error {
+	var limit unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
+		return err
+	}
+	limit.Cur = limit.Max
+	return unix.Setrlimit(unix.RLIMIT_NOFILE, &limit)
 }
 
 func mountPseudo() error {

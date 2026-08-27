@@ -2,7 +2,7 @@
 // WASM).
 //
 // The wasm is large (~35 MB), so it's dynamically imported. It loads only in
-// the browser, and only when the WASM transport is actually used (a cluster the
+// the browser, and only when the WASM transport is actually used (a node the
 // browser can't reach directly). The node is brought up once per page; the
 // import + init are memoized so concurrent callers share one node.
 //

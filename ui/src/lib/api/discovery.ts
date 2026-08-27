@@ -69,7 +69,7 @@ function toNodeInfo(p: NodeStatus): NodeInfo {
 // can't be trusted, because a stopped node stays "online" in the netmap for minutes while its WireGuard handshake
 // never completes, so targeting it hangs every boot-transport call. Probes run concurrently and the first
 // reachable one wins (any is fine as the boot target); the store injects the real tailnet ping. The
-// sessions/clusters views do NOT depend on this (they fan out), so a primary going offline never stalls them.
+// the sessions and nodes views do NOT depend on this (they fan out), so a primary going offline never stalls them.
 export function pickReachablePrimary(
   nodes: NodeInfo[],
   ping: (dnsName: string) => Promise<boolean>,

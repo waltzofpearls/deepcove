@@ -209,7 +209,8 @@
               >
                 <Boxes class="size-4 shrink-0 translate-y-0.5 text-muted-foreground" />
                 <div class="flex-1">
-                  <span class="font-medium">{runtimeLabel(name)}</span> is not set up.
+                  <span class="font-medium">{runtimeLabel(name)}</span>
+                  is not set up.
                   <p class="text-xs text-muted-foreground">{runtimeMissingReason(code)}</p>
                   <div class="mt-2">
                     <RuntimeSetupButton runtime={name} ondone={() => preflight.refresh()} />

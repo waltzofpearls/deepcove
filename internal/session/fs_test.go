@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,19 @@ func TestHandleFsList(t *testing.T) {
 			wantNames:  []string{"myapp"},
 		},
 		{
+			name:       "the root offers the way to home, named for what you typed",
+			path:       "/",
+			wantStatus: http.StatusOK,
+			wantPath:   "/",
+			wantNames:  []string{strings.TrimPrefix(home, "/")},
+		},
+		{
+			name:       "a folder on the way offers the rest of the road",
+			path:       filepath.Dir(home),
+			wantStatus: http.StatusOK,
+			wantNames:  []string{filepath.Base(home)},
+		},
+		{
 			name:       "path outside home is forbidden",
 			path:       "/etc",
 			wantStatus: http.StatusForbidden,
@@ -93,6 +107,28 @@ func TestHandleFsList(t *testing.T) {
 			}
 			if !slices.Equal(names, tc.wantNames) {
 				t.Errorf("entries: want %v, got %v", tc.wantNames, names)
+			}
+		})
+	}
+}
+
+func TestOnTheWayTo(t *testing.T) {
+	const home = "/Users/rollie"
+	cases := []struct {
+		dir  string
+		want bool
+	}{
+		{"/", true},
+		{"/Users", true},
+		{"/Users/rollie", false}, // home itself is listed normally
+		{"/etc", false},
+		{"/Users/someone", false},
+		{"/Users/rollie/Dev", false}, // below home, listed normally
+	}
+	for _, tc := range cases {
+		t.Run(tc.dir, func(t *testing.T) {
+			if got := onTheWayTo(home, tc.dir); got != tc.want {
+				t.Errorf("onTheWayTo(%q, %q) = %v, want %v", home, tc.dir, got, tc.want)
 			}
 		})
 	}

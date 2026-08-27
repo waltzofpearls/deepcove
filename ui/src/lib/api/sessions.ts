@@ -49,15 +49,13 @@ export function nodeHost(node: NodeInfo): SessionHost {
 // node, a node whose fetch failed (sessions === null) is recorded as unreachable, and the merged list is
 // sorted by most recent activity. Used by the browser-side fan-out in dashboard mode.
 export function mergeAggregated(
-  perNode: { node: NodeInfo; sessions: Session[] | null; cluster?: string }[],
+  perNode: { node: NodeInfo; sessions: Session[] | null }[],
   self: SessionHost | null,
 ): SessionListResponse {
   const sessions: Session[] = [];
   const unreachable: SessionHost[] = [];
-  for (const { node, sessions: list, cluster } of perNode) {
+  for (const { node, sessions: list } of perNode) {
     const host = nodeHost(node);
-    // tag the host with the node's cluster (from its header), like the Go aggregator does
-    if (cluster) host.cluster = cluster;
     if (list === null) {
       unreachable.push(host);
       continue;

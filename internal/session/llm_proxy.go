@@ -14,10 +14,10 @@ import (
 // Sessions send LLM requests to a proxy instead of straight to the provider. The proxy holds the
 // credentials, so the sandbox holds none. Empty means sessions talk to the provider directly.
 //
-// Stored per node, in the settings table, like the cluster label.
+// Stored per node, in the settings table.
 
 // LLMProxyStore persists the node's proxy URL. The service holds the value; this is where it survives
-// a restart, in the settings table like the cluster label.
+// a restart, in the settings table.
 type LLMProxyStore interface {
 	Load() (string, error)
 	Save(url string) error

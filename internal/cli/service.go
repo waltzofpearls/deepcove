@@ -133,7 +133,7 @@ func serviceUsage(w *os.File) {
 		"  deepcove service start | stop | restart",
 		"",
 		"Example:",
-		"  deepcove service install -- --cluster prod --addr 127.0.0.1:9090",
+		"  deepcove service install -- --addr 127.0.0.1:9090",
 	}
 	_, _ = fmt.Fprint(w, joinStringLines(lines))
 }

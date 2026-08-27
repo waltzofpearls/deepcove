@@ -117,6 +117,12 @@ type Lister interface {
 	ListSandboxes(ctx context.Context) ([]Instance, error)
 }
 
+// Restarter is a runtime that can stop and start a sandbox in place, picking up a new spec. A VM reads
+// its size and mounts at boot, so this applies changes without losing the sandbox.
+type Restarter interface {
+	Restart(ctx context.Context, h ID, spec SandboxSpec) error
+}
+
 // LLMForwarder is a runtime that carries a sandbox's LLM traffic itself, so the sandbox never reaches
 // the gateway over the network and the request carries this node's identity.
 type LLMForwarder interface {
@@ -148,6 +154,9 @@ const (
 type Instance struct {
 	ID    ID
 	State InstanceState
+	// Unresponsive means the driver is holding off dials because the guest stopped answering. The
+	// instance is still running; nothing inside it can be reached.
+	Unresponsive bool
 	// Image is the reference the sandbox was built from, for spotting a sandbox left over from an
 	// image you no longer use.
 	Image string

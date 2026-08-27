@@ -53,7 +53,6 @@ export interface SessionHost {
   stable_node_id: string;
   hostname: string;
   dns_name?: string;
-  cluster?: string; // the host node's cluster label; empty means the default cluster
 }
 
 // SessionListResponse is the aggregated GET /api/sessions payload: sessions across all your nodes,
@@ -198,6 +197,8 @@ export interface SessionPreview {
   // to produce HTML, matching what the live xterm.js view would
   // render. Dimensions are derived from the bytes themselves.
   ansi: string;
+  // This could not be captured now, so it is the last picture we had, or nothing.
+  stale?: boolean;
 }
 
 // TmuxWindow mirrors internal/session.TmuxWindow.
@@ -305,6 +306,8 @@ export interface RuntimeView {
 export interface SandboxView {
   sandbox_id: string;
   state: 'running' | 'starting' | 'stopped' | 'unknown';
+  // The machine is up but not answering. A restart is what fixes it.
+  unresponsive?: boolean;
   image?: string;
   // What the driver actually gave it. All zero means the driver applied its own defaults or cannot
   // report them.

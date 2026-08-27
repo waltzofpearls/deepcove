@@ -30,7 +30,7 @@
     SessionResources,
     WorkspaceVM,
   } from '$lib/api/types';
-  import { runtimeCapsDisk, runtimeHint, runtimeLabel } from '$lib/util/runtime';
+  import { bootsVMs, runtimeCapsDisk, runtimeHint, runtimeLabel } from '$lib/util/runtime';
   import { emptyResourceFields, fieldsFromDefaults, parseResources } from '$lib/util/resources';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
@@ -54,6 +54,12 @@
   let nodes = $state<NodeInfo[]>([]);
   let nodeId = $state('');
   const hostNodes = $derived(onlineHostNodes(nodes));
+
+  // The only machine that can host, when it is not the one serving this page. That is the web node
+  // case, where "run on this machine" would be wrong and nothing else says where the session goes.
+  const soleRemoteNode = $derived(
+    hostNodes.length === 1 && !hostNodes[0].self ? hostNodes[0] : null,
+  );
   // The REMOTE node a new session will be created on, used to scope create-time calls (filesystem
   // browsing, preflight, image checks) to that machine over WASM. Undefined when the target is this
   // node. Self is reached directly via the boot transport, NOT over WASM (routing self over WASM would
@@ -177,6 +183,10 @@
     return runtimes?.default ?? '';
   });
 
+  // Workspace and session VMs are VM concepts. On Docker there is no machine to choose: the session is
+  // just a container.
+  const onVMRuntime = $derived(bootsVMs(effectiveRuntime));
+
   // Why the SELECTED runtime cannot host a session, or null when it can. Docker being down says nothing
   // about the VM runtime, so this is asked per runtime rather than treating Docker as a prerequisite.
   const runtimeBlocked = $derived(runtimes?.unavailable?.[effectiveRuntime] ?? null);
@@ -196,7 +206,9 @@
   let workspaceGuestRoot = $state('/workspace');
   let workspaceFields = $state({ ...emptyResourceFields });
   let workDir = $state('');
-  const onWorkspace = $derived(placement === 'workspace');
+  // Only on a runtime that boots VMs. The Machine picker is hidden otherwise, so a node without one
+  // would keep the default and ask for a workspace VM it cannot build.
+  const onWorkspace = $derived(placement === 'workspace' && onVMRuntime);
   // No machine yet means this dialog creates it too, so it asks for the folder and size first.
   const creatingWorkspaceVM = $derived(onWorkspace && workspaceVM === null);
   const parsedWorkspaceResources = $derived(parseResources(workspaceFields, true));
@@ -588,7 +600,9 @@
 </script>
 
 <Dialog bind:open>
-  <DialogContent class="max-h-[90vh] w-[calc(100%-2rem)] max-w-4xl gap-0 p-0 sm:max-w-4xl">
+  <DialogContent
+    class="flex max-h-[90vh] w-[calc(100%-2rem)] max-w-4xl flex-col gap-0 p-0 sm:max-w-4xl"
+  >
     <DialogHeader class="border-b border-border px-6 py-4">
       <DialogTitle>New session</DialogTitle>
       <DialogDescription>
@@ -597,7 +611,7 @@
       </DialogDescription>
     </DialogHeader>
 
-    <div class="flex flex-col gap-5 overflow-y-auto px-6 pb-6 pt-4">
+    <div class="flex min-h-0 flex-col gap-5 overflow-y-auto px-6 pb-6 pt-4">
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div class="space-y-2">
           <Label for="agent">Agent</Label>
@@ -652,35 +666,43 @@
             The session and its container live on the machine you pick.
           </p>
         </div>
+      {:else if soleRemoteNode}
+        <div class="space-y-2">
+          <Label>Run on</Label>
+          <p class="text-sm">{soleRemoteNode.hostname}</p>
+          <p class="text-xs text-muted-foreground">The session lives on that machine.</p>
+        </div>
       {/if}
 
-      <div class="space-y-2">
-        <Label>Machine</Label>
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
-            class:border-primary={onWorkspace}
-            onclick={() => (placement = 'workspace')}
-          >
-            <span class="font-medium">Workspace VM</span>
-            <span class="mt-0.5 block text-xs text-muted-foreground">
-              One VM your sessions use together, each in its own folder.
-            </span>
-          </button>
-          <button
-            type="button"
-            class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
-            class:border-primary={!onWorkspace}
-            onclick={() => (placement = 'private')}
-          >
-            <span class="font-medium">Session VM</span>
-            <span class="mt-0.5 block text-xs text-muted-foreground">
-              Only this session. You pick the isolation, size and folders.
-            </span>
-          </button>
+      {#if onVMRuntime}
+        <div class="space-y-2">
+          <Label>Machine</Label>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
+              class:border-primary={onWorkspace}
+              onclick={() => (placement = 'workspace')}
+            >
+              <span class="font-medium">Workspace VM</span>
+              <span class="mt-0.5 block text-xs text-muted-foreground">
+                One VM your sessions use together, each in its own folder.
+              </span>
+            </button>
+            <button
+              type="button"
+              class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
+              class:border-primary={!onWorkspace}
+              onclick={() => (placement = 'private')}
+            >
+              <span class="font-medium">Session VM</span>
+              <span class="mt-0.5 block text-xs text-muted-foreground">
+                Only this session. You pick the isolation, size and folders.
+              </span>
+            </button>
+          </div>
         </div>
-      </div>
+      {/if}
 
       {#if creatingWorkspaceVM}
         <div class="space-y-4 rounded-md border border-dashed border-border p-3">
@@ -743,9 +765,9 @@
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="memory" class="text-xs font-normal text-muted-foreground"
-                >Memory (GiB)</Label
-              >
+              <Label for="memory" class="text-xs font-normal text-muted-foreground">
+                Memory (GiB)
+              </Label>
               <Input
                 id="memory"
                 type="number"
@@ -758,9 +780,9 @@
             </div>
             {#if showDiskField}
               <div class="space-y-1.5">
-                <Label for="disk" class="text-xs font-normal text-muted-foreground"
-                  >Disk (GiB)</Label
-                >
+                <Label for="disk" class="text-xs font-normal text-muted-foreground">
+                  Disk (GiB)
+                </Label>
                 <Input
                   id="disk"
                   type="number"
@@ -802,8 +824,9 @@
                 <div class="font-medium">Default deepcove image</div>
                 <div class="text-xs text-muted-foreground">
                   {#if selectedAgent?.official_image}
-                    Prebuilt and ready, the fastest boot. <code>{selectedAgent.official_image}</code
-                    >
+                    Prebuilt and ready, the fastest boot. <code>
+                      {selectedAgent.official_image}
+                    </code>
                   {:else}
                     Not yet published for this agent. Use "Run install script at startup" for now.
                   {/if}
@@ -854,11 +877,11 @@
                   id="setup-script"
                   bind:value={setupScript}
                   rows="10"
-                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-                ></textarea>
+                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"></textarea>
                 <p class="text-xs text-muted-foreground">
                   Runs once on container start. Make it idempotent. Checking
-                  <code>command -v &lt;bin&gt;</code> before installing is the convention.
+                  <code>command -v &lt;bin&gt;</code>
+                  before installing is the convention.
                 </p>
               </div>
             </div>
@@ -881,8 +904,7 @@
                   bind:value={customSetup}
                   rows="6"
                   placeholder="# Leave blank if your image has the agent baked in.&#10;# Add commands here for any extra setup."
-                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-                ></textarea>
+                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"></textarea>
               </div>
             </div>
           {/if}
@@ -921,12 +943,13 @@
           </div>
           {#if !useFolder}
             <p class="text-xs text-muted-foreground">
-              No folder. The agent starts in an empty <code>/workspace</code>. Turn on "Use a
-              folder" to mount your code.
+              No folder. The agent starts in an empty <code>/workspace</code>
+              . Turn on "Use a folder" to mount your code.
             </p>
           {:else}
             <p class="text-xs text-muted-foreground">
-              The agent works in this folder (mounted at <code>/workspace</code>).
+              The agent works in this folder (mounted at <code>/workspace</code>
+              ).
             </p>
             {#each mounts as m, i (i)}
               <div class="space-y-2 rounded-md border border-border p-2.5">
@@ -1045,8 +1068,8 @@
           >
             <span class="block text-sm font-medium">Use the LLM proxy</span>
             <span class="block text-xs leading-relaxed text-muted-foreground">
-              <span class="font-mono">{llmProxyUrl}</span> supplies the key. Off uses this session's own
-              login.
+              <span class="font-mono">{llmProxyUrl}</span>
+              supplies the key. Off uses this session's own login.
             </span>
           </button>
           <Switch

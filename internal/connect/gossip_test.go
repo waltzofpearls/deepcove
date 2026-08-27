@@ -11,78 +11,112 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/db"
 )
 
-func TestObserveClusterFreshestWins(t *testing.T) {
-	m := NewManager(context.Background(), t.TempDir(), nil, nil, nil)
-	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
-	t1 := t0.Add(time.Hour)
-	t2 := t1.Add(time.Hour)
+func TestMergeGossipValue(t *testing.T) {
+	old := time.Now().Add(-time.Hour)
+	recent := time.Now()
 
-	m.observeCluster("n1", "default", t1)
-	if got := m.cachedCluster("n1"); got != "default" {
-		t.Fatalf("initial = %q, want default", got)
+	cases := []struct {
+		name    string
+		first   *GossipTopicValue // seeded, or nil for an empty cache
+		value   string
+		at      time.Time
+		want    string
+		wantAt  time.Time
+		skipped bool // the merge should change nothing
+	}{
+		{name: "first value is kept", value: "a", at: recent, want: "a", wantAt: recent},
+		{
+			name:  "newer wins",
+			first: &GossipTopicValue{Value: "a", SeenAt: old},
+			value: "b", at: recent, want: "b", wantAt: recent,
+		},
+		{
+			name:  "older loses",
+			first: &GossipTopicValue{Value: "a", SeenAt: recent},
+			value: "b", at: old, want: "a", wantAt: recent, skipped: true,
+		},
+		{
+			name:  "the same value keeps its original stamp",
+			first: &GossipTopicValue{Value: "a", SeenAt: old},
+			value: "a", at: recent, want: "a", wantAt: old, skipped: true,
+		},
+		{
+			name:  "an empty value retracts, because a node hosting nothing has to be able to say so",
+			first: &GossipTopicValue{Value: "a", SeenAt: old},
+			value: "", at: recent, want: "", wantAt: recent,
+		},
 	}
-	m.observeCluster("n1", "dev", t0) // older evidence for a different value
-	if got := m.cachedCluster("n1"); got != "default" {
-		t.Errorf("older observation won: %q, want default", got)
-	}
-	m.observeCluster("n1", "dev", t2) // fresher evidence for a different value
-	if got := m.cachedCluster("n1"); got != "dev" {
-		t.Errorf("fresher observation ignored: %q, want dev", got)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Manager{}
+			if tc.first != nil {
+				m.mergeGossipValue("hosts", "n1", tc.first.Value, tc.first.SeenAt)
+			}
+			m.mergeGossipValue("hosts", "n1", tc.value, tc.at)
 
-	m.observeCluster("", "prod", t2)
-	m.observeCluster("n2", "", t2)
-	if got := m.cachedCluster("n2"); got != "" {
-		t.Errorf("empty label cached: %q", got)
+			got := m.gossipValues["hosts"]["n1"]
+			if got.Value != tc.want {
+				t.Errorf("value = %q, want %q", got.Value, tc.want)
+			}
+			if !got.SeenAt.Equal(tc.wantAt) {
+				t.Errorf("seen_at = %v, want %v", got.SeenAt, tc.wantAt)
+			}
+		})
 	}
 }
 
-func TestObserveClusterKeepsChangeTime(t *testing.T) {
-	m := NewManager(context.Background(), t.TempDir(), nil, nil, nil)
-	t1 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
-	tMid := t1.Add(30 * time.Minute)
-	t2 := t1.Add(time.Hour)
-
-	m.observeCluster("n1", "dev", t1)
-	m.observeCluster("n1", "dev", t2) // same value, later time: must NOT bump the timestamp to t2
-	// A differing value observed between t1 and t2 must win, proving the stored timestamp stayed at t1.
-	m.observeCluster("n1", "default", tMid)
-	if got := m.cachedCluster("n1"); got != "default" {
-		t.Errorf("same-value re-observe bumped the timestamp: %q, want default", got)
-	}
-}
-
-func TestNodeClusterTimestampSurvivesReload(t *testing.T) {
+func TestGossipValuesSurviveAReload(t *testing.T) {
 	database := db.OpenForTest(t)
-	// Far-apart times so any TIMESTAMP timezone interpretation on read can't flip the ordering.
-	early := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	late := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	m := NewManager(context.Background(), t.TempDir(), database, nil, nil)
-	m.observeCluster("n1", "dev", late)
-
-	restarted := NewManager(context.Background(), t.TempDir(), database, nil, nil)
-	if got := restarted.cachedCluster("n1"); got != "dev" {
-		t.Fatalf("after reload = %q, want dev", got)
+	seen := time.Now().UTC().Truncate(time.Second)
+	if err := saveGossipValue(database, "hosts", "n1", GossipTopicValue{Value: "s-1,s-2", SeenAt: seen}); err != nil {
+		t.Fatalf("saveGossipValue: %v", err)
 	}
-	// The reloaded observed_at must still be `late`, so an older gossiped value can't override it.
-	restarted.observeCluster("n1", "default", early)
-	if got := restarted.cachedCluster("n1"); got != "dev" {
-		t.Errorf("older observation overrode reloaded value (observed_at not persisted): %q", got)
+
+	// An offline node's last word exists nowhere else, so a restart must not forget it.
+	loaded, err := loadGossipValues(database)
+	if err != nil {
+		t.Fatalf("loadGossipValues: %v", err)
+	}
+	got := loaded["hosts"]["n1"]
+	if got.Value != "s-1,s-2" {
+		t.Errorf("value = %q, want the saved one", got.Value)
+	}
+	if !got.SeenAt.Equal(seen) {
+		t.Errorf("seen_at = %v, want %v", got.SeenAt, seen)
 	}
 }
 
-func TestKnownClustersRoundTrip(t *testing.T) {
-	m := NewManager(context.Background(), t.TempDir(), nil, nil, nil)
-	at := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
-	m.observeCluster("n1", "dev", at)
+func TestKnownGossipValuesStampsOwnTopics(t *testing.T) {
+	m := &Manager{}
+	m.RegisterGossipTopic("hosts", func() (string, bool) { return "s-1", true })
+	m.mergeGossipValue("hosts", "peer", "s-9", time.Now().Add(-time.Hour))
 
-	srv := httptest.NewServer(http.HandlerFunc(m.handleKnownClusters))
-	defer srv.Close()
+	known := m.knownGossipValues()
+	if known["hosts"]["peer"].Value != "s-9" {
+		t.Errorf("a peer's value should be served on, got %+v", known["hosts"]["peer"])
+	}
+	// Self has no stable node id without a tailnet, so its own value cannot be stamped here. What
+	// matters is that serving a peer's value does not depend on that.
+	if len(known["hosts"]) != 1 {
+		t.Errorf("known = %+v, want just the peer", known["hosts"])
+	}
+}
 
-	dns := strings.TrimPrefix(srv.URL, "http://")
-	got := fetchKnownClusters(context.Background(), srv.Client(), dns)
-	if got["n1"].Cluster != "dev" || !got["n1"].ObservedAt.Equal(at) {
-		t.Errorf("round-trip n1 = %+v, want {dev, %v}", got["n1"], at)
+func TestFetchKnownGossipGivesUpOnASilentPeer(t *testing.T) {
+	hang := make(chan struct{})
+	peer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-hang }))
+	defer func() {
+		close(hang)
+		peer.Close()
+	}()
+
+	start := time.Now()
+	got := fetchKnownGossip(context.Background(), peer.Client(), strings.TrimPrefix(peer.URL, "http://"))
+
+	if got != nil {
+		t.Errorf("got %v, want nil from a peer that never answers", got)
+	}
+	if waited := time.Since(start); waited > gossipFetchTimeout*2 {
+		t.Errorf("waited %s, want it to give up near %s", waited, gossipFetchTimeout)
 	}
 }
