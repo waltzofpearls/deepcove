@@ -100,10 +100,6 @@ type Service struct {
 	// single-node: only this machine's sessions.
 	federation Federation
 
-	// clusterStore is this node's cluster label, reported on /api/sessions/local so fan-out callers can
-	// group by cluster (set via SetClusterStore). Nil reads back as the default cluster.
-	clusterStore *ClusterStore
-
 	// llmProxyURL is where sessions send LLM requests instead of to the provider. Guarded: the UI can
 	// change it while a session is being built or an agent launched. See llm_proxy.go.
 	llmProxyMu  sync.RWMutex
@@ -334,9 +330,10 @@ func (s *Service) beginStarting(id string) (done func(), ok bool) {
 	}, true
 }
 
-// reportStarting overlays the in flight status on a row that still says stopped.
+// reportStarting overlays the in flight status. A running row is relabelled too, because a restart
+// takes the machine down under a session that never stopped.
 func (s *Service) reportStarting(sess *Session) {
-	if sess == nil || sess.Status == StatusRunning {
+	if sess == nil {
 		return
 	}
 	s.starting.mu.Lock()

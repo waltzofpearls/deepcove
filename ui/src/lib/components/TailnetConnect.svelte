@@ -185,9 +185,9 @@
       <div
         class="flex items-center gap-2 rounded-md border border-border bg-secondary p-2 font-mono text-xs"
       >
-        <a href={status.url} target="_blank" rel="noopener" class="flex-1 truncate hover:underline"
-          >{status.url}</a
-        >
+        <a href={status.url} target="_blank" rel="noopener" class="flex-1 truncate hover:underline">
+          {status.url}
+        </a>
         <Button
           size="icon"
           variant="ghost"
@@ -204,14 +204,18 @@
       </div>
       {#if !status.https_enabled}
         <p class="text-[11px] text-muted-foreground">
-          Serving over http. Enable <strong>MagicDNS</strong> + <strong>HTTPS certificates</strong>
+          Serving over http. Enable <strong>MagicDNS</strong>
+          +
+          <strong>HTTPS certificates</strong>
           in your
           <a
             href="https://login.tailscale.com/admin/dns"
             target="_blank"
             rel="noopener"
-            class="text-primary hover:underline">Tailscale admin</a
+            class="text-primary hover:underline"
           >
+            Tailscale admin
+          </a>
           to upgrade to https automatically, no restart needed.
         </p>
       {/if}

@@ -30,6 +30,12 @@ export function runtimeMissingReason(code: string): string {
   }
 }
 
+// bootsVMs reports whether a runtime gives each machine its own kernel. Mirrors runtimeBootsVMs on the
+// server. Workspace and session VMs exist only on these; Docker has no such concept.
+export function bootsVMs(name: string): boolean {
+  return name === RUNTIME_APPLEVF;
+}
+
 // runtimeLabel names the runtime the way it is talked about. "Virtual machine" describes the isolation
 // boundary; Docker is known by its name, so "Container (Docker)" only added a word.
 export function runtimeLabel(name: string): string {
@@ -63,8 +69,8 @@ export function runtimeCapsDisk(name: string): boolean {
   return name === RUNTIME_APPLEVF;
 }
 
-// runtimeShortLabel is the tag-sized name, where the full label would not fit next to the agent and
-// cluster tags. "VM" over "Virtual machine" because a tag is scanned, not read.
+// runtimeShortLabel is the tag-sized name, where the full label would not fit next to the agent tag.
+// "VM" over "Virtual machine" because a tag is scanned, not read.
 export function runtimeShortLabel(name: string): string {
   switch (name) {
     case RUNTIME_DOCKER:

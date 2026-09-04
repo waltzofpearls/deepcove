@@ -225,7 +225,7 @@ func (s *Service) handlePullImage(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeErrorCode(w, http.StatusInternalServerError, codeInvalidInput,
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal,
 			"streaming unsupported on this connection")
 		return
 	}

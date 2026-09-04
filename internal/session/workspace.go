@@ -211,13 +211,18 @@ func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("session: %w", err)
 	}
+	// A workspace VM is a VM, whatever this node happens to default to.
+	runtime, err := s.pickVMRuntime(req.Runtime)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	vm := &WorkspaceVM{
 		HostRoot:    filepath.Clean(req.HostRoot),
 		GuestRoot:   guestRoot,
 		Image:       cmp.Or(req.Image, agent.OfficialImage),
-		Runtime:     cmp.Or(req.Runtime, s.defaultRuntime),
+		Runtime:     runtime,
 		SetupScript: req.SetupScript,
 		Resources:   req.Resources,
 		CreatedAt:   now,

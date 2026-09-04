@@ -4,6 +4,7 @@ package applevf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,22 +42,19 @@ func (m *machine) Exec(ctx context.Context, spec guestexec.ExecRequest) (sandbox
 // bootstrap poll allows 3s) could block here for the full retry window, time out upstream, and be
 // reported as a failure the caller then papers over with a default.
 func (m *machine) dialExec(ctx context.Context) (*vz.VirtioSocketConnection, error) {
-	device, err := m.socketDevice()
-	if err != nil {
-		return nil, err
-	}
-	deadline := time.Now().Add(execDialTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, execDialTimeout)
+	defer cancel()
 	for {
-		conn, err := device.Connect(guestexec.Port)
+		conn, err := m.connect(dialCtx, guestexec.Port)
 		if err == nil {
 			return conn, nil
 		}
-		if time.Now().After(deadline) {
+		if dialCtx.Err() != nil || errors.Is(err, errGuestSilent) {
 			return nil, fmt.Errorf("applevf: connect to the guest exec service on vsock port %d: %w", guestexec.Port, err)
 		}
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-dialCtx.Done():
+			return nil, dialCtx.Err()
 		case <-time.After(execDialRetry):
 		}
 	}

@@ -4,58 +4,59 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// AttachRoutes registers the session API on mux. Routes follow
-// Go 1.22's method-aware patterns so each verb has its own handler.
+// AttachRoutes registers the session API on mux, using Go 1.22's method-aware patterns. Anything this
+// package serves may belong to another node, so the whole surface goes behind one wrapper.
 func (s *Service) AttachRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/agents", s.handleAgents)
-	mux.HandleFunc("GET /api/preflight", s.handlePreflight)
-	mux.HandleFunc("POST /api/runtimes/{runtime}/setup", s.handleSetupRuntime)
-	mux.HandleFunc("GET /api/runtimes", s.handleRuntimes)
-	mux.HandleFunc("DELETE /api/runtimes/{runtime}/sandboxes/{sandbox_id}", s.handleDestroySandbox)
-	mux.HandleFunc("GET /api/workspace-vm", s.handleGetWorkspaceVM)
-	mux.HandleFunc("PUT /api/workspace-vm", s.handleSaveWorkspaceVM)
-	mux.HandleFunc("DELETE /api/workspace-vm", s.handleDeleteWorkspaceVM)
-	mux.HandleFunc("GET /api/fs/list", s.handleFsList)
-	mux.HandleFunc("GET /api/images/exists", s.handleImageExists)
-	mux.HandleFunc("POST /api/images/pull", s.handlePullImage)
-	mux.HandleFunc("POST /api/sessions", s.handleCreate)
-	mux.HandleFunc("GET /api/sessions", s.handleList)
-	mux.HandleFunc("GET /api/sessions/local", s.handleListLocal)
-	mux.HandleFunc("GET /api/cluster", s.handleGetCluster)
-	mux.HandleFunc("PUT /api/cluster", s.handleSetCluster)
-	mux.HandleFunc("GET /api/llm-proxy", s.handleGetLLMProxy)
-	mux.HandleFunc("PUT /api/llm-proxy", s.handleSetLLMProxy)
-	mux.HandleFunc("POST /api/llm-proxy/test", s.handleTestLLMProxy)
-	mux.HandleFunc("GET /api/sessions/suggest-name", s.handleSuggestName)
-	mux.HandleFunc("GET /api/sessions/{id}", s.handleGet)
-	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatch)
-	mux.HandleFunc("POST /api/sessions/{id}/start", s.handleStart)
-	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
-	mux.HandleFunc("GET /api/sessions/{id}/attach", s.handleAttach)
-	mux.HandleFunc("GET /api/sessions/{id}/bootstrap", s.handleBootstrap)
-	mux.HandleFunc("PUT /api/sessions/{id}/mounts", s.handleEditMounts)
-	mux.HandleFunc("PUT /api/sessions/{id}/uploads", s.handleUpload)
-	mux.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreview)
-	mux.HandleFunc("GET /api/sessions/{id}/tmux-windows", s.handleListTmuxWindows)
-	mux.HandleFunc("POST /api/sessions/{id}/tmux-windows", s.handleCreateTmuxWindow)
-	mux.HandleFunc("POST /api/sessions/{id}/tmux-windows/{name}/select", s.handleSelectTmuxWindow)
-	mux.HandleFunc("DELETE /api/sessions/{id}/tmux-windows/{name}", s.handleDeleteTmuxWindow)
+	inner := http.NewServeMux()
+	inner.HandleFunc("GET /api/agents", s.handleAgents)
+	inner.HandleFunc("GET /api/preflight", s.handlePreflight)
+	inner.HandleFunc("POST /api/runtimes/{runtime}/setup", s.handleSetupRuntime)
+	inner.HandleFunc("GET /api/runtimes", s.handleRuntimes)
+	inner.HandleFunc("DELETE /api/runtimes/{runtime}/sandboxes/{sandbox_id}", s.handleDestroySandbox)
+	inner.HandleFunc("POST /api/runtimes/{runtime}/sandboxes/{sandbox_id}/restart", s.handleRestartSandbox)
+	inner.HandleFunc("GET /api/workspace-vm", s.handleGetWorkspaceVM)
+	inner.HandleFunc("PUT /api/workspace-vm", s.handleSaveWorkspaceVM)
+	inner.HandleFunc("DELETE /api/workspace-vm", s.handleDeleteWorkspaceVM)
+	inner.HandleFunc("GET /api/fs/list", s.handleFsList)
+	inner.HandleFunc("GET /api/images/exists", s.handleImageExists)
+	inner.HandleFunc("POST /api/images/pull", s.handlePullImage)
+	inner.HandleFunc("POST /api/sessions", s.handleCreate)
+	inner.HandleFunc("GET /api/sessions", s.handleList)
+	inner.HandleFunc("GET /api/sessions/local", s.handleListLocal)
+	inner.HandleFunc("GET /api/llm-proxy", s.handleGetLLMProxy)
+	inner.HandleFunc("PUT /api/llm-proxy", s.handleSetLLMProxy)
+	inner.HandleFunc("POST /api/llm-proxy/test", s.handleTestLLMProxy)
+	inner.HandleFunc("GET /api/sessions/suggest-name", s.handleSuggestName)
+	inner.HandleFunc("GET /api/sessions/{id}", s.handleGet)
+	inner.HandleFunc("PATCH /api/sessions/{id}", s.handlePatch)
+	inner.HandleFunc("POST /api/sessions/{id}/start", s.handleStart)
+	inner.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
+	inner.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
+	inner.HandleFunc("GET /api/sessions/{id}/attach", s.handleAttach)
+	inner.HandleFunc("GET /api/sessions/{id}/bootstrap", s.handleBootstrap)
+	inner.HandleFunc("PUT /api/sessions/{id}/mounts", s.handleEditMounts)
+	inner.HandleFunc("PUT /api/sessions/{id}/uploads", s.handleUpload)
+	inner.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreview)
+	inner.HandleFunc("GET /api/sessions/{id}/tmux-windows", s.handleListTmuxWindows)
+	inner.HandleFunc("POST /api/sessions/{id}/tmux-windows", s.handleCreateTmuxWindow)
+	inner.HandleFunc("POST /api/sessions/{id}/tmux-windows/{name}/select", s.handleSelectTmuxWindow)
+	inner.HandleFunc("DELETE /api/sessions/{id}/tmux-windows/{name}", s.handleDeleteTmuxWindow)
+
+	mux.Handle("/api/", s.forwardOrServe(inner))
 }
 
 func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.Start(r.Context(), id); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "session not found")
+			writeNotHostedHere(w)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -103,7 +104,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	filter := ListFilter{IncludeAll: r.URL.Query().Get("all") == "true"}
 	resp, err := s.ListAggregated(r.Context(), filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -115,43 +116,13 @@ func (s *Service) handleListLocal(w http.ResponseWriter, r *http.Request) {
 	filter := ListFilter{IncludeAll: r.URL.Query().Get("all") == "true"}
 	out, err := s.List(r.Context(), filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	if out == nil {
 		out = []*Session{}
 	}
-	// Report this node's cluster to fan-out callers via a header, keeping the body a bare array.
-	w.Header().Set(ClusterHeader, s.clusterStore.Name())
 	writeJSON(w, http.StatusOK, out)
-}
-
-// handleGetCluster returns this node's cluster label. GET /api/cluster
-func (s *Service) handleGetCluster(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"cluster": s.clusterStore.Name()})
-}
-
-// handleSetCluster sets this node's cluster label, persisted and effective immediately. PUT /api/cluster
-// with {"cluster": "..."}; an empty value resets to the default cluster.
-func (s *Service) handleSetCluster(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Cluster string `json:"cluster"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	// over-length gets a clear 400; Set/NormalizeCluster handles trim and the rest.
-	name := strings.TrimSpace(req.Cluster)
-	if len([]rune(name)) > MaxClusterNameLen {
-		writeError(w, http.StatusBadRequest, "cluster name too long (max 64 characters)")
-		return
-	}
-	if err := s.clusterStore.Set(name); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"cluster": s.clusterStore.Name()})
 }
 
 // handleGetLLMProxy serves GET /api/llm-proxy: where this node's sessions send LLM requests.
@@ -218,7 +189,7 @@ func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 		sess, err = s.Get(r.Context(), id)
 	}
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "session not found")
+		writeNotHostedHere(w)
 		return
 	}
 	if err != nil {
@@ -232,11 +203,11 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, err := s.Get(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "session not found")
+		writeNotHostedHere(w)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
@@ -246,10 +217,10 @@ func (s *Service) handleStop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.Stop(r.Context(), id); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "session not found")
+			writeNotHostedHere(w)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -272,14 +243,14 @@ func (s *Service) handleEditMounts(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.EditMounts(r.Context(), id, req.Mounts)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "session not found")
+			writeNotHostedHere(w)
 			return
 		}
 		if errors.Is(err, ErrMountInvalid) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
@@ -289,10 +260,10 @@ func (s *Service) handleDestroy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.Destroy(r.Context(), id); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "session not found")
+			writeNotHostedHere(w)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -353,7 +324,7 @@ func (s *Service) handleDeleteTmuxWindow(w http.ResponseWriter, r *http.Request)
 func writeTmuxWindowError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		writeError(w, http.StatusNotFound, "session not found")
+		writeNotHostedHere(w)
 	case errors.Is(err, ErrTmuxWindowNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrTmuxWindowExists):
@@ -365,7 +336,7 @@ func writeTmuxWindowError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrTmuxWindowNameInvalid), errors.Is(err, ErrTmuxWindowNameReserved):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 	}
 }
 
@@ -393,7 +364,18 @@ const (
 	codeImageNotFound      = "image_not_found"
 	codeNotFound           = "not_found"
 	codeConflict           = "conflict"
+	codeInternal           = "internal"
+	// codeNotHostedHere means this node does not have that session. It may still exist on another node.
+	codeNotHostedHere = "not_hosted_here"
+	// codeNodeUnreachable means the node hosting the session did not answer.
+	codeNodeUnreachable = "node_unreachable"
 )
+
+// writeNotHostedHere replies when this node does not have the session. On a single node that is the
+// whole story, so the message stays plain.
+func writeNotHostedHere(w http.ResponseWriter) {
+	writeErrorCode(w, http.StatusNotFound, codeNotHostedHere, "session not found")
+}
 
 func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg, "code": code})

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
   import { api } from '$lib/api/client';
@@ -33,6 +34,34 @@
   // The value the user just chose from the dropdown. The suggestion effect watches `value`, so without
   // this, picking an entry immediately refetches and reopens the list showing what was just picked.
   let picked = $state('');
+
+  // Home differs per node, so a path from one machine is refused by the next.
+  let seededFor = $state<string | null>(null);
+
+  // An empty field means the first keystroke asks for "/", so start at home instead. A path the parent
+  // bound is left alone: only a change of node replaces it, because a path from one machine is refused
+  // by the next.
+  $effect(() => {
+    const key = host?.dns_name ?? '';
+    const seeded = untrack(() => seededFor);
+    const bound = untrack(() => value);
+    // Never seeded is not a change of node. Reading it as one is what overwrote a saved folder a moment
+    // after the dialog opened.
+    const nodeChanged = seeded !== null && seeded !== key;
+    if (bound !== '' && !nodeChanged) {
+      seededFor = key;
+      return;
+    }
+    void api
+      .fsList(undefined, host)
+      .then((res) =>
+        untrack(() => {
+          if (value === '' || nodeChanged) value = res.path + '/';
+          seededFor = key;
+        }),
+      )
+      .catch(() => {});
+  });
 
   // Debounced autocomplete, best-effort: any error just yields no suggestions.
   $effect(() => {
@@ -117,7 +146,8 @@
       class="absolute z-50 mt-1 w-full overflow-hidden rounded-md border border-border bg-background shadow-md"
     >
       <div class="border-b border-border px-2 py-1.5 text-[11px] text-muted-foreground">
-        Folders in <code class="text-foreground">{listedDir || '~'}</code>. Type to filter
+        Folders in <code class="text-foreground">{listedDir || '~'}</code>
+        . Type to filter
       </div>
       <ul class="max-h-56 overflow-auto p-1">
         {#each suggestions as s, i (s.path)}

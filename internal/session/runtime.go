@@ -19,6 +19,10 @@ const (
 	RuntimeAppleVF = "applevf"
 )
 
+// runtimeBootsVMs reports whether a runtime gives each machine its own kernel. Firecracker and a future
+// Windows VM runtime join this list; Docker never does.
+func runtimeBootsVMs(name string) bool { return name == RuntimeAppleVF }
+
 // ErrUnknownRuntime means a session names a runtime this node does not offer. That is a real situation
 // rather than a bug: a session created on a Mac with the VM runtime is unusable on a node without it, and
 // the user needs to be told that rather than shown a confusing driver error.
@@ -83,6 +87,30 @@ func (s *Service) SetDefaultRuntime(name string) error {
 	}
 	s.defaultRuntime = name
 	return nil
+}
+
+// pickVMRuntime is the runtime a workspace VM runs on: the one asked for, else the node default when it
+// boots VMs, else this node's VM runtime.
+//
+// No caller sends a runtime today, so reading the default alone refuses every request on a node whose
+// default is a container runtime, even when it has a VM runtime registered.
+func (s *Service) pickVMRuntime(requested string) (string, error) {
+	if requested != "" {
+		if !runtimeBootsVMs(requested) {
+			return "", fmt.Errorf("%w: a workspace VM needs a VM runtime, and %s is not one",
+				ErrInvalidInput, requested)
+		}
+		return requested, nil
+	}
+	if runtimeBootsVMs(s.defaultRuntime) {
+		return s.defaultRuntime, nil
+	}
+	for _, name := range s.Runtimes() {
+		if runtimeBootsVMs(name) {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("%w: a workspace VM needs a VM runtime, and this node has none", ErrInvalidInput)
 }
 
 // runtimeOrder is the order runtimes are offered in, strongest isolation first. Map iteration is random,

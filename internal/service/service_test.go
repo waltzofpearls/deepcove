@@ -48,8 +48,8 @@ func TestStartCommand(t *testing.T) {
 		},
 		{
 			name:  "the flags asked for at install time follow start",
-			extra: []string{"--cluster", "prod", "--addr", "127.0.0.1:9090"},
-			want:  []string{"/usr/local/bin/deepcove", "start", "--cluster", "prod", "--addr", "127.0.0.1:9090"},
+			extra: []string{"--log-level", "debug", "--addr", "127.0.0.1:9090"},
+			want:  []string{"/usr/local/bin/deepcove", "start", "--log-level", "debug", "--addr", "127.0.0.1:9090"},
 		},
 	}
 	for _, tc := range cases {

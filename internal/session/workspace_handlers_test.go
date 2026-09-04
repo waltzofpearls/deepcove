@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/waltzofpearls/deepcove/internal/db"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,7 +33,8 @@ func decodeWorkspaceVM(t *testing.T, w *httptest.ResponseRecorder) WorkspaceVM {
 }
 
 func TestWorkspaceVMEndpoints(t *testing.T) {
-	svc, _ := newListerService(t)
+	// A VM runtime, because a workspace VM is refused on anything else.
+	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), &listerSandbox{fakeSandbox: newFakeSandbox()}, RuntimeAppleVF)
 	root := t.TempDir()
 
 	// Nothing recorded yet, which the UI reads as "offer to create one" rather than as a failure.
@@ -106,7 +108,7 @@ func TestWorkspaceVMIsNotALeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	view := viewFor(t, views, RuntimeDocker)
+	view := viewFor(t, views, RuntimeAppleVF)
 	if len(view.Sandboxes) != 1 {
 		t.Fatalf("got %d sandboxes, want the machine: %+v", len(view.Sandboxes), view.Sandboxes)
 	}

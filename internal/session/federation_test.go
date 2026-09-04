@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sort"
 	"testing"
 	"time"
@@ -36,22 +37,28 @@ func (r *fakeRepo) Delete(context.Context, string, string) error { return nil }
 // fakeFederation is a canned Federation: it returns the configured peers, and for each peer either
 // its scripted sessions or an error (to exercise the unreachable path).
 type fakeFederation struct {
-	self     NodeRef
-	peers    []NodeRef
-	results  map[string][]*Session // keyed by peer StableNodeID
-	clusters map[string]string     // peer cluster label, keyed by peer StableNodeID
-	errs     map[string]error      // keyed by peer StableNodeID
+	self    NodeRef
+	peers   []NodeRef
+	results map[string][]*Session // keyed by peer StableNodeID
+	errs    map[string]error      // keyed by peer StableNodeID
 
-	createdOn string // StableNodeID of the peer CreateSession was proxied to
+	createdOn string             // StableNodeID of the peer CreateSession was proxied to
+	client    *http.Client       // nil unless a test forwards a request
+	hosts     map[string]NodeRef // session id -> the node gossip says hosts it
 }
 
-func (f *fakeFederation) Self() NodeRef    { return f.self }
+func (f *fakeFederation) Self() NodeRef               { return f.self }
+func (f *fakeFederation) TailnetClient() *http.Client { return f.client }
+func (f *fakeFederation) FindSessionHost(_ context.Context, sessionID string) (NodeRef, bool) {
+	ref, ok := f.hosts[sessionID]
+	return ref, ok
+}
 func (f *fakeFederation) Peers() []NodeRef { return f.peers }
-func (f *fakeFederation) FetchSessions(_ context.Context, peer NodeRef, _ bool) ([]*Session, string, error) {
+func (f *fakeFederation) FetchSessions(_ context.Context, peer NodeRef, _ bool) ([]*Session, error) {
 	if err := f.errs[peer.StableNodeID]; err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return f.results[peer.StableNodeID], f.clusters[peer.StableNodeID], nil
+	return f.results[peer.StableNodeID], nil
 }
 func (f *fakeFederation) CreateSession(_ context.Context, peer NodeRef, _ CreateRequest) (*Session, error) {
 	f.createdOn = peer.StableNodeID
@@ -73,13 +80,10 @@ func TestListAggregated(t *testing.T) {
 	cloudPeer := NodeRef{StableNodeID: "n-cloud", Hostname: "deepcove-cloud", DNSName: "deepcove-cloud.ts.net"}
 
 	svc.SetFederation(&fakeFederation{
-		self:  NodeRef{StableNodeID: "n-self", Hostname: "deepcove-laptop", Cluster: "home"},
+		self:  NodeRef{StableNodeID: "n-self", Hostname: "deepcove-laptop"},
 		peers: []NodeRef{serverPeer, cloudPeer},
 		results: map[string][]*Session{
 			"n-server": {sessionAt("server-mid", now.Add(-30*time.Minute))},
-		},
-		clusters: map[string]string{
-			"n-server": "prod",
 		},
 		errs: map[string]error{
 			"n-cloud": errors.New("timeout"),
@@ -112,16 +116,6 @@ func TestListAggregated(t *testing.T) {
 	}
 	if hostOf["local-new"] != "n-self" || hostOf["server-mid"] != "n-server" {
 		t.Errorf("host tags wrong: %v", hostOf)
-	}
-
-	// Cluster tagging: local sessions carry self's cluster; the server's session carries the cluster the
-	// server reported through the fan-out.
-	clusterOf := map[string]string{}
-	for _, sess := range resp.Sessions {
-		clusterOf[sess.ID] = sess.Host.Cluster
-	}
-	if clusterOf["local-new"] != "home" || clusterOf["server-mid"] != "prod" {
-		t.Errorf("cluster tags wrong: %v", clusterOf)
 	}
 
 	// The cloud peer errored -> reported unreachable, not dropped.

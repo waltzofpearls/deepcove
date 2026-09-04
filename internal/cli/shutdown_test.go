@@ -4,6 +4,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,5 +45,24 @@ func TestDrainServers(t *testing.T) {
 				t.Fatalf("drain took %v, expected it to give up on idle connections quickly", waited)
 			}
 		})
+	}
+}
+
+func TestDumpStacks(t *testing.T) {
+	dir := t.TempDir()
+	path, err := dumpStacks(dir)
+	if err != nil {
+		t.Fatalf("dumpStacks: %v", err)
+	}
+	if want := filepath.Join(dir, "logs", "shutdown-stacks.txt"); path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The point of the file is naming what is stuck, so it has to contain real stacks.
+	if !strings.Contains(string(body), "goroutine ") {
+		t.Errorf("file has no goroutine stacks: %q", string(body)[:min(120, len(body))])
 	}
 }

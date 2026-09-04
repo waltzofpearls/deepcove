@@ -17,13 +17,11 @@ type ViewMode = 'cards' | 'list';
 interface PreferencesState {
   viewMode: ViewMode;
   pollIntervalMs: number;
-  clusterFilter: string; // 'all' or a cluster name; the dashboard's cluster narrowing, remembered
 }
 
 const DEFAULTS: PreferencesState = {
   viewMode: 'cards',
   pollIntervalMs: 5_000,
-  clusterFilter: 'all',
 };
 
 function load(): PreferencesState {
@@ -62,13 +60,6 @@ export const preferences = {
   },
   set pollIntervalMs(v: number) {
     state.pollIntervalMs = v;
-    save(state);
-  },
-  get clusterFilter() {
-    return state.clusterFilter;
-  },
-  set clusterFilter(v: string) {
-    state.clusterFilter = v;
     save(state);
   },
 };

@@ -25,12 +25,6 @@
     DialogDescription,
   } from '$lib/components/ui/dialog';
   import {
-    Tooltip,
-    TooltipProvider,
-    TooltipTrigger,
-    TooltipContent,
-  } from '$lib/components/ui/tooltip';
-  import {
     AlertDialog,
     AlertDialogContent,
     AlertDialogHeader,
@@ -43,10 +37,8 @@
   import { Button } from '$lib/components/ui/button';
   import { openConnectingTab } from '$lib/signin';
   import { machineName } from '$lib/util/tailnet';
-  import TailscaleLogo from '$lib/components/TailscaleLogo.svelte';
   import Server from '@lucide/svelte/icons/server';
   import Globe from '@lucide/svelte/icons/globe';
-  import Info from '@lucide/svelte/icons/info';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
@@ -76,19 +68,6 @@
   const webConnecting = $derived(auth.phase === 'connecting');
 
   let openDevice = $state<'session' | 'web' | null>(null);
-
-  // When nothing is on the tailnet yet, collapse both chips into a single "Connect to Tailscale" CTA
-  // (only on a session node, where both devices exist). Clicking it reveals the two node buttons so the
-  // user can sign each in. Once either is connected or in progress, the chips stay shown.
-  let expanded = $state(false);
-  const collapsed = $derived(
-    isSessionNode &&
-      !expanded &&
-      !sessionConnected &&
-      !webConnected &&
-      !sessionConnecting &&
-      !webConnecting,
-  );
 
   // Live web-node details. Loaded whenever the web node is connected (not just while the dialog is
   // open) so the chip can show the real machine name, which the static hostname can't (dedup suffix).
@@ -214,56 +193,32 @@
 </script>
 
 <div class="flex items-center gap-2">
-  {#if collapsed}
-    <!-- Single call to action while nothing is connected; the (i) tooltip explains why you'd bother. -->
-    <TooltipProvider delayDuration={200}>
-      <Tooltip>
-        <TooltipTrigger>
-          {#snippet child({ props })}
-            <button
-              {...props}
-              type="button"
-              onclick={() => (expanded = true)}
-              class="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground shadow-xs transition-opacity hover:opacity-90"
-            >
-              <TailscaleLogo class="size-4 shrink-0" />
-              <span class="hidden sm:inline">Connect to Tailscale</span>
-              <Info class="size-3.5 shrink-0 opacity-80" />
-            </button>
-          {/snippet}
-        </TooltipTrigger>
-        <TooltipContent class="max-w-xs text-center">
-          Put deepcove on your Tailscale network to reach your sessions from anywhere, and to run
-          them across more than one machine. It's optional, since sessions on this machine work
-          without it.
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+  <!-- One device per node. A session node is its backend's tailnet connection; a web node is the
+       browser itself. Neither machine has both. -->
+  {#if isSessionNode}
+    <button
+      type="button"
+      onclick={() => (openDevice = 'session')}
+      class="flex h-10 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left transition-colors hover:bg-secondary"
+      aria-label="Session node"
+    >
+      <Server class="size-4 shrink-0 text-muted-foreground" />
+      <div class="hidden leading-tight sm:block">
+        {#if sessionConnected && sessionShortName}
+          <div class="text-xs font-medium">{sessionShortName}</div>
+          <div class="text-[10px] text-muted-foreground">Session node</div>
+        {:else if sessionConnecting}
+          <div class="text-xs font-medium text-muted-foreground">Session node</div>
+          <div class="text-[10px] text-muted-foreground">Connecting…</div>
+        {:else}
+          <div class="text-xs font-medium text-muted-foreground">Session node</div>
+        {/if}
+      </div>
+      <span
+        class="size-2 shrink-0 rounded-full {dotClass(sessionConnected, sessionConnecting)}"
+      ></span>
+    </button>
   {:else}
-    {#if isSessionNode}
-      <button
-        type="button"
-        onclick={() => (openDevice = 'session')}
-        class="flex h-10 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left transition-colors hover:bg-secondary"
-        aria-label="Session node"
-      >
-        <Server class="size-4 shrink-0 text-muted-foreground" />
-        <div class="hidden leading-tight sm:block">
-          {#if sessionConnected && sessionShortName}
-            <div class="text-xs font-medium">{sessionShortName}</div>
-            <div class="text-[10px] text-muted-foreground">Session node</div>
-          {:else if sessionConnecting}
-            <div class="text-xs font-medium text-muted-foreground">Session node</div>
-            <div class="text-[10px] text-muted-foreground">Connecting…</div>
-          {:else}
-            <div class="text-xs font-medium text-muted-foreground">Session node</div>
-          {/if}
-        </div>
-        <span class="size-2 shrink-0 rounded-full {dotClass(sessionConnected, sessionConnecting)}"
-        ></span>
-      </button>
-    {/if}
-
     <button
       type="button"
       onclick={() => (openDevice = 'web')}
@@ -293,9 +248,9 @@
       {#if sessionConnected}
         <DialogHeader>
           <DialogTitle class="font-mono text-xl">{sessionShortName || 'Session node'}</DialogTitle>
-          <DialogDescription
-            >The backend that runs your sessions, on your tailnet.</DialogDescription
-          >
+          <DialogDescription>
+            The backend that runs your sessions, on your tailnet.
+          </DialogDescription>
         </DialogHeader>
         <dl class="space-y-3 text-sm">
           <div class="flex justify-between gap-4">
@@ -341,8 +296,10 @@
               href={connect.status.url}
               target="_blank"
               rel="noopener"
-              class="flex-1 truncate hover:underline">{connect.status.url}</a
+              class="flex-1 truncate hover:underline"
             >
+              {connect.status.url}
+            </a>
             <Button
               size="icon"
               variant="ghost"

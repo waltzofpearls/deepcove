@@ -110,14 +110,12 @@ func (s *Service) ensureAgentAfterSetup(sess *Session, workdir string) {
 	defer cancel()
 
 	for {
-		resp, err := s.Bootstrap(ctx, sess.ID)
-		switch {
-		case err != nil:
-			s.logger.Warn("could not read setup status", "id", sess.ID, "err", err)
-		case resp.Status == BootstrapErrored:
+		// The machine is asked, not the row: the row reads as starting while this wait runs.
+		switch s.bootstrapOf(ctx, sess).Status {
+		case BootstrapErrored:
 			s.logger.Warn("machine setup failed, so no agent was started", "id", sess.ID)
 			return
-		case resp.Status == BootstrapReady:
+		case BootstrapReady:
 			if err := s.startAgentSession(ctx, sess, workdir); err != nil {
 				s.logger.Warn("could not start the agent", "id", sess.ID, "err", err)
 			}

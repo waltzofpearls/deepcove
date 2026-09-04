@@ -1,10 +1,10 @@
 // The single seam for all runtime traffic to the deepcove API.
 //
 //   - Direct: native fetch + WebSocket, same-origin. Used when the browser
-//     can reach the cluster's API directly, such as rung 1 localhost, or a node whose
+//     can reach that node's API directly, such as rung 1 localhost, or a node whose
 //     tailnet this browser is on.
 //   - WASM (lands in #148 step B): routes through an in-browser Tailscale node
-//     for clusters the browser can't reach directly (a tailnet the OS isn't on).
+//     for nodes the browser can't reach directly (a tailnet the OS isn't on).
 //
 // The mode is chosen ONCE at boot from server-injected runtime config; nothing
 // else in the app branches on it. The API client and the terminal both go
@@ -46,7 +46,7 @@ class DirectTransport implements Transport {
 }
 
 // WasmTransport routes traffic through the in-browser Tailscale node, for
-// clusters the browser can't reach directly. fetch() rides tailscale-web's
+// nodes the browser can't reach directly. fetch() rides tailscale-web's
 // fetch; the terminal socket (Milestone 2) will ride a dialTCP→WebSocket adapter.
 class WasmTransport implements Transport {
   readonly mode = 'wasm' as const;
@@ -153,7 +153,7 @@ function injectedTarget(): string {
 
 // detectDiscover reads the dashboard discover flag. When set, the page was served by a thin client that
 // hosts no API of its own (`deepcove dashboard` cross-tailnet mode): the in-browser node must discover
-// the cluster itself, so the boot transport has no target until discovery picks a primary node.
+// your nodes itself, so the boot transport has no target until discovery picks a primary node.
 function detectDiscover(): boolean {
   return (globalThis as { __deepcove?: { discover?: boolean } }).__deepcove?.discover === true;
 }
@@ -174,7 +174,7 @@ function create(): Transport {
 export const transport: Transport = create();
 
 // discoveryRequired reports whether the app is in dashboard discover mode and must run client-side
-// discovery (bring up the in-browser node, enumerate the cluster, fan out the sessions list itself)
+// discovery (bring up the in-browser node, enumerate your nodes, fan out the sessions list itself)
 // rather than talking to a single server that fans out.
 export function discoveryRequired(): boolean {
   return bootNeedsDiscovery;
@@ -187,20 +187,51 @@ export function setDiscoveredTarget(dnsName: string): void {
   if (transport instanceof WasmTransport) transport.setTargetBase('http://' + dnsName);
 }
 
+// ForwardingTransport asks this node to answer for another one. The header names the node; this node
+// forwards and streams the answer back.
+//
+// A WebSocket cannot carry a header, so openSocket goes out plain. Session routes do not need one: the
+// node finds the owner from the session id.
+class ForwardingTransport implements Transport {
+  readonly mode = 'direct' as const;
+  constructor(private readonly nodeID: string) {}
+
+  fetch(path: string, init?: RequestInit): Promise<Response> {
+    const headers = new Headers(init?.headers);
+    headers.set('Deepcove-Node', this.nodeID);
+    return transport.fetch(path, { ...init, headers });
+  }
+
+  openSocket(path: string, protocols?: string | string[]): DeepcoveSocket {
+    return transport.openSocket(path, protocols);
+  }
+}
+
 // transportForHost picks the transport for a per-session operation, given the session's host node.
 //
-// Local sessions (host omitted, or hosted by the node that served this page) ride the boot transport:
-// Direct on rung 1, or the boot WASM node on the Tailscale rungs. Remote sessions (a peer node) ride
-// a per-host WASM transport: the in-browser Tailscale node dials that peer's MagicDNS name directly,
-// keeping the dashboard node out of the per-session stream path. WASM is required here, not just an
-// optimization, because the dashboard machine may not be on the cluster's tailnet at all (the OS sits
-// on a different tailnet, or none); only the in-browser node can reach the peer. See
-// project_multinode_scope (Phase D).
+// Local sessions ride the boot transport. So do remote ones when this page is served by a session
+// node: that node forwards to the owner, so the browser needs no tailnet device of its own.
+//
+// A web-only node has no backend to forward, so there the in-browser Tailscale node dials the owning
+// peer directly, one transport per host.
 const hostTransports = new Map<string, WasmTransport>();
+const forwardingTransports = new Map<string, ForwardingTransport>();
 
-export function transportForHost(host?: { dns_name?: string } | null): Transport {
+export function transportForHost(
+  host?: { dns_name?: string; stable_node_id?: string } | null,
+): Transport {
   const dnsName = host?.dns_name;
   if (!dnsName) return transport;
+  if (transport.mode === 'direct') {
+    const nodeID = host?.stable_node_id;
+    if (!nodeID) return transport;
+    let f = forwardingTransports.get(nodeID);
+    if (!f) {
+      f = new ForwardingTransport(nodeID);
+      forwardingTransports.set(nodeID, f);
+    }
+    return f;
+  }
   let t = hostTransports.get(dnsName);
   if (!t) {
     t = new WasmTransport('http://' + dnsName);

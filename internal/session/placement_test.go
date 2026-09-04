@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/waltzofpearls/deepcove/internal/db"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
@@ -16,7 +17,8 @@ import (
 // yet built. Building it is what the tests are about.
 func workspaceService(t *testing.T) (*Service, *listerSandbox) {
 	t.Helper()
-	svc, lister := newListerService(t)
+	lister := &listerSandbox{fakeSandbox: newFakeSandbox()}
+	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), lister, RuntimeAppleVF)
 	if _, err := svc.SaveWorkspaceVM(context.Background(), WorkspaceVMRequest{HostRoot: t.TempDir()}); err != nil {
 		t.Fatalf("SaveWorkspaceVM: %v", err)
 	}
@@ -606,5 +608,20 @@ func TestWorkspaceVMSetupScriptReachesTheSpec(t *testing.T) {
 	lister.mu.Unlock()
 	if !slices.ContainsFunc(spec.Cmd, func(arg string) bool { return strings.Contains(arg, script) }) {
 		t.Errorf("the entrypoint does not carry the setup script: %v", spec.Cmd)
+	}
+}
+
+func TestSaveWorkspaceVMNeedsAVMRuntime(t *testing.T) {
+	// Docker has no VM to share, so recording one would hand the user a container labelled VM.
+	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), newFakeSandbox(), RuntimeDocker)
+	_, err := svc.SaveWorkspaceVM(context.Background(), WorkspaceVMRequest{HostRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("wanted a refusal on a Docker node")
+	}
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("err = %v, want ErrInvalidInput", err)
+	}
+	if !strings.Contains(err.Error(), "VM runtime") {
+		t.Errorf("err = %v, want it to say why", err)
 	}
 }

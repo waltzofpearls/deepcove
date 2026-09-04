@@ -32,7 +32,6 @@
   ] as const;
 
   // Hover shows the detail, a click or tap pins it, which is the only way it works on a phone.
-  let clusterHelpOpen = $state(false);
   let proxyHelpOpen = $state(false);
 
   let version = $state<string>('');
@@ -53,13 +52,6 @@
     'flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring';
   const inputClass =
     'h-9 w-40 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring';
-
-  // Cluster (SPEC §5.12): this node's self-declared group label. Read on load, changed live.
-  let currentCluster = $state('');
-  let clusterDraft = $state('');
-  let savingCluster = $state(false);
-  let clusterSaved = $state(false);
-  let clusterError = $state('');
 
   let currentProxy = $state('');
   let proxyDraft = $state('');
@@ -117,45 +109,10 @@
 
   $effect(() => {
     let cancelled = false;
-    api
-      .getCluster()
-      .then((r) => {
-        if (!cancelled) {
-          currentCluster = r.cluster;
-          clusterDraft = r.cluster;
-        }
-      })
-      .catch(() => {});
     return () => {
       cancelled = true;
     };
   });
-
-  // Suggestions for the type-or-pick field: clusters already seen across your nodes' sessions, plus the
-  // default and current. Subscribing populates sessions.list so the suggestions have something to offer.
-  $effect(() => sessions.subscribe());
-  const knownClusters = $derived.by(() => {
-    const set = new Set<string>(['default']);
-    if (currentCluster) set.add(currentCluster);
-    for (const s of sessions.list) if (s.host?.cluster) set.add(s.host.cluster);
-    return [...set].sort();
-  });
-
-  async function saveCluster() {
-    savingCluster = true;
-    clusterError = '';
-    try {
-      const r = await api.setCluster(clusterDraft.trim());
-      currentCluster = r.cluster;
-      clusterDraft = r.cluster;
-      clusterSaved = true;
-      setTimeout(() => (clusterSaved = false), 1500);
-    } catch (e) {
-      clusterError = e instanceof Error ? e.message : String(e);
-    } finally {
-      savingCluster = false;
-    }
-  }
 </script>
 
 {#snippet help(open: boolean, setOpen: (v: boolean) => void, text: string)}
@@ -254,46 +211,6 @@
 
     <!-- Access -->
     <TailnetConnect />
-
-    <!-- Cluster -->
-    <section class="space-y-3 rounded-xl border border-border bg-card p-4">
-      <div class="flex items-center gap-1.5">
-        <h2 class="text-sm font-medium text-muted-foreground">Cluster</h2>
-        {@render help(
-          clusterHelpOpen,
-          (v) => (clusterHelpOpen = v),
-          "Nodes that share a name are shown together on the dashboard. Leave it as default if you don't need groups.",
-        )}
-      </div>
-      <p class="text-xs text-muted-foreground">Group this node with your others.</p>
-      <div class="flex items-center gap-2">
-        <input
-          bind:value={clusterDraft}
-          list="known-clusters"
-          maxlength="64"
-          placeholder="default"
-          class="{inputClass} min-w-0 flex-1"
-        />
-        <datalist id="known-clusters">
-          {#each knownClusters as c (c)}<option value={c}></option>{/each}
-        </datalist>
-        <Button
-          size="sm"
-          onclick={saveCluster}
-          disabled={savingCluster || clusterDraft.trim() === currentCluster}
-        >
-          {#if savingCluster}
-            <Loader2 class="size-4 animate-spin" />
-          {:else if clusterSaved}
-            <Check class="size-4" />
-          {/if}
-          Save
-        </Button>
-      </div>
-      {#if clusterError}
-        <p class="text-xs text-destructive">{clusterError}</p>
-      {/if}
-    </section>
 
     <section class="space-y-3 rounded-xl border border-border bg-card p-4">
       <div class="flex items-center gap-1.5">

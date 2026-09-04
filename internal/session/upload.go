@@ -117,7 +117,7 @@ func (s *Service) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.UploadFile(r.Context(), id, r.URL.Query().Get("name"), data)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "session not found")
+		writeNotHostedHere(w)
 		return
 	}
 	if err != nil {

@@ -3,6 +3,7 @@
 package applevf
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -16,6 +17,10 @@ import (
 // shutdownTimeout bounds how long we wait for the guest to halt on request before falling back to
 // stopping the VM outright.
 const shutdownTimeout = 20 * time.Second
+
+// controlDialTimeout bounds the dial to the guest's control service. A guest that stopped answering
+// then falls through to stopping the VM outright instead of holding up the process.
+const controlDialTimeout = 5 * time.Second
 
 // serveCredentials runs the host side credential broker for this VM: the guest dials in at boot to fetch
 // its stored login and again at shutdown to hand back whatever the agent refreshed.
@@ -50,11 +55,9 @@ func (m *machine) serveCredentials(store credbroker.Store) error {
 // RequestStop is silently ignored inside the guest. Going through the control service also gives the
 // guest a chance to hand back refreshed credentials before it halts.
 func (m *machine) Shutdown() error {
-	device, err := m.socketDevice()
-	if err != nil {
-		return err
-	}
-	conn, err := device.Connect(guestctl.Port)
+	ctx, cancel := context.WithTimeout(context.Background(), controlDialTimeout)
+	defer cancel()
+	conn, err := m.connect(ctx, guestctl.Port)
 	if err != nil {
 		return fmt.Errorf("applevf: reach the guest control service: %w", err)
 	}
@@ -88,11 +91,11 @@ func (m *machine) awaitStopped() error {
 // Ping reports whether the guest's control service is answering, which is a cheap liveness check that
 // does not depend on the agent or the network being healthy.
 func (m *machine) Ping() error {
-	device, err := m.socketDevice()
-	if err != nil {
-		return err
-	}
-	conn, err := device.Connect(guestctl.Port)
+	ctx, cancel := context.WithTimeout(context.Background(), controlDialTimeout)
+	defer cancel()
+	// Not through the breaker: this is the boot poll, and a guest still coming up must not hold itself
+	// off before it has had a chance to answer.
+	conn, err := m.probe(ctx, guestctl.Port)
 	if err != nil {
 		return fmt.Errorf("applevf: reach the guest control service: %w", err)
 	}

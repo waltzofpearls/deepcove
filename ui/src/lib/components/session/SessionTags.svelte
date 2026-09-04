@@ -7,12 +7,11 @@
     TooltipProvider,
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
-  import ClusterBadge from '$lib/components/ClusterBadge.svelte';
   import RuntimeBadge from '$lib/components/session/RuntimeBadge.svelte';
   import Globe from '@lucide/svelte/icons/globe';
   import Waypoints from '@lucide/svelte/icons/waypoints';
 
-  // Compact identity tags (agent + remote-node + runtime + cluster), shared by the card and session view.
+  // Compact identity tags (agent + remote node + runtime), shared by the card and session view.
   // elevated raises the agent badge above the card's full-card nav link so its tooltip stays hoverable.
   let { session, elevated = false }: { session: Session; elevated?: boolean } = $props();
 
@@ -60,10 +59,10 @@
             </span>
           {/snippet}
         </TooltipTrigger>
-        <TooltipContent>This session's API requests go through this node's LLM proxy</TooltipContent
-        >
+        <TooltipContent>
+          This session's API requests go through this node's LLM proxy
+        </TooltipContent>
       </Tooltip>
     </TooltipProvider>
   {/if}
-  <ClusterBadge cluster={session.host?.cluster ?? ''} />
 </div>

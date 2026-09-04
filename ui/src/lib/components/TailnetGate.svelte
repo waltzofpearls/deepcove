@@ -13,7 +13,7 @@
   import Server from '@lucide/svelte/icons/server';
 
   let auth = $derived($tailnetAuth);
-  // Once signed in, dashboard discover mode has a second gated step: finding the cluster on the
+  // Once signed in, dashboard discover mode has a second gated step: finding your nodes on the
   // tailnet. We surface that here so the pre-app screen explains what it's waiting on.
   let discovering = $derived(discoveryRequired() && auth.phase === 'running');
 
@@ -60,7 +60,7 @@
       </button>
     </div>
   {:else if discovering}
-    <!-- Signed in; now finding the cluster on the tailnet (dashboard discover mode). -->
+    <!-- Signed in; now finding your nodes on the tailnet (dashboard discover mode). -->
     {#if discovery.phase === 'error'}
       <div class="flex w-full max-w-sm flex-col items-center gap-3 text-center">
         <TriangleAlert class="size-8 text-destructive" />
@@ -81,7 +81,7 @@
       </div>
     {:else}
       <Loader2 class="size-8 animate-spin text-muted-foreground" />
-      <p class="text-sm text-muted-foreground">Discovering your cluster…</p>
+      <p class="text-sm text-muted-foreground">Finding your nodes…</p>
     {/if}
   {:else}
     <!-- idle / connecting: verifying a returning session or first boot -->

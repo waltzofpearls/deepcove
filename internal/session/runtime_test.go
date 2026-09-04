@@ -424,3 +424,46 @@ func TestSelectDefaultRuntimeWithNothingReachable(t *testing.T) {
 		t.Errorf("default = %q, want the only registered runtime", got)
 	}
 }
+
+func TestPickVMRuntime(t *testing.T) {
+	cases := []struct {
+		name           string
+		runtimes       []string
+		defaultRuntime string
+		requested      string
+		want           string
+		wantErr        bool
+	}{
+		{name: "the runtime asked for", runtimes: []string{RuntimeAppleVF}, defaultRuntime: RuntimeAppleVF,
+			requested: RuntimeAppleVF, want: RuntimeAppleVF},
+		{name: "a container runtime asked for is refused", runtimes: []string{RuntimeDocker},
+			defaultRuntime: RuntimeDocker, requested: RuntimeDocker, wantErr: true},
+		{name: "the node default when it boots vms", runtimes: []string{RuntimeAppleVF, RuntimeDocker},
+			defaultRuntime: RuntimeAppleVF, want: RuntimeAppleVF},
+		{name: "the vm runtime even when the default is a container",
+			runtimes: []string{RuntimeAppleVF, RuntimeDocker}, defaultRuntime: RuntimeDocker, want: RuntimeAppleVF},
+		{name: "a node with no vm runtime", runtimes: []string{RuntimeDocker}, defaultRuntime: RuntimeDocker,
+			wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &Service{runtimes: map[string]sandbox.Sandbox{}, defaultRuntime: tc.defaultRuntime}
+			for _, name := range tc.runtimes {
+				svc.runtimes[name] = newFakeSandbox()
+			}
+			got, err := svc.pickVMRuntime(tc.requested)
+			if tc.wantErr {
+				if !errors.Is(err, ErrInvalidInput) {
+					t.Fatalf("got %v, want errors.Is(err, ErrInvalidInput)", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("pickVMRuntime: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("runtime = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -131,9 +131,11 @@
     <div class="space-y-1">
       <div class="font-medium">Saving recreates the machine.</div>
       <p class="text-xs text-muted-foreground">
-        <code>/root</code> (agent state, shell history) and any mounted folder are preserved.
-        Everything else inside it (installed packages, and an unmounted <code>/workspace</code>'s
-        contents) will be lost.
+        <code>/root</code>
+        (agent state, shell history) and any mounted folder are preserved. Everything else inside it (installed
+        packages, and an unmounted
+        <code>/workspace</code>
+        's contents) will be lost.
       </p>
     </div>
   </div>
@@ -148,8 +150,10 @@
     </div>
     {#if mounts.length === 0}
       <p class="text-xs text-muted-foreground">
-        No folders. The agent runs in an empty <code>/workspace</code>, with the shared
-        <code>/root</code> home regardless.
+        No folders. The agent runs in an empty <code>/workspace</code>
+        , with the shared
+        <code>/root</code>
+        home regardless.
       </p>
     {/if}
     {#each mounts as m, i (i)}

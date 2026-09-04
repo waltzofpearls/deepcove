@@ -31,6 +31,7 @@ import (
 type Driver struct {
 	images    *imageStore
 	disks     string
+	logs      string
 	kernel    string
 	guestInit string
 	creds     credbroker.Store
@@ -128,6 +129,7 @@ func New(kernelPath, guestInitPath, stateDir string, opts ...Option) (*Driver, e
 		// is served over vsock at boot instead, so sessions using the same image still share one build.
 		images:    images,
 		disks:     filepath.Join(stateDir, "vm-disks"),
+		logs:      filepath.Join(stateDir, "logs"),
 		kernel:    kernelPath,
 		guestInit: guestInitPath,
 		machines:  map[sandbox.ID]*session{},
@@ -261,9 +263,10 @@ func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
 		}
 	}
 
+	m.setLogger(d.logger)
 	// Drain the console before waiting: it is an OS pipe, so an undrained one eventually blocks the
 	// guest mid boot, and its contents are what explain a failure to come up.
-	m.captureConsole()
+	m.captureConsole(d.consolePath(h))
 
 	// Do not report a running session until the guest actually answers. Otherwise a guest that panicked
 	// still looks healthy and only reveals itself later as an empty terminal.
@@ -278,6 +281,14 @@ func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
 	d.mu.Unlock()
 	d.logger.Info("vm started", "handle", h, "image", s.spec.Image, "live_vms", live)
 	return nil
+}
+
+// consolePath is where a VM's console is kept, so a guest that dies leaves something to read.
+func (d *Driver) consolePath(h sandbox.ID) string {
+	if err := os.MkdirAll(d.logs, 0o755); err != nil {
+		return ""
+	}
+	return filepath.Join(d.logs, "vm-"+string(h)+".log")
 }
 
 // ListSandboxes reports every VM this driver tracks. The registry is in memory and dies with the
@@ -297,12 +308,13 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 			state = sandbox.InstanceStarting
 		}
 		out = append(out, sandbox.Instance{
-			ID:        h,
-			State:     state,
-			Image:     s.spec.Image,
-			Mounts:    hostMounts(s.spec.Mounts),
-			Resources: actualResources(s.spec.Resources),
-			CreatedAt: s.createdAt,
+			ID:           h,
+			State:        state,
+			Unresponsive: s.machine != nil && s.machine.unresponsive(),
+			Image:        s.spec.Image,
+			Mounts:       hostMounts(s.spec.Mounts),
+			Resources:    actualResources(s.spec.Resources),
+			CreatedAt:    s.createdAt,
 		})
 	}
 	// Map iteration order is random, so sort for a view that does not reshuffle on every poll. Newest
@@ -661,6 +673,36 @@ func (d *Driver) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// Restart replaces the stored spec, then stops and starts. Start builds the VM from that spec, so a new
+// size or folder takes effect.
+//
+// The spec goes through the same checks as Create. Skipping them would make a restart a way to mount a
+// host folder this node refuses to share, and would leave a renamed image booting the old rootfs.
+func (d *Driver) Restart(ctx context.Context, h sandbox.ID, spec sandbox.SandboxSpec) error {
+	s, err := d.lookup(h)
+	if err != nil {
+		return err
+	}
+	if err := sandbox.ValidateSpec(spec, d.allowedRoots); err != nil {
+		return err
+	}
+	if len(spec.Cmd) == 0 {
+		return fmt.Errorf("applevf: spec.Cmd is required; it is the session entrypoint the guest runs")
+	}
+	base, err := d.images.baseImage(ctx, spec.Image)
+	if err != nil {
+		return err
+	}
+	if err := d.Stop(ctx, h); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	s.spec = spec
+	s.baseImage = base
+	d.mu.Unlock()
+	return d.Start(ctx, h)
 }
 
 func (d *Driver) lookup(h sandbox.ID) (*session, error) {

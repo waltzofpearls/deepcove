@@ -23,12 +23,12 @@ func newTestManager(t *testing.T) (*launchdManager, *fakeRunner) {
 }
 
 func TestPlistText(t *testing.T) {
-	text := plistText([]string{"/usr/local/bin/deepcove", "start", "--cluster", "prod"}, "/tmp/deepcove.log")
+	text := plistText([]string{"/usr/local/bin/deepcove", "start", "--addr", "127.0.0.1:9090"}, "/tmp/deepcove.log")
 
 	for _, want := range []string{
 		"<string>dev.deepcove</string>",
 		"<string>/usr/local/bin/deepcove</string>",
-		"<string>--cluster</string>",
+		"<string>--addr</string>",
 		"<key>StandardOutPath</key>",
 	} {
 		if !strings.Contains(text, want) {
@@ -55,7 +55,7 @@ func TestPlistTextEscapesArguments(t *testing.T) {
 
 func TestInstallWritesThePlistThenLoadsIt(t *testing.T) {
 	manager, runner := newTestManager(t)
-	if err := manager.Install([]string{"--cluster", "prod"}, InstallOptions{}); err != nil {
+	if err := manager.Install([]string{"--addr", "127.0.0.1:9090"}, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestInstallWritesThePlistThenLoadsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plist not written: %v", err)
 	}
-	if !strings.Contains(string(written), "--cluster") {
+	if !strings.Contains(string(written), "--addr") {
 		t.Error("the flags asked for at install time are missing from the plist")
 	}
 	// The old copy has to be unloaded first, or bootstrap refuses.
@@ -96,7 +96,7 @@ func TestUninstallUnloadsThenRemoves(t *testing.T) {
 
 func TestStatusReportsWhatIsInstalledAndRunning(t *testing.T) {
 	manager, runner := newTestManager(t)
-	if err := manager.Install([]string{"--cluster", "prod"}, InstallOptions{}); err != nil {
+	if err := manager.Install([]string{"--addr", "127.0.0.1:9090"}, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	runner.stdout["launchctl"] = "state = running\npid = 4242\n"
@@ -109,7 +109,7 @@ func TestStatusReportsWhatIsInstalledAndRunning(t *testing.T) {
 		t.Errorf("installed=%v running=%v, want both true", status.Installed, status.Running)
 	}
 	// Read back from the file, so status shows the flags it was installed with.
-	want := []string{"/usr/local/bin/deepcove", "start", "--cluster", "prod"}
+	want := []string{"/usr/local/bin/deepcove", "start", "--addr", "127.0.0.1:9090"}
 	if !slices.Equal(status.StartCommand, want) {
 		t.Errorf("start command %v, want %v", status.StartCommand, want)
 	}

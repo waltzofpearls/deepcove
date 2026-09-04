@@ -9,8 +9,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/waltzofpearls/deepcove/internal/session"
+	"github.com/waltzofpearls/deepcove/internal/api/middleware"
 	"github.com/waltzofpearls/deepcove/internal/tailnet"
 )
 
@@ -46,12 +46,16 @@ type Manager struct {
 	hostname    string
 	handler     http.Handler // app mux, served (owner-gated) on the tailnet listeners
 
-	clusterStore *session.ClusterStore // this node's cluster label, reported to fan-out callers
+	gossipTopicsMu sync.RWMutex
+	gossipTopics   map[string]func() (value string, answered bool) // how to read this node's own value, per topic
 
-	clusterCacheMu sync.RWMutex               // guards clusterCache
-	clusterCache   map[string]observedCluster // last known peer cluster + observed_at by stable node id; backed by node_clusters
+	hostnamesMu sync.RWMutex
+	hostnames   []string // the names this node answers to, refreshed by the serve loop
 
-	gossipMu   sync.Mutex // guards lastGossip + gossiping
+	gossipValuesMu sync.RWMutex
+	gossipValues   map[string]map[string]GossipTopicValue // topic -> node -> value
+
+	gossipMu   sync.Mutex
 	lastGossip time.Time
 	gossiping  bool
 
@@ -90,70 +94,18 @@ func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Ha
 			m.persistedOwner = owner
 			m.ownerSaved = true
 		}
-		// seed the last known cluster cache so offline peers survive a restart
-		if cached, err := loadNodeClusters(db); err != nil {
-			logger.Warn("connect: load persisted node clusters", "err", err)
+		// seed what peers last said, so an offline peer's value survives a restart
+	}
+	// A test Manager has no database, and neither does a node before its first run.
+	if db != nil {
+		if cached, err := loadGossipValues(db); err != nil {
+			logger.Warn("connect: load gossip", "err", err)
 		} else {
-			m.clusterCache = cached
+			m.gossipValues = cached
 		}
 	}
+
 	return m
-}
-
-// SetClusterStore wires this node's cluster label so Self() and fan-out report it. Optional; a nil
-// store reads back as the default cluster.
-func (m *Manager) SetClusterStore(cs *session.ClusterStore) { m.clusterStore = cs }
-
-// observeCluster merges an observation of a peer's cluster into the cache (and DuckDB), keeping the
-// value with the freshest timestamp when observations disagree. Seeing the same value again keeps the
-// original timestamp (so it means "when this value was first seen"). Empty ids/labels are ignored.
-func (m *Manager) observeCluster(stableNodeID, cluster string, at time.Time) {
-	if stableNodeID == "" || cluster == "" {
-		return
-	}
-	m.clusterCacheMu.Lock()
-	defer m.clusterCacheMu.Unlock()
-	if m.clusterCache == nil {
-		m.clusterCache = make(map[string]observedCluster)
-	}
-	if cur, ok := m.clusterCache[stableNodeID]; ok && (cur.cluster == cluster || cur.observedAt.After(at)) {
-		return // same value, or we already hold fresher evidence
-	}
-	obs := observedCluster{cluster: cluster, observedAt: at}
-	m.clusterCache[stableNodeID] = obs
-
-	// persist under the lock so the DB row order matches the map order
-	if m.db != nil {
-		_ = saveNodeCluster(m.db, stableNodeID, obs)
-	}
-}
-
-// cacheCluster records a direct observation of a peer's current cluster (as of now).
-func (m *Manager) cacheCluster(stableNodeID, cluster string) {
-	m.observeCluster(stableNodeID, cluster, time.Now())
-}
-
-// cachedCluster returns a peer's last known cluster label, or "" if none was ever observed.
-func (m *Manager) cachedCluster(stableNodeID string) string {
-	m.clusterCacheMu.RLock()
-	defer m.clusterCacheMu.RUnlock()
-	return m.clusterCache[stableNodeID].cluster
-}
-
-// knownClusters snapshots this node's memory of every peer's cluster, for gossip.
-func (m *Manager) knownClusters() map[string]observedCluster {
-	m.clusterCacheMu.RLock()
-	defer m.clusterCacheMu.RUnlock()
-	out := make(map[string]observedCluster, len(m.clusterCache))
-	maps.Copy(out, m.clusterCache)
-	return out
-}
-
-// clusterCacheLen reports how many peers we have a remembered cluster for (0 = cold cache).
-func (m *Manager) clusterCacheLen() int {
-	m.clusterCacheMu.RLock()
-	defer m.clusterCacheMu.RUnlock()
-	return len(m.clusterCache)
 }
 
 // persistOwnerOnce records the node owner in DuckDB the first time the node is
@@ -165,7 +117,8 @@ func (m *Manager) persistOwnerOnce(tsNode *tailnet.Node) {
 		return
 	}
 	owner := tsNode.Owner()
-	if owner == nil {
+	// A tagged node has a machine as its owner, which is not something to record.
+	if owner == nil || owner.UserID == 0 || owner.FromTaggedDevice {
 		return
 	}
 	if m.db != nil {
@@ -195,12 +148,18 @@ func (m *Manager) TailnetClient() *http.Client {
 	return m.httpClient
 }
 
-// Connect starts the node (idempotent) and the serve loop. With no auth key this
-// triggers interactive login; the URL surfaces via Status while needs_login.
-func (m *Manager) Connect() (Status, error) {
+// Connect starts the node (idempotent) and the serve loop. An empty authKey means an interactive
+// sign-in, whose URL surfaces via Status while needs_login. A key enrols the node with no browser.
+//
+// The key is used for this connect only and is never stored: once a node is enrolled, its own state
+// reconnects it, so keeping the key would be a secret held for no reason.
+func (m *Manager) Connect(authKey string) (Status, error) {
 	m.nodeMu.Lock()
 	if m.tsNode == nil {
 		tsNode := tailnet.New(m.stateDir, m.hostname)
+		if authKey != "" {
+			tsNode.UseAuthKey(authKey)
+		}
 		if err := tsNode.Start(m.ctx); err != nil {
 			m.nodeMu.Unlock()
 			return Status{}, err
@@ -216,6 +175,22 @@ func (m *Manager) Connect() (Status, error) {
 		go m.serveLoop()
 	}
 	m.nodeMu.Unlock()
+	return m.Status(), nil
+}
+
+// forceReauth starts a fresh sign-in on a node that is already connected, so a key near expiry can be
+// extended before it lapses. An expired key needs no help: the node drops to needs_login on its own and
+// Connect surfaces the URL.
+func (m *Manager) forceReauth(ctx context.Context) (Status, error) {
+	m.nodeMu.Lock()
+	tsNode := m.tsNode
+	m.nodeMu.Unlock()
+	if tsNode == nil {
+		return Status{}, errors.New("connect: this node is not on your Tailscale network yet")
+	}
+	if err := tsNode.StartLogin(ctx); err != nil {
+		return Status{}, err
+	}
 	return m.Status(), nil
 }
 
@@ -260,15 +235,20 @@ func (m *Manager) teardown(mode teardownMode) error {
 	}
 	if mode == wipeState {
 		_ = os.RemoveAll(m.stateDir)
-		// forget drops the remembered peer clusters too (fresh identity, possibly different peers)
-		m.clusterCacheMu.Lock()
-		m.clusterCache = nil
-		m.clusterCacheMu.Unlock()
+		// A fresh identity means possibly different peers, so forget what the old ones said.
 		if m.db != nil {
-			if _, err := m.db.Exec(`DELETE FROM node_clusters`); err != nil {
-				m.logger.Warn("connect: clear node_clusters on reset", "err", err)
+			if _, err := m.db.Exec(`DELETE FROM gossip_topic_values`); err != nil {
+				m.logger.Warn("connect: clear gossip on reset", "err", err)
+			}
+			// The recorded owner goes with the identity, so a wrong claim is undone by signing out.
+			if _, err := m.db.Exec(`DELETE FROM node`); err != nil {
+				m.logger.Warn("connect: clear the node owner on reset", "err", err)
 			}
 		}
+		m.ownerMu.Lock()
+		m.persistedOwner = nil
+		m.ownerSaved = false
+		m.ownerMu.Unlock()
 	}
 	return nil
 }
@@ -282,7 +262,9 @@ func (m *Manager) Status() Status {
 		return Status{Phase: string(tailnet.PhaseStopped)}
 	}
 	s := tsNode.State()
-	out := Status{Phase: string(s.Phase), LoginURL: s.LoginURL, Owner: s.Owner}
+	// The recorded owner, not the tailnet identity: on a tagged node those differ, and the recorded one
+	// is who the gate lets in.
+	out := Status{Phase: string(s.Phase), LoginURL: s.LoginURL, Owner: m.owner(tsNode)}
 	if s.Phase != tailnet.PhaseRunning {
 		return out
 	}
@@ -329,7 +311,9 @@ func (m *Manager) AutoStartIfEnabled() {
 	if !m.isEnabled() {
 		return
 	}
-	_, _ = m.Connect()
+	// Empty auth key: an enrolled node reconnects from its own stored state, and an unenrolled one
+	// needs a person, which a boot-time reconnect cannot supply.
+	_, _ = m.Connect("")
 }
 
 // serveLoop brings up :80 once Running and upgrades to :443 the moment HTTPS becomes available,
@@ -360,6 +344,13 @@ func (m *Manager) ensureServing() {
 	m.persistOwnerOnce(tsNode)
 	m.serveMu.Lock()
 	defer m.serveMu.Unlock()
+	// Both listeners refuse a Host that is not ours, so there is nothing to serve until this node knows
+	// its own names. The serve loop tries again in two seconds.
+	hostnames := nodeHostnames(tsNode)
+	if len(hostnames) == 0 {
+		return
+	}
+	m.setHostnames(hostnames)
 	if !m.enabledMarked {
 		// Now that we've actually reached Running, persist the auto-start marker (write-once per
 		// connection); this is the only place it's written.
@@ -370,15 +361,47 @@ func (m *Manager) ensureServing() {
 	if !m.serving80 {
 		if ln, err := tsNode.Listen(); err == nil {
 			m.serving80 = true
-			go func() { _ = http.Serve(ln, m.ownerGate(tsNode)) }()
+			go func() { _ = http.Serve(ln, m.gatedHandler(tsNode)) }()
 		}
 	}
 	if !m.serving443 && tsNode.Reachability().HTTPSAvailable {
 		if ln, err := tsNode.ListenTLS(); err == nil {
 			m.serving443 = true
-			go func() { _ = http.Serve(ln, m.ownerGate(tsNode)) }()
+			go func() { _ = http.Serve(ln, m.gatedHandler(tsNode)) }()
 		}
 	}
+}
+
+// gatedHandler is the app behind both gates, which is what the tailnet listeners serve.
+func (m *Manager) gatedHandler(tsNode *tailnet.Node) http.Handler {
+	return middleware.BrowserGate(m.ownerGate(tsNode), m.currentHostnames)
+}
+
+// currentHostnames is what the gate checks a request's Host against.
+func (m *Manager) currentHostnames() []string {
+	m.hostnamesMu.RLock()
+	defer m.hostnamesMu.RUnlock()
+	return m.hostnames
+}
+
+func (m *Manager) setHostnames(names []string) {
+	m.hostnamesMu.Lock()
+	m.hostnames = names
+	m.hostnamesMu.Unlock()
+}
+
+// nodeHostnames are the names this node answers to: its tailnet name, the short form a search domain
+// completes, and its addresses.
+func nodeHostnames(tsNode *tailnet.Node) []string {
+	reach := tsNode.Reachability()
+	names := append([]string{}, reach.IPs...)
+	if reach.Name != "" {
+		names = append(names, reach.Name)
+		if short, _, ok := strings.Cut(reach.Name, "."); ok {
+			names = append(names, short)
+		}
+	}
+	return names
 }
 
 func (m *Manager) serving(tls bool) bool {
@@ -399,8 +422,8 @@ func (m *Manager) ownerGate(tsNode *tailnet.Node) http.Handler {
 			http.Error(w, "forbidden: not a tailnet peer", http.StatusForbidden)
 			return
 		}
-		owner := m.owner(tsNode)
-		if owner == nil || id.UserID != owner.UserID {
+		owner := m.ownerOrClaim(tsNode.StableNodeID(), m.owner(tsNode), id)
+		if !callerIsOwner(id, owner) {
 			http.Error(w, "forbidden: not the tsNode owner", http.StatusForbidden)
 			return
 		}
@@ -408,15 +431,59 @@ func (m *Manager) ownerGate(tsNode *tailnet.Node) http.Handler {
 	})
 }
 
+// callerIsOwner reports whether the caller is the person this node belongs to.
+func callerIsOwner(caller, owner *tailnet.Identity) bool {
+	return isPerson(caller) && isPerson(owner) && caller.UserID == owner.UserID
+}
+
+// isPerson reports whether an identity names a human. A tag replaces the user on a device, and every
+// tagged device in a tailnet reports the same one, so a tagged identity names a machine.
+func isPerson(id *tailnet.Identity) bool {
+	return id != nil && id.UserID != 0 && !id.FromTaggedDevice
+}
+
+// ownerOrClaim is who this node belongs to, claiming the caller when it belongs to nobody.
+//
+// A node enrolled with a tagged key has no user behind it, so enrolment recorded no one. The first
+// person to reach it becomes the owner, written once. The identity comes from Tailscale rather than
+// from the request, and everyone after that is compared against it.
+func (m *Manager) ownerOrClaim(stableNodeID string, owner, caller *tailnet.Identity) *tailnet.Identity {
+	if isPerson(owner) {
+		return owner
+	}
+	if !isPerson(caller) || m.db == nil {
+		return nil
+	}
+	m.ownerMu.Lock()
+	defer m.ownerMu.Unlock()
+	if isPerson(m.persistedOwner) {
+		return m.persistedOwner
+	}
+	if err := saveOwner(m.db, stableNodeID, caller); err != nil {
+		m.logger.Warn("connect: could not record the node owner", "err", err)
+		return nil
+	}
+	// Read it back rather than trusting the write: the insert does nothing when a row already exists,
+	// and that row is the owner, not this caller.
+	stored, err := loadOwner(m.db)
+	if err != nil || !isPerson(stored) {
+		return nil
+	}
+	m.persistedOwner = stored
+	m.ownerSaved = true
+	m.logger.Info("this node is tagged, so the first person to reach it now owns it",
+		"owner", stored.LoginName)
+	return stored
+}
+
 func (m *Manager) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connect", m.handleConnect)
 	mux.HandleFunc("GET /api/connect/status", m.handleStatus)
+	mux.HandleFunc("GET /api/gossip/known", m.handleGossipKnown)
 	mux.HandleFunc("POST /api/connect/disconnect", m.handleDisconnect)
 	mux.HandleFunc("POST /api/connect/reset", m.handleReset)
 	mux.HandleFunc("GET /api/nodes", m.handleNodes)
 	mux.HandleFunc("GET /api/nodes/web", m.handleWebNodes)
-	mux.HandleFunc("GET /api/nodes/clusters", m.handleNodeClusters)
-	mux.HandleFunc("GET /api/nodes/clusters/known", m.handleKnownClusters)
 }
 
 // Nodes lists the user's deepcove nodes: this machine plus any same-user tailnet peers (discovered
@@ -455,23 +522,34 @@ func (m *Manager) handleWebNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.WebNodes())
 }
 
-func (m *Manager) handleNodeClusters(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, m.NodeClusters(r.Context()))
-}
-
-// handleKnownClusters serves this node's raw known-cluster map (its memory of peers plus its own cluster
-// stamped now), without fanning out. Peers pull it during gossip. GET /api/nodes/clusters/known
-func (m *Manager) handleKnownClusters(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, m.knownClusterMap())
-}
-
 func (m *Manager) handleConnect(w http.ResponseWriter, r *http.Request) {
-	st, err := m.Connect()
+	// The body is optional, so a plain POST still means "connect interactively".
+	var body struct {
+		AuthKey string `json:"auth_key,omitempty"`
+		// ForceReauth signs in again on a node that is already connected. The auth key is not used here.
+		ForceReauth bool `json:"force_reauth,omitempty"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	var (
+		st  Status
+		err error
+	)
+	if body.ForceReauth {
+		st, err = m.forceReauth(r.Context())
+	} else {
+		st, err = m.Connect(body.AuthKey)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+func (m *Manager) handleGossipKnown(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, m.knownGossipValues())
 }
 
 func (m *Manager) handleStatus(w http.ResponseWriter, r *http.Request) {

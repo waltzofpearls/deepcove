@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -32,10 +34,7 @@ import (
 //   - Unix socket: full runtime API for the local CLI (filesystem perms)
 //   - tailnet (via connect.Manager): owner-gated, when connected
 //
-// Backed by DuckDB + migrations, the Docker sandbox driver, and the session lifecycle service.
-//
-// Still TODO:
-//   - Peer discovery, cross-node fan-out
+// Backed by DuckDB + migrations, the sandbox runtimes, and the session lifecycle service.
 func cmdStart(ctx context.Context, args []string) error {
 	cfg, err := config.Load(ctx)
 	if err != nil {
@@ -43,10 +42,8 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
-	// default to the env value so an explicit --cluster overrides DEEPCOVE_CLUSTER
-	fs.StringVar(&cfg.Cluster, "cluster", cfg.Cluster, `cluster label to group this node with your others (persisted; default "default")`)
 	fs.StringVar(&cfg.Addr, "addr", cfg.Addr, "address to listen on; keep the 127.0.0.1 prefix unless you mean to be reachable")
-	// Persisted like --cluster, so it survives a restart and the UI can edit it later.
+	// Persisted, so it survives a restart and the UI can edit it later.
 	llmProxyFlag := fs.String("llm-proxy-url", "",
 		"send every session's LLM requests here instead of to the provider, e.g. http://100.75.35.244:9001 (persisted)")
 	// Repeatable, and the only way to open a hole in the sandbox network block. Not an env var and not
@@ -81,21 +78,6 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	logger.Info("database ready", "data_dir", cfg.DataDir)
 
-	// Resolve this node's cluster label (SPEC §5.12): a --cluster/DEEPCOVE_CLUSTER value is written
-	// through to the settings table so it persists and the UI reflects it; otherwise the stored value is
-	// used, else the default.
-	if cfg.Cluster != "" {
-		if err := session.SaveCluster(sqlDB, session.NormalizeCluster(cfg.Cluster)); err != nil {
-			return fmt.Errorf("cluster: %w", err)
-		}
-	}
-	clusterName, err := session.LoadCluster(sqlDB)
-	if err != nil {
-		return fmt.Errorf("cluster: %w", err)
-	}
-	clusterStore := session.NewClusterStore(sqlDB, clusterName)
-	logger.Info("cluster", "name", clusterStore.Name())
-
 	// Persistence: domain-owned SessionRepository over the shared DuckDB connection. Each domain package
 	// owns its own CRUD wrapper (cohesion by bounded context); `internal/db` is just the connection
 	// lifecycle.
@@ -117,7 +99,6 @@ func cmdStart(ctx context.Context, args []string) error {
 
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
 	sessionSvc := session.NewService(sessionRepo, logger)
-	sessionSvc.SetClusterStore(clusterStore)
 	sessionSvc.SetWorkspaceVMStore(session.NewDuckDBWorkspaceVMStore(sqlDB))
 	sessionSvc.SetDataDir(cfg.DataDir)
 	sessionSvc.SetLLMProxyStore(session.NewDuckDBLLMProxyStore(sqlDB))
@@ -185,11 +166,14 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 
 	connectMgr = connect.NewManager(ctx, cfg.DataDir, sqlDB, mux, logger)
-	connectMgr.SetClusterStore(clusterStore)
 	connectMgr.AttachRoutes(mux)
 	// The connect manager owns the tsnet node, so it's also the cross-node source for aggregated
 	// session listing (fan-out to peers over the tailnet). No-op on a single node.
 	sessionSvc.SetFederation(connectMgr)
+	connectMgr.RegisterGossipTopic(session.GossipTopicSessionHosts, func() (string, bool) {
+		ids, answered := sessionSvc.LocalSessionIDs(ctx)
+		return strings.Join(ids, ","), answered
+	})
 	connectMgr.AutoStartIfEnabled()
 
 	// Per-run token gating the local TCP front door. The SPA served on this listener receives
@@ -256,6 +240,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	// the root cause over any teardown error here.
 	g.Go(func() error {
 		<-gctx.Done()
+		watchShutdown(cfg.DataDir, logger)
 		return drainServers(shutdownGrace, logger, srv, sockSrv)
 	})
 	return g.Wait()
@@ -263,6 +248,10 @@ func cmdStart(ctx context.Context, args []string) error {
 
 // shutdownGrace is how long in flight requests get to finish when stopping.
 const shutdownGrace = 2 * time.Second
+
+// shutdownHardStop bounds the whole teardown. Past this, something is stuck and waiting longer only
+// risks reaching the state where the kernel holds a thread and no signal can reap the process.
+const shutdownHardStop = 20 * time.Second
 
 // attachCloseGrace bounds the wait for terminal streams to clean up: a tmux kill plus a last activity
 // write, both of which have their own shorter timeouts.
@@ -292,4 +281,62 @@ func drainServers(grace time.Duration, logger *slog.Logger, servers ...*http.Ser
 		errs = append(errs, srv.Close())
 	}
 	return errors.Join(errs...)
+}
+
+// watchShutdown force-exits if teardown wedges, after writing every goroutine stack to a file. A VM runs
+// as threads inside this process, so one stuck in the kernel can make the process unkillable; the stacks
+// have to be on disk before that.
+func watchShutdown(dataDir string, logger *slog.Logger) {
+	go func() {
+		time.Sleep(shutdownHardStop)
+		path, err := dumpStacks(dataDir)
+		if err != nil {
+			logger.Error("shutdown is stuck, and the stacks could not be written", "err", err)
+			os.Exit(1)
+		}
+		// Printed, not just logged: a stuck node floods the terminal, and this is the one line worth
+		// finding in it.
+		_, _ = fmt.Fprintf(os.Stderr, "\n\n  shutdown is stuck. goroutine stacks written to:\n  %s\n\n", path)
+		logger.Error("shutdown is stuck, forcing exit", "stacks", path)
+		os.Exit(1)
+	}()
+}
+
+// dumpStacksMaxBytes caps the dump. A process with a runaway goroutine count is already in trouble, and
+// writing an unbounded file is not how it gets better.
+const dumpStacksMaxBytes = 64 << 20
+
+// dumpStacks writes every goroutine stack to a file and returns its path. A file, not stderr: a wedged
+// node prints faster than a terminal keeps, so the one thing worth reading would scroll away.
+func dumpStacks(dataDir string) (string, error) {
+	stacks, truncated := goroutineStacks()
+	if truncated {
+		stacks = append(stacks, "\n[truncated: the dump reached the cap]\n"...)
+	}
+	dir := filepath.Join(dataDir, "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "shutdown-stacks.txt")
+	if err := os.WriteFile(path, stacks, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// goroutineStacks returns every goroutine stack, growing the buffer until the dump fits or the cap is
+// reached. A fixed buffer cuts the dump off silently, and the goroutine that explains a wedge is as
+// likely to be at the end as the start.
+func goroutineStacks() (stacks []byte, truncated bool) {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return buf[:n], false
+		}
+		if len(buf) >= dumpStacksMaxBytes {
+			return buf[:n], true
+		}
+		buf = make([]byte, min(2*len(buf), dumpStacksMaxBytes))
+	}
 }

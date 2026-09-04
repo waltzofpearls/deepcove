@@ -34,7 +34,7 @@ type UI struct {
 	// mode (empty in direct mode, where the API is same-origin).
 	target string
 	// discover marks dashboard mode: the thin client hosts no API of its own, so the in-browser node
-	// must discover the cluster itself (no injected target). Only set by `deepcove dashboard`.
+	// must discover your nodes itself (no injected target). Only set by `deepcove dashboard`.
 	discover bool
 }
 
@@ -68,7 +68,7 @@ func WithTarget(target string) Option {
 	}
 }
 
-// WithDiscover marks dashboard mode: the SPA is told to discover the cluster via its own in-browser
+// WithDiscover marks dashboard mode: the SPA is told to discover your nodes via its own in-browser
 // node rather than talk to a single injected target. Implies wasm transport.
 func WithDiscover() Option {
 	return func(ui *UI) {

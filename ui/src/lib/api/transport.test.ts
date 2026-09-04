@@ -50,16 +50,42 @@ describe('transportForHost', () => {
     expect(transportForHost({ dns_name: '' })).toBe(transport);
   });
 
-  it('upgrades a remote host to a WASM transport even when the boot mode is Direct', async () => {
+  it('keeps a remote session on this node in Direct mode, which forwards to the owner', async () => {
     const { transport, transportForHost } = await loadTransport();
     expect(transport.mode).toBe('direct');
+    const t = transportForHost({ dns_name: 'deepcove-peer.tailnet.ts.net', stable_node_id: 'n2' });
+    expect(t).not.toBe(transport);
+    expect(t.mode).toBe('direct');
+  });
+
+  it('names the target node in a header, so this node knows who to forward to', async () => {
+    const { transportForHost } = await loadTransport();
+    const seen: Array<Headers> = [];
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers));
+      return new Response('{}', { status: 200 });
+    });
+    const t = transportForHost({ dns_name: 'peer.ts.net', stable_node_id: 'n2' });
+    await t.fetch('/api/preflight');
+    expect(seen[0].get('Deepcove-Node')).toBe('n2');
+  });
+
+  it('dials the owning peer itself on a web-only node, which has nothing to forward', async () => {
+    const { transport, transportForHost } = await loadTransport({
+      transport: 'wasm',
+      target: 'http://deepcove-a.tailnet.ts.net',
+    });
     const t = transportForHost({ dns_name: 'deepcove-peer.tailnet.ts.net' });
     expect(t).not.toBe(transport);
     expect(t.mode).toBe('wasm');
   });
 
   it('caches one transport per host, keyed by MagicDNS name', async () => {
-    const { transportForHost } = await loadTransport();
+    // Only a web-only node builds per-host transports; a session node forwards instead.
+    const { transportForHost } = await loadTransport({
+      transport: 'wasm',
+      target: 'http://deepcove-a.tailnet.ts.net',
+    });
     const a1 = transportForHost({ dns_name: 'deepcove-a.tailnet.ts.net' });
     const a2 = transportForHost({ dns_name: 'deepcove-a.tailnet.ts.net' });
     const b = transportForHost({ dns_name: 'deepcove-b.tailnet.ts.net' });

@@ -4,17 +4,14 @@
   import { discoveryRequired } from '$lib/api/transport';
   import { tailnetAuth, webNodeInfo, wasmHostname, type WebNodeInfo } from '$lib/api/wasm';
   import { machineName } from '$lib/util/tailnet';
-  import { nodeClusterLabel } from '$lib/util/cluster';
   import { discovery } from '$lib/stores/discovery.svelte';
   import { preferences } from '$lib/stores/preferences.svelte';
   import TailnetConnect from '$lib/components/TailnetConnect.svelte';
-  import ClusterBadge from '$lib/components/ClusterBadge.svelte';
   import { Button } from '$lib/components/ui/button';
   import type { ConnectStatus, NodeInfo } from '$lib/api/types';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Server from '@lucide/svelte/icons/server';
   import Globe from '@lucide/svelte/icons/globe';
-  import Layers from '@lucide/svelte/icons/layers';
   import Network from '@lucide/svelte/icons/network';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -79,68 +76,12 @@
   const webPeers = $derived(discoveryRequired() ? discovery.webNodes : fetchedWeb);
   const otherWebNodes = $derived(webPeers.filter((n) => n.dns_name !== webInfo?.dnsName));
 
-  // Cluster tag per session node (SPEC §5.12), via /api/nodes/clusters (covers connected + dashboard mode).
-  let clusterMap = $state<Record<string, string>>({});
-  let clustersLoaded = $state(false);
-  const CLUSTER_REFRESH_MS = 10_000; // renames are rare; no need for the fast sessions poll rate
-  const CLUSTER_RETRY_MS = 2_000; // but retry quickly until the first fetch lands (e.g. after a stale-primary timeout)
-  const nodeIdsKey = $derived(
-    (nodes ?? [])
-      .map((n) => n.stable_node_id)
-      .sort()
-      .join(','),
-  );
-  $effect(() => {
-    // Key on nodeIdsKey (a stable string), not the `nodes` array, whose reference churns every netmap tick.
-    if (!nodeIdsKey) return;
-    // Poll (not on the netmap tick) so a peer's cluster rename self-heals without a reload.
-    return usePolling(
-      async () => {
-        try {
-          const m = discoveryRequired()
-            ? await api.nodeClustersFromNodes(discovery.nodes)
-            : await api.nodeClusters();
-          // merge, not replace, so a momentarily-unreachable node keeps its last-known cluster
-          clusterMap = { ...clusterMap, ...m };
-          clustersLoaded = true;
-        } catch {
-          /* keep last-known; the next tick retries */
-        }
-      },
-      () => (clustersLoaded ? CLUSTER_REFRESH_MS : CLUSTER_RETRY_MS),
-    );
-  });
-  const clusterFor = (n: NodeInfo): string => nodeClusterLabel(clusterMap, n.stable_node_id);
-  // Gate on clustersLoaded so nodes don't flash unknown/grouping before the first fetch.
-  const nodeClustersInView = $derived(
-    clustersLoaded ? [...new Set((nodes ?? []).map(clusterFor))] : [],
-  );
-  const showNodeClusters = $derived(nodeClustersInView.length > 1);
-  const groupedNodes = $derived.by(() => {
-    const m = new Map<string, NodeInfo[]>();
-    for (const n of nodes ?? []) {
-      const c = clusterFor(n);
-      const arr = m.get(c);
-      if (arr) arr.push(n);
-      else m.set(c, [n]);
-    }
-    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
-  });
-
   let refreshing = $state(false);
   async function refreshNow() {
     refreshing = true;
     try {
-      let m: Record<string, string>;
-      if (discoveryRequired()) {
-        discovery.refreshNow();
-        m = await api.nodeClustersFromNodes(discovery.nodes);
-      } else {
-        await loadDirect();
-        m = await api.nodeClusters();
-      }
-      clusterMap = { ...clusterMap, ...m };
-      clustersLoaded = true;
+      if (discoveryRequired()) discovery.refreshNow();
+      else await loadDirect();
     } catch {
       /* transient; the next poll retries */
     } finally {
@@ -191,8 +132,8 @@
         <div class="space-y-1">
           <h2 class="text-sm font-semibold">It's just this machine right now</h2>
           <p class="text-sm text-muted-foreground">
-            deepcove is running locally. Connect to your Tailscale network to bring your other
-            machines into one cluster and see them all here.
+            deepcove is running locally. Connect to your Tailscale network to see your other
+            machines here.
           </p>
         </div>
       </div>
@@ -203,133 +144,96 @@
       <Loader2 class="size-4 animate-spin" /> Loading…
     </div>
   {:else}
-    <!-- One node row, reused by both the flat list and the per-cluster groups below. -->
-    {#snippet nodeRow(node: NodeInfo)}
+    <!-- One row for every node. The chip says which kind it is, so machines and browsers read as one
+         list rather than two. -->
+    {#snippet nodeRow(opts: {
+      kind: 'session' | 'web';
+      name: string;
+      address?: string;
+      mine?: string;
+      online: boolean;
+    })}
       <li class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
-        <Server class="size-5 shrink-0 text-muted-foreground" />
+        {#if opts.kind === 'session'}
+          <Server class="size-5 shrink-0 text-muted-foreground" />
+        {:else}
+          <Globe class="size-5 shrink-0 text-muted-foreground" />
+        {/if}
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <span class="truncate font-medium">{machineName(node.dns_name) || node.hostname}</span>
-            {#if node.self}
-              <span class="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
-                >this machine</span
+            <span class="truncate font-medium">{opts.name}</span>
+            <!-- Two node kinds, two colours. Ownership below stays neutral grey, so a category and an
+                 annotation never read as the same kind of fact. -->
+            {#if opts.kind === 'session'}
+              <span
+                class="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 text-xs text-blue-700 ring-1 ring-inset ring-blue-600/25 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-500/30"
               >
+                Session node
+              </span>
+            {:else}
+              <span
+                class="shrink-0 rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-700 ring-1 ring-inset ring-violet-600/25 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-500/30"
+              >
+                Web node
+              </span>
             {/if}
-            <ClusterBadge cluster={clustersLoaded ? clusterFor(node) : ''} />
+            {#if opts.mine}
+              <span
+                class="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
+              >
+                {opts.mine}
+              </span>
+            {/if}
           </div>
-          {#if node.dns_name}
-            <div class="truncate font-mono text-xs text-muted-foreground">{node.dns_name}</div>
+          {#if opts.address}
+            <div class="truncate font-mono text-xs text-muted-foreground">{opts.address}</div>
           {/if}
         </div>
         <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
           <span
             class="size-2 rounded-full"
-            class:bg-green-500={node.online}
-            class:bg-muted-foreground={!node.online}
+            class:bg-green-500={opts.online}
+            class:bg-muted-foreground={!opts.online}
             aria-hidden="true"
           ></span>
-          {node.online ? 'online' : 'offline'}
+          {opts.online ? 'online' : 'offline'}
         </div>
       </li>
     {/snippet}
 
-    <!-- Session nodes: your machines running deepcove (they host the containers/sessions). Grouped by
-         cluster once there's more than one; a flat list otherwise. -->
-    <section class="mb-6">
-      <h2 class="mb-1 text-sm font-semibold">Session nodes</h2>
-      <p class="mb-3 text-xs text-muted-foreground">
-        Your machines running deepcove. Sessions live on the machine that created them.
-      </p>
-      {#if !clustersLoaded}
-        <div class="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 class="size-3.5 animate-spin" /> Grouping by cluster…
-        </div>
-      {/if}
-      {#if showNodeClusters}
-        {#each groupedNodes as [cluster, group], i (cluster)}
-          <div class="mb-1.5 flex items-center gap-2" class:mt-4={i > 0}>
-            <Layers class="size-3.5 shrink-0 text-muted-foreground" />
-            <h3 class="text-xs font-semibold text-muted-foreground">{cluster}</h3>
-            <span class="text-xs text-muted-foreground">{group.length}</span>
-            <div class="ml-1 h-px flex-1 bg-border"></div>
-          </div>
-          <ul class="space-y-2">
-            {#each group as node (node.stable_node_id || node.hostname)}
-              {@render nodeRow(node)}
-            {/each}
-          </ul>
-        {/each}
-      {:else}
-        <ul class="space-y-2">
-          {#each nodes as node (node.stable_node_id || node.hostname)}
-            {@render nodeRow(node)}
-          {/each}
-        </ul>
-      {/if}
-    </section>
-
-    <!-- Web nodes: your browser as its own tailnet device, plus any other browsers you've signed in.
-         Online only (they're ephemeral). This browser is marked and shown from its own richer info;
-         the rest come from the tailnet (server in connected mode, in-browser netmap in dashboard). -->
     <section>
-      <h2 class="mb-1 text-sm font-semibold">Web nodes</h2>
       <p class="mb-3 text-xs text-muted-foreground">
-        Your browser, as its own device on your tailnet. This is how it reaches sessions on other
-        machines.
+        Your machines running deepcove, and the browsers signed in to your tailnet. Sessions live on
+        the machine that created them.
       </p>
-      {#if webRunning || otherWebNodes.length > 0}
-        <ul class="space-y-2">
-          {#if webRunning}
-            <li class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
-              <Globe class="size-5 shrink-0 text-muted-foreground" />
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="truncate font-medium">{webInfo?.name ?? wasmHostname()}</span>
-                  <span class="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
-                    >this browser</span
-                  >
-                </div>
-                {#if webInfo?.ipv4}
-                  <div class="truncate font-mono text-xs text-muted-foreground">{webInfo.ipv4}</div>
-                {/if}
-              </div>
-              <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-                <span class="size-2 rounded-full bg-green-500" aria-hidden="true"></span>
-                online
-              </div>
-            </li>
-          {/if}
-          {#each otherWebNodes as node (node.stable_node_id || node.dns_name)}
-            <li class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
-              <Globe class="size-5 shrink-0 text-muted-foreground" />
-              <div class="min-w-0 flex-1">
-                <span class="truncate font-medium">{machineName(node.dns_name)}</span>
-                {#if node.dns_name}
-                  <div class="truncate font-mono text-xs text-muted-foreground">
-                    {node.dns_name}
-                  </div>
-                {/if}
-              </div>
-              <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-                <span class="size-2 rounded-full bg-green-500" aria-hidden="true"></span>
-                online
-              </div>
-            </li>
-          {/each}
-        </ul>
-        {#if !webRunning}
-          <p class="mt-2 text-xs text-muted-foreground">
-            This browser isn't on your tailnet yet. Use the <span class="font-medium">Web node</span
-            >
-            chip in the top bar to sign in.
-          </p>
+      <ul class="space-y-2">
+        {#each nodes as node (node.stable_node_id || node.hostname)}
+          {@render nodeRow({
+            kind: 'session',
+            name: machineName(node.dns_name) || node.hostname,
+            address: node.dns_name,
+            mine: node.self ? 'this machine' : undefined,
+            online: node.online,
+          })}
+        {/each}
+        {#if webRunning}
+          {@render nodeRow({
+            kind: 'web',
+            name: webInfo?.name ?? wasmHostname(),
+            address: webInfo?.ipv4,
+            mine: 'this browser',
+            online: true,
+          })}
         {/if}
-      {:else}
-        <p class="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-          This browser isn't on your tailnet yet. Use the <span class="font-medium">Web node</span> chip
-          in the top bar to sign in.
-        </p>
-      {/if}
+        {#each otherWebNodes as node (node.stable_node_id || node.dns_name)}
+          {@render nodeRow({
+            kind: 'web',
+            name: machineName(node.dns_name),
+            address: node.dns_name,
+            online: true,
+          })}
+        {/each}
+      </ul>
     </section>
   {/if}
 </div>

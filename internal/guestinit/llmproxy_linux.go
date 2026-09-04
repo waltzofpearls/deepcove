@@ -3,11 +3,14 @@
 package guestinit
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 
 	"github.com/mdlayher/vsock"
+
+	"github.com/waltzofpearls/deepcove/internal/guestserve"
 	"github.com/waltzofpearls/deepcove/internal/llmproxy"
 )
 
@@ -18,13 +21,11 @@ func serveAgentEndpoint(port int) error {
 	if err != nil {
 		return fmt.Errorf("listen on port %d: %w", port, err)
 	}
+	// The same accept loop the vsock services use: a failed accept is retried rather than ending the
+	// service, and a panic in one connection cannot take PID 1, and the kernel, with it.
 	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go pipeToHost(conn)
+		if err := guestserve.Accept(context.Background(), ln, logf, pipeToHost); err != nil {
+			logf("WARNING: the agent endpoint stopped: %v", err)
 		}
 	}()
 	return nil

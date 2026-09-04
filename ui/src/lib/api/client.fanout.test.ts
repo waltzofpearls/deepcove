@@ -5,7 +5,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // and skips offline nodes. transportForHost is mocked to return a per-node fetch keyed by dns_name so
 // the test can make one node answer and another fail.
 const responses = new Map<string, unknown>();
-const clusters = new Map<string, string>();
 const failing = new Set<string>();
 
 vi.mock('./transport', () => ({
@@ -18,8 +17,6 @@ vi.mock('./transport', () => ({
       const body = JSON.stringify(responses.get(dns) ?? []);
       void path;
       const headers: Record<string, string> = { 'content-type': 'application/json' };
-      const cluster = clusters.get(dns);
-      if (cluster !== undefined) headers['X-Deepcove-Cluster'] = cluster;
       return new Response(body, { status: 200, headers });
     },
     openSocket: () => ({}),
@@ -39,7 +36,6 @@ const node = (id: string, online = true): NodeInfo => ({
 
 beforeEach(() => {
   responses.clear();
-  clusters.clear();
   failing.clear();
 });
 
@@ -56,17 +52,6 @@ describe('listSessionsAcrossNodes', () => {
     // b failed -> unreachable; c is offline -> skipped entirely (not unreachable).
     expect(out.unreachable?.map((u) => u.stable_node_id)).toEqual(['b']);
     expect(out.self).toEqual(self);
-  });
-
-  it('tags each session host with the node cluster from the X-Deepcove-Cluster header', async () => {
-    responses.set('a.ts', [{ id: 'a1', last_activity_at: '2026-06-01T10:00:00Z' }]);
-    responses.set('b.ts', [{ id: 'b1', last_activity_at: '2026-06-01T09:00:00Z' }]);
-    clusters.set('a.ts', 'prod'); // node b answers with no cluster header
-
-    const out = await api.listSessionsAcrossNodes([node('a'), node('b')], null);
-
-    expect(out.sessions.find((s) => s.id === 'a1')?.host?.cluster).toBe('prod');
-    expect(out.sessions.find((s) => s.id === 'b1')?.host?.cluster).toBeUndefined();
   });
 
   it('returns an empty list (no unreachable) when every online node answers empty', async () => {

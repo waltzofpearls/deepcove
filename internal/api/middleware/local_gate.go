@@ -103,11 +103,7 @@ func isRuntimeAPI(path string) bool {
 // hostAllowed checks the request Host (sans port) against loopback and the
 // configured allowlist.
 func hostAllowed(requestHost string, allow map[string]struct{}) bool {
-	host := requestHost
-	if hostOnly, _, err := net.SplitHostPort(requestHost); err == nil {
-		host = hostOnly
-	}
-	host = strings.ToLower(strings.Trim(host, "[]")) // strip IPv6 brackets if present
+	host := normalizeHost(requestHost)
 	if host == "localhost" {
 		return true
 	}
@@ -116,4 +112,13 @@ func hostAllowed(requestHost string, allow map[string]struct{}) bool {
 	}
 	_, ok := allow[host]
 	return ok
+}
+
+// normalizeHost strips the port and lowercases a Host header for comparison.
+func normalizeHost(requestHost string) string {
+	host := requestHost
+	if hostOnly, _, err := net.SplitHostPort(requestHost); err == nil {
+		host = hostOnly
+	}
+	return strings.ToLower(strings.Trim(host, "[]")) // strip IPv6 brackets if present
 }

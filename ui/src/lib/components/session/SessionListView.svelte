@@ -26,10 +26,10 @@
           <td class="px-4 py-3">
             <StatusIndicator status={session.status} />
           </td>
-          <td class="px-4 py-3 font-mono"
-            >{session.name}{#if sessionsStore.isRemote(session)}
-              <span class="ml-1 text-xs text-primary">{session.host?.hostname}</span>{/if}</td
-          >
+          <td class="px-4 py-3 font-mono">
+            {session.name}{#if sessionsStore.isRemote(session)}
+              <span class="ml-1 text-xs text-primary">{session.host?.hostname}</span>{/if}
+          </td>
           <td class="px-4 py-3">
             <span class="rounded bg-secondary px-2 py-0.5 text-xs">{session.agent}</span>
           </td>

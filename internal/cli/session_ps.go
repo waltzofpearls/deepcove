@@ -27,7 +27,7 @@ func cmdSessionPs(ctx context.Context, args []string) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	client := newSessionClient(cfg)
+	client := newAPIClient(cfg)
 	sessions, err := client.List(ctx, all)
 	if err != nil {
 		return err

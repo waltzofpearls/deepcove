@@ -4,7 +4,6 @@ package session
 
 import (
 	"os"
-	"runtime"
 
 	"golang.org/x/sys/unix"
 )
@@ -12,7 +11,7 @@ import (
 // hostSize measures the machine. Every failure is a zero rather than an error: this only feeds a
 // default, and a default nobody can compute is the minimum, not a reason to fail a page load.
 func hostSize(dataDir string) hostResources {
-	host := hostResources{cores: runtime.NumCPU()}
+	host := hostResources{cores: usableCores()}
 	host.memoryMB = hostMemoryMB()
 
 	dir := dataDir

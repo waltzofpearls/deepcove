@@ -5,6 +5,7 @@ package applevf
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"github.com/Code-Hex/vz/v3"
@@ -20,6 +21,8 @@ type machine struct {
 	consoleLog   *consoleBuffer
 	console      io.ReadWriteCloser
 	closers      []io.Closer
+	dial         dialBreaker
+	logger       *slog.Logger
 }
 
 // bootVM builds a Virtualization.framework VM from spec and starts it. The guest console is exposed on
@@ -187,6 +190,9 @@ func (c *consoleStream) Close() error {
 	}
 	return err
 }
+
+// setLogger gives the machine the driver's logger, which is how a stuck guest gets reported.
+func (m *machine) setLogger(logger *slog.Logger) { m.logger = logger }
 
 // Console returns the guest console stream.
 func (m *machine) Console() io.ReadWriteCloser { return m.console }
