@@ -1,0 +1,31 @@
+{
+  "guest_kernel": {
+    "version": "6.18.35-202",
+    "assets": {
+      "amd64": "guest-kernel_6.18.35-202_amd64.tar.gz",
+      "arm64": "guest-kernel_6.18.35-202_arm64.tar.gz"
+    },
+    "kata_release": "4.1.0"
+  },
+  "cloud_hypervisor": {
+    "version": "v53.0",
+    "assets": {
+      "amd64": "cloud-hypervisor_v53.0_linux-amd64.tar.gz",
+      "arm64": "cloud-hypervisor_v53.0_linux-arm64.tar.gz"
+    }
+  },
+  "virtiofsd": {
+    "version": "v1.14.0",
+    "assets": {
+      "amd64": "virtiofsd_v1.14.0_linux-amd64.tar.gz",
+      "arm64": "virtiofsd_v1.14.0_linux-arm64.tar.gz"
+    }
+  },
+  "passt": {
+    "version": "7e8d49b",
+    "assets": {
+      "amd64": "passt_7e8d49b_linux-amd64.tar.gz",
+      "arm64": "passt_7e8d49b_linux-arm64.tar.gz"
+    }
+  }
+}

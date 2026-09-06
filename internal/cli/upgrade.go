@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/waltzofpearls/deepcove/internal/ghrelease"
 	"github.com/waltzofpearls/deepcove/internal/upgrade"
 )
 
@@ -34,7 +35,7 @@ func cmdUpgrade(ctx context.Context, args []string) error {
 		return err
 	}
 
-	client := upgrade.New()
+	client := ghrelease.New()
 	release, err := findRelease(ctx, client, *wanted)
 	if err != nil {
 		return err
@@ -77,7 +78,7 @@ func cmdUpgrade(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = os.Remove(archive) }()
 
-	binary, err := upgrade.ExtractBinary(archive, upgrade.BinaryName(runtime.GOOS), dir)
+	binary, err := ghrelease.ExtractBinary(archive, upgrade.BinaryName(runtime.GOOS), dir)
 	if err != nil {
 		return err
 	}
@@ -91,7 +92,7 @@ func cmdUpgrade(ctx context.Context, args []string) error {
 	return nil
 }
 
-func findRelease(ctx context.Context, client *upgrade.Client, tag string) (upgrade.Release, error) {
+func findRelease(ctx context.Context, client *ghrelease.Client, tag string) (ghrelease.Release, error) {
 	if tag == "" {
 		return client.Latest(ctx)
 	}
