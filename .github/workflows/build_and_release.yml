@@ -114,6 +114,11 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
+      # make regenerates versions.json when it looks older than its source, and a fresh checkout stamps
+      # every file with the same time, so this job can end up running go generate.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
       - uses: docker/setup-buildx-action@v4
       - name: Take what an earlier release already carries
         id: earlier
