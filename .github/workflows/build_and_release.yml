@@ -39,6 +39,11 @@ jobs:
     name: build (${{ matrix.os }}-${{ matrix.arch }})
     needs: ui
     runs-on: ${{ matrix.runner }}
+    # The tag being released names the archives and goes into the binary, so `deepcove upgrade` asks a
+    # release for a file it has. git describe would answer with whatever tag it likes when a commit
+    # carries more than one.
+    env:
+      VERSION: ${{ github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
