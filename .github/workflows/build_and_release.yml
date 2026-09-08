@@ -95,9 +95,59 @@ jobs:
           path: dist/release/*
           retention-days: 1
 
+  # The VM artifacts are part of the release, so a downloaded deepcove finds everything it needs on its
+  # own tag. Each file is named for its version, so the same name is always the same file: when an
+  # earlier release already carries one, it is copied forward instead of built again.
+  #
+  # One job per architecture, on a runner of that architecture, because virtiofsd and passt are compiled
+  # and nothing cross compiles. The versions come from internal/vmruntime/versions.json.
+  vm-artifacts:
+    name: vm artifacts (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Take what an earlier release already carries
+        id: earlier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          tags=$(gh release list --limit 30 --json tagName --jq '.[].tagName')
+          missing=""
+          for artifact in guest-kernel cloud-hypervisor virtiofsd passt; do
+            asset=$(jq -er --arg arch "${{ matrix.arch }}" \
+              ".[\"${artifact//-/_}\"].assets[\$arch]" internal/vmruntime/versions.json)
+            for tag in $tags; do
+              if gh release download "$tag" --pattern "$asset" --dir dist/release 2>/dev/null; then
+                echo "$asset came from $tag"
+                break
+              fi
+            done
+            if [ ! -f "dist/release/$asset" ]; then missing="$missing $artifact"; fi
+          done
+          echo "missing=${missing# }" >> "$GITHUB_OUTPUT"
+      - name: Build what is missing
+        if: steps.earlier.outputs.missing != ''
+        run: make vm-artifacts VM_ARCH=${{ matrix.arch }} VM_ARTIFACTS="${{ steps.earlier.outputs.missing }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deepcove-vm-${{ matrix.arch }}
+          path: dist/release/*
+          retention-days: 1
+
   publish:
     name: publish
-    needs: build
+    needs: [build, vm-artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: write

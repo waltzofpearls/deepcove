@@ -36,10 +36,17 @@ ui/build/index.html:
 	@mkdir -p ui/build
 	@echo '<h1>deepcove is running</h1><p>SvelteKit not yet built. Run: make ui-build</p>' > ui/build/index.html
 
+# The versions live in Go and the release build reads them as JSON, so the file is regenerated whenever it
+# is older than its source. Nobody has to remember `go generate`.
+VERSIONS_JSON := internal/vmruntime/versions.json
+
+$(VERSIONS_JSON): internal/vmruntime/versions.go internal/vmruntime/gen/main.go
+	go generate ./internal/vmruntime
+
 .PHONY: build
 # guest-init first, so the embedded init always matches this binary. That closes the trap where a
 # rebuilt init was never picked up and sessions silently booted stale code.
-build: guest-init ui-build ## Build the deepcove binary for the host (builds the guest init + UI first)
+build: guest-init ui-build $(VERSIONS_JSON) ## Build the deepcove binary for the host (builds the guest init + UI first)
 	CGO_ENABLED=1 go build -ldflags '$(LDFLAGS_NATIVE)' -o deepcove ./cmd/deepcove
 	@$(MAKE) --no-print-directory sign-darwin BIN=deepcove
 
@@ -214,9 +221,9 @@ package-all: ## Archive every platform already built in dist/
 	done
 
 .PHONY: checksums
-checksums: ## Write SHA256SUMS over the archives in $(RELEASE_DIR)
-	@cd $(RELEASE_DIR) && rm -f SHA256SUMS && \
-		if command -v sha256sum >/dev/null; then sha256sum deepcove_*; else shasum -a 256 deepcove_*; fi > SHA256SUMS
+checksums: ## Write SHA256SUMS over everything in $(RELEASE_DIR)
+	@cd $(RELEASE_DIR) && rm -f SHA256SUMS && files=$$(ls) && \
+		if command -v sha256sum >/dev/null; then sha256sum $$files; else shasum -a 256 $$files; fi > SHA256SUMS
 	@cat $(RELEASE_DIR)/SHA256SUMS
 
 .PHONY: build-all
@@ -246,7 +253,7 @@ image-claude: ## Build the deepcove-claude session image locally (tagged for the
 test: test-go test-js ## Run all unit tests (Go + JS)
 
 .PHONY: test-go
-test-go: ui/build/index.html $(GUEST_INIT_EMBED) ## Run Go unit tests (CGO; uses a UI stub for the //go:embed)
+test-go: ui/build/index.html $(GUEST_INIT_EMBED) $(VERSIONS_JSON) ## Run Go unit tests (CGO; uses a UI stub for the //go:embed)
 	CGO_ENABLED=1 go test ./... -v -cover -count=1
 
 .PHONY: test-js
@@ -257,7 +264,7 @@ test-js: ## Run frontend (vitest) unit tests
 lint: lint-go lint-js ## Run all linters (Go + JS)
 
 .PHONY: lint-go
-lint-go: ui/build/index.html $(GUEST_INIT_EMBED) ## Run Go linters (go vet + golangci-lint; UI stub for the //go:embed)
+lint-go: ui/build/index.html $(GUEST_INIT_EMBED) $(VERSIONS_JSON) ## Run Go linters (go vet + golangci-lint; UI stub for the //go:embed)
 	CGO_ENABLED=1 go vet ./...
 	CGO_ENABLED=1 golangci-lint run ./...
 
@@ -281,6 +288,35 @@ guest-init: ## Build the Linux guest init binary into the package that embeds it
 	@mkdir -p $(dir $(GUEST_INIT_EMBED))
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GUEST_ARCH) \
 		go build -ldflags '-s -w' -o $(GUEST_INIT_EMBED) ./cmd/deepcove-guest-init
+
+# DATA_DIR is where a node keeps what it downloaded, matching what the binary picks when DATA_DIR is
+# unset: os.UserConfigDir, which is Application Support on macOS and XDG_CONFIG_HOME or ~/.config
+# everywhere else. Export your own to clean a node that runs with one.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+DATA_DIR ?= $(HOME)/Library/Application Support/deepcove
+else
+XDG_CONFIG_HOME ?= $(HOME)/.config
+DATA_DIR ?= $(XDG_CONFIG_HOME)/deepcove
+endif
+
+# The release narrows VM_ARTIFACTS to what an earlier release does not already carry, and each artifact
+# is its own image stage, so this asks for one at a time. INSTALL is off so a build never changes what
+# a running node boots; 1, true and yes all turn it on.
+VM_ARCH ?= $(shell go env GOARCH)
+VM_ARTIFACTS ?= guest-kernel cloud-hypervisor virtiofsd passt
+INSTALL ?= 0
+
+.PHONY: vm-artifacts
+vm-artifacts: $(VERSIONS_JSON) ## Build the VM artifact release files into $(RELEASE_DIR) (INSTALL=1 installs them too)
+	@mkdir -p $(RELEASE_DIR)
+	@for artifact in $(VM_ARTIFACTS); do \
+		docker buildx build -f build/vm-artifacts.Dockerfile --target $$artifact \
+			--platform linux/$(VM_ARCH) --output type=local,dest=$(RELEASE_DIR) . || exit 1; \
+	done
+ifneq ($(filter $(INSTALL),1 true yes),)
+	@build/install-vm-artifacts.sh "$(DATA_DIR)" $(VM_ARCH) $(VM_ARTIFACTS)
+endif
 
 .PHONY: aperture-relay
 aperture-relay: ## Build the Aperture relay for linux amd64 + arm64 into dist/relay/
@@ -323,3 +359,8 @@ applevf-smoke: ## Build + codesign the VF boot smoke harness (needs an Apple sig
 clean: ## Remove built binaries
 	rm -f deepcove
 	rm -rf dist
+
+.PHONY: clean-vm-artifacts
+clean-vm-artifacts: ## Remove the VM artifacts this node downloaded, so the next setup fetches them again
+	rm -rf "$(DATA_DIR)/vm-kernel" "$(DATA_DIR)/vm-guest"
+	@echo "removed the VM artifacts under $(DATA_DIR)"
