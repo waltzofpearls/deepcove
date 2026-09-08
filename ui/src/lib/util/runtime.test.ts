@@ -8,6 +8,8 @@ import {
   runtimeHint,
   runtimeLabel,
   runtimeShortLabel,
+  runtimeSummary,
+  runtimeNeedsSetup,
 } from './runtime';
 
 describe('runtimeLabel', () => {
@@ -104,6 +106,11 @@ describe('runtimeMissingReason', () => {
       want: 'The Linux kernel it boots sessions with is not downloaded yet.',
     },
     { name: 'no guest init', code: 'no_guest_init', want: 'Part of its setup is missing.' },
+    {
+      name: 'no host binaries',
+      code: 'no_host_binaries',
+      want: 'The programs it runs virtual machines with are not downloaded yet.',
+    },
     // A newer node can report a reason this build has never seen; it must still say something true.
     {
       name: 'an unknown code still explains itself',
@@ -117,4 +124,49 @@ describe('runtimeMissingReason', () => {
       expect(runtimeMissingReason(tc.code)).toBe(tc.want);
     });
   }
+});
+
+describe('runtimeSummary', () => {
+  const cases: { name: string; info: RuntimesInfo | null; want: string }[] = [
+    { name: 'a machine nobody has asked yet says nothing', info: null, want: '' },
+    {
+      name: 'what it can host',
+      info: { available: ['cloudhv', 'docker'], default: 'cloudhv' },
+      want: 'Virtual machine · Docker',
+    },
+    {
+      name: 'a runtime whose backend is down',
+      info: {
+        available: ['cloudhv', 'docker'],
+        default: 'cloudhv',
+        unavailable: { docker: 'Docker is not running.' },
+      },
+      want: 'Virtual machine · Docker unreachable',
+    },
+    {
+      name: 'a runtime waiting to be installed comes last',
+      info: { available: ['docker'], default: 'docker', missing: { cloudhv: 'no_kernel' } },
+      want: 'Docker · Virtual machine needs setup',
+    },
+  ];
+
+  for (const tc of cases) {
+    it(tc.name, () => {
+      expect(runtimeSummary(tc.info)).toBe(tc.want);
+    });
+  }
+});
+
+describe('runtimeNeedsSetup', () => {
+  it('is true only when something has to be installed', () => {
+    expect(runtimeNeedsSetup(null)).toBe(false);
+    expect(runtimeNeedsSetup({ available: ['docker'], default: 'docker' })).toBe(false);
+    expect(
+      runtimeNeedsSetup({
+        available: ['docker'],
+        default: 'docker',
+        missing: { cloudhv: 'no_kernel' },
+      }),
+    ).toBe(true);
+  });
 });

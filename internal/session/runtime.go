@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -17,11 +18,19 @@ const (
 	// RuntimeAppleVF runs each session in its own Linux VM via Apple Virtualization.framework. macOS
 	// only, and only when the guest kernel and init are present.
 	RuntimeAppleVF = "applevf"
+	// RuntimeCloudHV runs each session in its own Linux VM via Cloud Hypervisor. Linux only, and only
+	// when KVM is usable and the VM artifacts are present.
+	RuntimeCloudHV = "cloudhv"
 )
 
-// runtimeBootsVMs reports whether a runtime gives each machine its own kernel. Firecracker and a future
-// Windows VM runtime join this list; Docker never does.
-func runtimeBootsVMs(name string) bool { return name == RuntimeAppleVF }
+// vmRuntimes are the runtime names that boot a VM, one per hypervisor. A node offers at most one of
+// them, because a host has one hypervisor worth using.
+var vmRuntimes = []string{RuntimeAppleVF, RuntimeCloudHV}
+
+// runtimeBootsVMs reports whether a runtime gives each machine its own kernel. Docker never does.
+func runtimeBootsVMs(name string) bool {
+	return slices.Contains(vmRuntimes, name)
+}
 
 // ErrUnknownRuntime means a session names a runtime this node does not offer. That is a real situation
 // rather than a bug: a session created on a Mac with the VM runtime is unusable on a node without it, and
@@ -40,7 +49,25 @@ func (s *Service) RegisterRuntime(name string, sb sandbox.Sandbox) {
 	if sb == nil {
 		return
 	}
+	s.runtimesMu.Lock()
+	defer s.runtimesMu.Unlock()
 	s.runtimes[name] = sb
+}
+
+// lookupRuntime resolves one driver by name.
+func (s *Service) lookupRuntime(name string) (sandbox.Sandbox, bool) {
+	s.runtimesMu.RLock()
+	defer s.runtimesMu.RUnlock()
+	sb, ok := s.runtimes[name]
+	return sb, ok
+}
+
+// registeredRuntimes copies the drivers, so a caller can walk them without holding the lock through
+// whatever it does with each one.
+func (s *Service) registeredRuntimes() map[string]sandbox.Sandbox {
+	s.runtimesMu.RLock()
+	defer s.runtimesMu.RUnlock()
+	return maps.Clone(s.runtimes)
 }
 
 // SelectDefaultRuntime decides which runtime a create request gets when it names none.
@@ -51,10 +78,10 @@ func (s *Service) RegisterRuntime(name string, sb sandbox.Sandbox) {
 // this node provides, and is reported as an error rather than silently ignored.
 func (s *Service) SelectDefaultRuntime(ctx context.Context, preferred string) error {
 	if preferred != "" {
-		if _, ok := s.runtimes[preferred]; !ok {
+		if _, ok := s.lookupRuntime(preferred); !ok {
 			return ErrUnknownRuntime{Runtime: preferred}
 		}
-		s.defaultRuntime = preferred
+		s.setDefaultRuntime(preferred)
 		return nil
 	}
 	available := s.Runtimes()
@@ -116,13 +143,14 @@ func (s *Service) pickVMRuntime(requested string) (string, error) {
 // runtimeOrder is the order runtimes are offered in, strongest isolation first. Map iteration is random,
 // so without this the picker reshuffles between restarts and there is no stable "first" option to land
 // on. A runtime not named here sorts last, alphabetically, rather than disappearing.
-var runtimeOrder = []string{RuntimeAppleVF, RuntimeDocker}
+var runtimeOrder = []string{RuntimeAppleVF, RuntimeCloudHV, RuntimeDocker}
 
 // Runtimes lists the runtimes this node provides, so the UI can offer them and the create path can
 // validate a requested one. The order is deliberate and stable; see runtimeOrder.
 func (s *Service) Runtimes() []string {
-	out := make([]string, 0, len(s.runtimes))
-	for name := range s.runtimes {
+	registered := s.registeredRuntimes()
+	out := make([]string, 0, len(registered))
+	for name := range registered {
 		out = append(out, name)
 	}
 	slices.SortFunc(out, func(a, b string) int {
@@ -142,16 +170,26 @@ func (s *Service) Runtimes() []string {
 }
 
 // DefaultRuntime is what a create request gets when it does not ask for one.
-func (s *Service) DefaultRuntime() string { return s.defaultRuntime }
+func (s *Service) DefaultRuntime() string {
+	s.runtimesMu.RLock()
+	defer s.runtimesMu.RUnlock()
+	return s.defaultRuntime
+}
+
+func (s *Service) setDefaultRuntime(name string) {
+	s.runtimesMu.Lock()
+	defer s.runtimesMu.Unlock()
+	s.defaultRuntime = name
+}
 
 // runtimeByName resolves a runtime by name, falling back to the default when name is empty. An empty name
 // covers both a create request that did not choose one and a session row written before the runtime
 // column existed.
 func (s *Service) runtimeByName(name string) (sandbox.Sandbox, error) {
 	if name == "" {
-		name = s.defaultRuntime
+		name = s.DefaultRuntime()
 	}
-	sb, ok := s.runtimes[name]
+	sb, ok := s.lookupRuntime(name)
 	if !ok {
 		return nil, ErrUnknownRuntime{Runtime: name}
 	}
@@ -181,9 +219,9 @@ func (e ErrRuntimeUnavailable) Error() string { return e.Reason }
 // create wait on backends it is not going to use.
 func (s *Service) runtimeUnavailable(ctx context.Context, name string) string {
 	if name == "" {
-		name = s.defaultRuntime
+		name = s.DefaultRuntime()
 	}
-	driver, ok := s.runtimes[name]
+	driver, ok := s.lookupRuntime(name)
 	if !ok {
 		return "" // an unknown runtime is reported by runtimeByName, not here
 	}

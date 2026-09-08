@@ -42,8 +42,8 @@ type Session struct {
 	Env         map[string]string `json:"env"`
 	Mounts      []MountRequest    `json:"mounts"`
 	SetupScript string            `json:"setup_script"`
-	// Runtime is the sandbox runtime hosting this session ("docker", "applevf"). Persisted because a
-	// node can offer several, so stop, destroy, and exec must route back to the driver that created it.
+	// Runtime is the sandbox runtime hosting this session ("docker", "applevf", "cloudhv"). Persisted
+	// because a node can offer several, so stop, destroy and exec route back to the driver that made it.
 	Runtime string `json:"runtime"`
 	// Resources caps this session's CPU, memory, and disk. Zero fields mean the runtime's defaults.
 	Resources Resources `json:"resources"`

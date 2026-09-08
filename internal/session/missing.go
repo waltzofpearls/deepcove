@@ -22,6 +22,8 @@ const (
 	MissingKernel = "no_kernel"
 	// MissingGuestInit: no guest init binary, the PID 1 every session VM boots.
 	MissingGuestInit = "no_guest_init"
+	// MissingHostBinaries: the host programs that run a VM are not downloaded yet.
+	MissingHostBinaries = "no_host_binaries"
 )
 
 // RuntimeInstaller sets up a runtime this node is missing, reporting progress as it goes. On success the

@@ -3,33 +3,34 @@
 package applevf
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"time"
 
 	"github.com/Code-Hex/vz/v3"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 )
 
 // machine is a running session VM plus the host side ends of its virtio console and the resources that
 // must outlive the VM (the console pipes). Stop tears the VM down and releases them.
 type machine struct {
-	vm           *vz.VirtualMachine
-	credListener *vz.VirtioSocketListener
-	cfgListener  *vz.VirtioSocketListener
-	llmListener  *vz.VirtioSocketListener
-	consoleLog   *consoleBuffer
-	console      io.ReadWriteCloser
-	closers      []io.Closer
-	dial         dialBreaker
-	logger       *slog.Logger
+	vm      *vz.VirtualMachine
+	console io.ReadWriteCloser
+	closers []io.Closer
+	dialer  *dialer
 }
 
 // bootVM builds a Virtualization.framework VM from spec and starts it. The guest console is exposed on
 // the returned machine so callers can read boot output and (later) drive the agent. Running a VM needs
 // the com.apple.security.virtualization entitlement and a codesigned binary; building does not.
-func bootVM(spec vmSpec) (*machine, error) {
-	if err := spec.validate(); err != nil {
+func bootVM(spec vm.Spec, logger *slog.Logger) (*machine, error) {
+	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -103,13 +104,15 @@ func bootVM(spec vmSpec) (*machine, error) {
 		return nil, fmt.Errorf("start vm: %w", err)
 	}
 
-	return &machine{vm: vm, console: console, closers: consoleCloser}, nil
+	m := &machine{vm: vm, console: console, closers: consoleCloser}
+	m.dialer = newDialer(m.connectToPort, logger)
+	return m, nil
 }
 
 // storageDevices attaches the read only base as /dev/vda and, when present, the writable scratch disk as
 // /dev/vdb. Device order is the attach order, which the kernel command line's root=/dev/vda relies on.
 // An initrd only boot (no base image) has no block devices at all.
-func storageDevices(spec vmSpec) ([]vz.StorageDeviceConfiguration, error) {
+func storageDevices(spec vm.Spec) ([]vz.StorageDeviceConfiguration, error) {
 	if spec.BaseImage == "" {
 		return nil, nil
 	}
@@ -191,32 +194,37 @@ func (c *consoleStream) Close() error {
 	return err
 }
 
-// setLogger gives the machine the driver's logger, which is how a stuck guest gets reported.
-func (m *machine) setLogger(logger *slog.Logger) { m.logger = logger }
-
 // Console returns the guest console stream.
-func (m *machine) Console() io.ReadWriteCloser { return m.console }
+func (m *machine) Console() io.ReadWriteCloser {
+	return m.console
+}
+
+// Running reports whether the guest is still up.
+func (m *machine) Running() bool {
+	return m.vm.State() == vz.VirtualMachineStateRunning
+}
+
+// stopWait bounds the wait for the guest to actually halt. RequestStop only asks, and a VM here runs as
+// threads of this process, so returning while it is still up lets the caller exit on top of live VM
+// threads. That is what makes a deepcove no signal can reap.
+const stopWait = 2 * time.Second
 
 // Stop halts the guest and releases the host side resources.
 //
-// It asks the guest to power itself off over the control channel first, which also gives it a chance to
-// hand back refreshed credentials. Virtualization.framework's own RequestStop is only a fallback: the
-// Kata guest kernel has no gpio-keys driver, so the guest never sees that request.
+// The polite shutdown over the control channel has already been asked for by the caller. This is the
+// fallback, and Virtualization.framework's own stop request is all it can do: the Kata guest kernel has
+// no gpio-keys driver, so a guest that ignored the control channel will ignore this too.
+//
+// The console pipes are closed last, after the guest has gone: closing them under a guest that is still
+// writing turns its console into an error.
 func (m *machine) Stop() error {
-	err := m.Shutdown()
-	if err != nil && m.vm.CanRequestStop() {
-		if _, rerr := m.vm.RequestStop(); rerr == nil {
-			err = nil
-		}
+	var err error
+	if m.vm.CanRequestStop() {
+		_, err = m.vm.RequestStop()
 	}
-	if m.credListener != nil {
-		_ = m.credListener.Close()
-	}
-	if m.cfgListener != nil {
-		_ = m.cfgListener.Close()
-	}
-	if m.llmListener != nil {
-		_ = m.llmListener.Close()
+	// Waited for even when the request failed, since the VM may already be on its way down.
+	if waitErr := m.WaitStopped(stopWait); waitErr != nil && err == nil {
+		err = waitErr
 	}
 	for _, c := range m.closers {
 		_ = c.Close()
@@ -224,9 +232,67 @@ func (m *machine) Stop() error {
 	return err
 }
 
+// WaitStopped waits for the VM to reach a stopped state after a shutdown request.
+func (m *machine) WaitStopped(timeout time.Duration) error {
+	deadline := time.After(timeout)
+	states := m.vm.StateChangedNotify()
+	for {
+		if state := m.vm.State(); state == vz.VirtualMachineStateStopped || state == vz.VirtualMachineStateError {
+			return nil
+		}
+		select {
+		case <-states:
+		case <-deadline:
+			return fmt.Errorf("applevf: the guest did not halt within %s", timeout)
+		}
+	}
+}
+
+// Dial connects to a guest vsock port.
+func (m *machine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
+	return m.dialer.Dial(ctx, port)
+}
+
+// PendingDials is how many dials to this guest have not returned.
+func (m *machine) PendingDials() int {
+	return m.dialer.Pending()
+}
+
+// connectToPort is the one Virtualization.framework call the dial path makes.
+func (m *machine) connectToPort(port uint32) (net.Conn, error) {
+	device, err := m.socketDevice()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := device.Connect(port)
+	if err != nil {
+		return nil, err // a nil interface, not a typed nil connection
+	}
+	return conn, nil
+}
+
+// Listen accepts connections the guest opens to the host.
+func (m *machine) Listen(port uint32) (net.Listener, error) {
+	device, err := m.socketDevice()
+	if err != nil {
+		return nil, err
+	}
+	return device.Listen(port)
+}
+
+// socketDevice returns the VM's single virtio socket device, which the boot configuration always
+// attaches.
+func (m *machine) socketDevice() (*vz.VirtioSocketDevice, error) {
+	devices := m.vm.SocketDevices()
+	if len(devices) == 0 {
+		return nil, fmt.Errorf("applevf: the VM has no vsock device: %w", sandbox.ErrNotSupported)
+	}
+	return devices[0], nil
+}
+
 // sharedDirectories builds one virtio-fs device per share. Each gets its own device rather than a single
 // multi-directory share, so a mount that fails to attach cannot take the others with it.
-func sharedDirectories(spec vmSpec) ([]vz.DirectorySharingDeviceConfiguration, error) {
+func sharedDirectories(spec vm.Spec) ([]vz.DirectorySharingDeviceConfiguration, error) {
 	out := make([]vz.DirectorySharingDeviceConfiguration, 0, len(spec.Shares))
 	for _, s := range spec.Shares {
 		dir, err := vz.NewSharedDirectory(s.HostPath, s.ReadOnly)

@@ -9,7 +9,7 @@ export interface Session {
   id: string;
   name: string;
   agent: string;
-  // Which sandbox runtime hosts this session ("docker", "applevf").
+  // Which sandbox runtime hosts this session ("docker", "applevf", "cloudhv").
   runtime: string;
   image: string;
   owner_email: string;
@@ -74,7 +74,8 @@ export interface CreateSessionRequest {
   // Which node hosts the session (a node's stable_node_id). Empty/this node = create here; another
   // node's id proxies the create there. Only meaningful with multiple nodes.
   node_id?: string;
-  // Which sandbox runtime hosts the session ("docker", "applevf"). Empty uses the node's default.
+  // Which sandbox runtime hosts the session ("docker", "applevf", "cloudhv"). Empty uses the node's
+  // default.
   runtime?: string;
   // Omitted, or with any field zero, leaves that cap to the runtime.
   resources?: SessionResources;

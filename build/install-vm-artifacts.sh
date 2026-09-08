@@ -30,7 +30,7 @@ for artifact in "$@"; do
 		guest-kernel)
 			version=$(jq -er '.guest_kernel.version' "$versions")
 			asset=$(jq -er --arg arch "$arch" '.guest_kernel.assets[$arch]' "$versions")
-			dest="$data_dir/vm-kernel/$version"
+			dest="$data_dir/vm-artifacts/guest-kernel/$version"
 			mkdir -p "$dest"
 			tar -xzf "$out_dir/$asset" -C "$dest"
 			echo "installed $dest/vmlinux"

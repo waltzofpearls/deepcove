@@ -1,7 +1,7 @@
 <script lang="ts">
   import Cpu from '@lucide/svelte/icons/cpu';
   import Container from '@lucide/svelte/icons/container';
-  import { RUNTIME_APPLEVF, runtimeLabel, runtimeShortLabel } from '$lib/util/runtime';
+  import { bootsVMs, runtimeLabel, runtimeShortLabel } from '$lib/util/runtime';
   import {
     Tooltip,
     TooltipContent,
@@ -15,7 +15,7 @@
   let { runtime, shared = false }: { runtime: string; shared?: boolean } = $props();
 
   // A VM gets the distinct icon because it is the choice worth noticing.
-  const isVM = $derived(runtime === RUNTIME_APPLEVF);
+  const isVM = $derived(bootsVMs(runtime));
   // Same words as the runtimes page: a VM belongs to the workspace or to one session, never just "VM".
   const label = $derived(
     isVM ? (shared ? 'Workspace VM' : 'Session VM') : runtimeShortLabel(runtime),

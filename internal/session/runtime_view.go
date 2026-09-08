@@ -141,12 +141,12 @@ func (s *Service) runtimeView(
 ) RuntimeView {
 	view := RuntimeView{
 		Name:      name,
-		Default:   name == s.defaultRuntime,
+		Default:   name == s.DefaultRuntime(),
 		Reachable: true,
 		Sandboxes: []SandboxView{},
 		Orphaned:  []OrphanedSession{},
 	}
-	driver := s.runtimes[name]
+	driver, _ := s.lookupRuntime(name)
 
 	if pinger, ok := driver.(sandbox.Pinger); ok {
 		pingCtx, cancel := context.WithTimeout(ctx, runtimeViewPingTimeout)

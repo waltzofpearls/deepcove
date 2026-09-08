@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -197,7 +196,7 @@ func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (
 	if s.workspaceVM == nil {
 		return nil, ErrNoWorkspaceVM
 	}
-	if err := s.validateHostRoot(req.HostRoot); err != nil {
+	if err := s.ensureHostRoot(req.HostRoot); err != nil {
 		return nil, err
 	}
 	guestRoot, err := validateGuestRoot(req.GuestRoot)
@@ -405,29 +404,16 @@ func workspaceVMSpec(vm *WorkspaceVM, agent AgentInfo) sandbox.SandboxSpec {
 	})
 }
 
-// validateHostRoot rejects a workspace root deepcove may not share, or that is not a folder.
-//
-// The allowed roots are checked before the filesystem, so a path outside them is refused without our
-// looking at it: this endpoint cannot be used to find out what exists on the machine.
-func (s *Service) validateHostRoot(root string) error {
+// ensureHostRoot rejects a workspace root deepcove may not share, and creates one that is not there.
+func (s *Service) ensureHostRoot(root string) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("%w: pick a folder for the workspace VM", ErrInvalidInput)
 	}
 	if !filepath.IsAbs(root) {
 		return fmt.Errorf("%w: %s is not an absolute path", ErrInvalidInput, root)
 	}
-	// No roots configured means this node did not tell us; the driver still refuses at create time.
-	if len(s.allowedMountRoots) > 0 {
-		if err := sandbox.MountSourceAllowed(filepath.Clean(root), s.allowedMountRoots); err != nil {
-			return fmt.Errorf("%w: %s", ErrInvalidInput, err)
-		}
-	}
-	info, err := os.Stat(root)
-	if err != nil {
-		return fmt.Errorf("%w: cannot use %s: %s", ErrInvalidInput, root, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%w: %s is not a folder", ErrInvalidInput, root)
+	if err := s.ensureSharedFolder(filepath.Clean(root)); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidInput, err)
 	}
 	return nil
 }

@@ -1,17 +1,22 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/waltzofpearls/deepcove/internal/config"
 	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 	dockerdrv "github.com/waltzofpearls/deepcove/internal/sandbox/docker"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 	"github.com/waltzofpearls/deepcove/internal/session"
+	"github.com/waltzofpearls/deepcove/internal/vmassets"
 )
 
 // runtimeEntry is one runtime this node can host sessions on, ready to be registered.
@@ -42,13 +47,30 @@ func (rs *runtimeSet) add(e runtimeEntry) {
 }
 
 func (rs *runtimeSet) close() {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	for _, e := range rs.entries {
+	for _, e := range rs.snapshot() {
 		if e.cleanup != nil {
 			e.cleanup()
 		}
 	}
+}
+
+// forceClose abandons the sandboxes of every runtime that can, for a shutdown that already wedged.
+func (rs *runtimeSet) forceClose() error {
+	var err error
+	for _, e := range rs.snapshot() {
+		if closer, ok := e.driver.(sandbox.ForceCloser); ok {
+			err = errors.Join(err, closer.ForceClose())
+		}
+	}
+	return err
+}
+
+// snapshot copies the entries: holding the lock through a teardown would block forceClose behind the
+// very hang it exists to break.
+func (rs *runtimeSet) snapshot() []runtimeEntry {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return slices.Clone(rs.entries)
 }
 
 // registerRuntimes gives the service every runtime this machine can host, and returns the set so the
@@ -70,12 +92,20 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 	// The VM runtime is platform specific and depends on artifacts being present, so it declines rather
 	// than failing the node. When it declines on a machine that could host VMs it still names itself, so
 	// the gap is something the user can see and fix instead of a runtime that appears not to exist.
-	vm := newVMRuntime(svc, cfg, roots, store, logger, tailnetClient)
+	deps := runtimeDeps{
+		svc:           svc,
+		cfg:           cfg,
+		allowedRoots:  roots,
+		creds:         store,
+		logger:        logger,
+		tailnetClient: tailnetClient,
+	}
+	vmRuntime := newVMRuntime(deps)
 	switch {
-	case vm.driver != nil:
-		entries = append(entries, vm)
-	case vm.name != "":
-		svc.MarkRuntimeMissing(vm.name, vm.missing)
+	case vmRuntime.driver != nil:
+		entries = append(entries, vmRuntime)
+	case vmRuntime.name != "":
+		svc.MarkRuntimeMissing(vmRuntime.name, vmRuntime.missing)
 	}
 
 	set := &runtimeSet{}
@@ -85,8 +115,81 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 	}
 	// How to close the gap, if this machine could host VMs but is missing a piece. Registered even when
 	// the runtime is already available, since it costs nothing and keeps the wiring in one place.
-	registerVMInstaller(svc, cfg, roots, store, logger, set, tailnetClient)
+	registerVMInstaller(deps, set)
 	return set, nil
+}
+
+// runtimeDeps are what a runtime constructor is handed: the service it joins, this node's settings, and
+// the pieces a sandbox needs from the host. One value rather than six arguments, because every platform
+// takes exactly the same ones.
+type runtimeDeps struct {
+	svc           *session.Service
+	cfg           *config.Config
+	allowedRoots  []string
+	creds         credbroker.Store
+	logger        *slog.Logger
+	tailnetClient func() *http.Client
+}
+
+// vmDriver builds the driver every VM runtime uses. Only the hypervisor differs between platforms;
+// everything above it is this.
+func (deps runtimeDeps) vmDriver(backend vm.Backend, kernel, guestInit vmAsset) (*vm.Driver, error) {
+	return vm.NewDriver(backend, kernel.path, guestInit.path, deps.cfg.DataDir,
+		vm.WithCredentialStore(deps.creds),
+		vm.WithLogger(deps.logger),
+		vm.WithAllowedMountRoots(deps.allowedRoots...),
+		vm.WithNetworkAllow(deps.cfg.AllowSandboxHosts...),
+		vm.WithTailnetClient(deps.tailnetClient),
+		vm.WithLLMProxyURL(deps.svc.LLMProxyURL))
+}
+
+// vmRuntimeEntry is a built VM runtime, ready to register.
+func vmRuntimeEntry(name string, driver *vm.Driver) runtimeEntry {
+	return runtimeEntry{
+		name:    name,
+		driver:  driver,
+		cleanup: func() { _ = driver.Close() },
+	}
+}
+
+// downloadVMAssets fetches whatever this node is still missing, naming each file as it goes.
+func downloadVMAssets(ctx context.Context, cfg *config.Config, wanted []vmassets.Artifact,
+	report func(sandbox.PullProgress)) error {
+	assets := vmassets.New(artifactDir(cfg), Version)
+	for _, artifact := range assets.Missing(wanted) {
+		if _, err := assets.Fetch(ctx, artifact, func(complete, total int64) {
+			report(sandbox.PullProgress{
+				Status: "Downloading " + artifact.Name, Current: complete, Total: total,
+			})
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// registerInstalledRuntime puts a just installed runtime to work, without a restart.
+func registerInstalledRuntime(
+	ctx context.Context,
+	svc *session.Service,
+	cfg *config.Config,
+	logger *slog.Logger,
+	set *runtimeSet,
+	entry runtimeEntry,
+) error {
+	if entry.driver == nil {
+		return fmt.Errorf("the runtime still needs setup after downloading: %s", entry.missing)
+	}
+	svc.RegisterRuntime(entry.name, entry.driver)
+	set.add(entry)
+	svc.MarkRuntimeReady(entry.name)
+	// The node picked its default before this runtime existed. Pick again, or it keeps using Docker
+	// until the next restart.
+	if err := svc.SelectDefaultRuntime(ctx, cfg.DefaultRuntime); err != nil {
+		logger.Warn("keeping the current default runtime after setup",
+			"requested", cfg.DefaultRuntime, "err", err)
+	}
+	return nil
 }
 
 // allowedMountRoots are the host directories a session may mount from, applied to every runtime.

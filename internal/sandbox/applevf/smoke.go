@@ -1,20 +1,18 @@
 package applevf
 
 import (
-	"archive/tar"
 	"context"
-	"fmt"
 	"io"
 
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 )
 
 // SmokeSpec is the exported input for the applevf-smoke boot harness (cmd/applevf-smoke). It mirrors the
-// internal vmSpec but is a stable surface for the dev command; production session boots go through the
+// internal vm.Spec but is a stable surface for the dev command; production session boots go through the
 // driver, not this.
 type SmokeSpec struct {
 	KernelPath   string
@@ -50,9 +48,9 @@ type SmokeMachine interface {
 func BootSmoke(s SmokeSpec) (SmokeMachine, error) {
 	cmdline := s.Cmdline
 	if cmdline == "" {
-		cmdline = defaultCmdline().String()
+		cmdline = vm.DefaultCmdline().String()
 	}
-	m, err := bootVM(vmSpec{
+	booted, err := Backend{}.Boot(vm.Spec{
 		KernelPath:   s.KernelPath,
 		InitrdPath:   s.InitrdPath,
 		Cmdline:      cmdline,
@@ -64,8 +62,9 @@ func BootSmoke(s SmokeSpec) (SmokeMachine, error) {
 	if err != nil {
 		return nil, err // return a nil interface, not a typed nil *machine
 	}
+	m := vm.NewGuest(booted, nil)
 	// The guest asks the host for its entrypoint at boot, so serve one before it gets that far.
-	if err := serveGuestConfig(m, guestcfg.Config{
+	if err := m.ServeConfig(guestcfg.Config{
 		Entrypoint:   s.Entrypoint,
 		Agent:        s.Agent,
 		OverlayBytes: s.OverlayBytes,
@@ -74,25 +73,10 @@ func BootSmoke(s SmokeSpec) (SmokeMachine, error) {
 		return nil, err
 	}
 	if s.CredStore != nil {
-		if err := serveGuestCredentials(m, s.CredStore); err != nil {
+		if err := m.ServeCredentials(s.CredStore); err != nil {
 			_ = m.Stop()
 			return nil, err
 		}
 	}
 	return m, nil
-}
-
-// BuildSmokeImage pulls an OCI reference, flattens it, bakes in the guest init binary and a launch
-// script, and writes a read only ext4 base image to outPath. It is the one command form of the image
-// pipeline for the boot harness; production goes through imageStore with its digest cache.
-func BuildSmokeImage(ctx context.Context, ref, outPath, guestInitPath string) error {
-	img, err := pullRemote(ctx, ref, guestPlatform())
-	if err != nil {
-		return fmt.Errorf("pull %s: %w", ref, err)
-	}
-
-	rc := mutate.Extract(img)
-	defer func() { _ = rc.Close() }()
-	_, err = createRootfs(outPath, tar.NewReader(rc), baseInjection(guestInitPath))
-	return err
 }

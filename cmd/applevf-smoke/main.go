@@ -26,6 +26,7 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/applevf"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 )
 
 func main() {
@@ -62,7 +63,7 @@ func run() error {
 	// --image builds the ext4 base (pull, flatten, inject the guest init) then boots it.
 	if *image != "" {
 		fmt.Fprintf(os.Stderr, "applevf-smoke: building base image from %s -> %s\n", *image, *out)
-		if err := applevf.BuildSmokeImage(context.Background(), *image, *out, *guestInit); err != nil {
+		if err := vm.BuildSmokeImage(context.Background(), *image, *out, *guestInit); err != nil {
 			return fmt.Errorf("build base image: %w", err)
 		}
 		*base = *out

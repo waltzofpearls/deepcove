@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/waltzofpearls/deepcove/internal/db"
@@ -466,4 +467,28 @@ func TestPickVMRuntime(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A runtime is installed from an HTTP request while other requests are reading the same map, which used
+// to be a "concurrent map read and map write" crash. Run with -race.
+func TestRegisterRuntimeWhileReading(t *testing.T) {
+	svc, driver, _, _ := newTestService(t)
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			svc.RegisterRuntime(fmt.Sprintf("runtime-%d", i), driver)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = svc.Runtimes()
+			_ = svc.DefaultRuntime()
+			_, _ = svc.runtimeByName("")
+			_ = svc.runtimeDefaults()
+		}()
+	}
+	wg.Wait()
 }

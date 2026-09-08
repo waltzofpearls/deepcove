@@ -27,6 +27,8 @@ var commands = []command{
 	{"session", "create or attach to a session", cmdSession},
 	{"network", "put this machine on your Tailscale network", cmdNetwork},
 	{"upgrade", "replace this binary with the newest release", cmdUpgrade},
+	{"config", "settings this node keeps", cmdConfig},
+	{"db", "check or repair the local database", cmdDB},
 	{"version", "print version", cmdVersion},
 }
 

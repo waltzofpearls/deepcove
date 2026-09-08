@@ -76,6 +76,15 @@ func cmdStart(ctx context.Context, args []string) error {
 	if err := db.Migrate(sqlDB); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	if open, err := config.EnvFileOpenToOthers(cfg.DataDir); err == nil && open {
+		logger.Warn("other users on this machine can read your stored settings",
+			"path", config.EnvFilePath(cfg.DataDir),
+			"fix", fmt.Sprintf("chmod 600 %s", config.EnvFilePath(cfg.DataDir)))
+	}
+	if err := db.VerifyIndexes(ctx, sqlDB); err != nil {
+		logger.Error("the database is not answering correctly, so sessions may be missing",
+			"err", err, "fix", "stop deepcove and run: deepcove db repair")
+	}
 	logger.Info("database ready", "data_dir", cfg.DataDir)
 
 	// Persistence: domain-owned SessionRepository over the shared DuckDB connection. Each domain package
@@ -240,7 +249,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	// the root cause over any teardown error here.
 	g.Go(func() error {
 		<-gctx.Done()
-		watchShutdown(cfg.DataDir, logger)
+		watchShutdown(cfg.DataDir, logger, runtimes)
 		return drainServers(shutdownGrace, logger, srv, sockSrv)
 	})
 	return g.Wait()
@@ -283,23 +292,43 @@ func drainServers(grace time.Duration, logger *slog.Logger, servers ...*http.Ser
 	return errors.Join(errs...)
 }
 
+// forceCloseGrace bounds the last attempt to put the VMs down.
+const forceCloseGrace = 3 * time.Second
+
 // watchShutdown force-exits if teardown wedges, after writing every goroutine stack to a file. A VM runs
 // as threads inside this process, so one stuck in the kernel can make the process unkillable; the stacks
 // have to be on disk before that.
-func watchShutdown(dataDir string, logger *slog.Logger) {
+//
+// The VMs go down before exiting: exiting on top of VMs the hypervisor still owns leaves a process no
+// signal can reap, holding the database lock until the machine reboots.
+func watchShutdown(dataDir string, logger *slog.Logger, runtimes *runtimeSet) {
 	go func() {
 		time.Sleep(shutdownHardStop)
 		path, err := dumpStacks(dataDir)
 		if err != nil {
 			logger.Error("shutdown is stuck, and the stacks could not be written", "err", err)
-			os.Exit(1)
+		} else {
+			// Printed, not just logged: a stuck node floods the terminal, and this is the one line
+			// worth finding in it.
+			_, _ = fmt.Fprintf(os.Stderr, "\n\n  shutdown is stuck. goroutine stacks written to:\n  %s\n\n", path)
+			logger.Error("shutdown is stuck, forcing exit", "stacks", path)
 		}
-		// Printed, not just logged: a stuck node floods the terminal, and this is the one line worth
-		// finding in it.
-		_, _ = fmt.Fprintf(os.Stderr, "\n\n  shutdown is stuck. goroutine stacks written to:\n  %s\n\n", path)
-		logger.Error("shutdown is stuck, forcing exit", "stacks", path)
+		forceCloseRuntimes(logger, runtimes)
 		os.Exit(1)
 	}()
+}
+
+func forceCloseRuntimes(logger *slog.Logger, runtimes *runtimeSet) {
+	done := make(chan error, 1)
+	go func() { done <- runtimes.forceClose() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			logger.Error("could not put every vm down before exiting", "err", err)
+		}
+	case <-time.After(forceCloseGrace):
+		logger.Error("the hypervisor did not put the vms down either, exiting anyway")
+	}
 }
 
 // dumpStacksMaxBytes caps the dump. A process with a runaway goroutine count is already in trouble, and

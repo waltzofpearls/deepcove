@@ -60,14 +60,20 @@ func (m *systemdManager) Install(extra []string, opts InstallOptions) error {
 	if err := os.WriteFile(m.unitPath, []byte(text), 0o644); err != nil {
 		return err
 	}
-	if err := m.runner.run("systemctl", "--user", "daemon-reload"); err != nil {
-		return err
-	}
 	if opts.Linger {
+		// Before systemctl, not after: lingering starts this user's service manager, and without one
+		// there is no bus for systemctl --user to talk to.
 		m.enableLinger()
+	}
+	if err := m.runner.run("systemctl", "--user", "daemon-reload"); err != nil {
+		return fmt.Errorf("%w\n%s", err, noLoginSessionHint)
 	}
 	return m.runner.run("systemctl", "--user", "enable", "--now", unitName)
 }
+
+// noLoginSessionHint explains the one failure people actually hit: `su - user` has no user bus.
+const noLoginSessionHint = "a user service needs a login session. Log in as this user over ssh, " +
+	"or run: sudo loginctl enable-linger <user>"
 
 // enableLinger is best effort on purpose. It is a system level setting, usually needing root or a
 // polkit prompt, and it changes how every user service behaves after logout, so a failure prints the

@@ -7,28 +7,51 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"time"
 
-	"github.com/waltzofpearls/deepcove/internal/guestexec"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 )
 
-// machine is the non darwin stand in. The Apple VF runtime only functions on macOS; on other platforms
-// bootVM fails fast so the package still builds (the Linux CI runner compiles this file, not the vz cgo
-// one) without pulling in Virtualization.framework.
-type machine struct{ consoleLog *consoleBuffer }
+// machine is the non darwin stand in. The Apple VF runtime only functions on macOS; this exists so the
+// package builds elsewhere, and every method reports the same thing bootVM does.
+type machine struct{}
 
-func bootVM(spec vmSpec) (*machine, error) {
-	if err := spec.validate(); err != nil {
+func bootVM(spec vm.Spec, _ *slog.Logger) (*machine, error) {
+	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("applevf: the Apple Virtualization.framework runtime requires macOS: %w", sandbox.ErrNotSupported)
+	return nil, errNotMacOS
 }
 
-func (m *machine) setLogger(*slog.Logger)      {}
-func (m *machine) unresponsive() bool          { return false }
-func (m *machine) Console() io.ReadWriteCloser { return nil }
-func (m *machine) Stop() error                 { return nil }
-
-func (m *machine) Exec(context.Context, guestexec.ExecRequest) (sandbox.Process, error) {
-	return nil, fmt.Errorf("applevf: exec requires macOS: %w", sandbox.ErrNotSupported)
+func (m *machine) Dial(context.Context, uint32) (net.Conn, error) {
+	return nil, errNotMacOS
 }
+
+func (m *machine) PendingDials() int {
+	return 0
+}
+
+func (m *machine) Listen(uint32) (net.Listener, error) {
+	return nil, errNotMacOS
+}
+
+func (m *machine) Console() io.ReadWriteCloser {
+	return nil
+}
+
+func (m *machine) Running() bool {
+	return false
+}
+
+func (m *machine) Stop() error {
+	return nil
+}
+
+func (m *machine) WaitStopped(time.Duration) error {
+	return nil
+}
+
+var errNotMacOS = fmt.Errorf(
+	"applevf: the Apple Virtualization.framework runtime requires macOS: %w", sandbox.ErrNotSupported)

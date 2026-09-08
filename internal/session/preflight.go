@@ -50,8 +50,9 @@ type RuntimesInfo struct {
 // runtimeDefaults collects each runtime's own idea of a default size. Drivers that do not allocate a
 // fixed amount are left out entirely rather than reported as zeroes.
 func (s *Service) runtimeDefaults() map[string]Resources {
-	out := make(map[string]Resources, len(s.runtimes))
-	for name, driver := range s.runtimes {
+	registered := s.registeredRuntimes()
+	out := make(map[string]Resources, len(registered))
+	for name, driver := range registered {
 		if d, ok := driver.(sandbox.ResourceDefaulter); ok {
 			out[name] = fromSandboxResources(d.DefaultResources())
 		}
@@ -97,10 +98,11 @@ func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 // A driver with no Pinger cannot report liveness, so it is assumed usable rather than reported as broken.
 func (s *Service) unavailableRuntimes(ctx context.Context) map[string]string {
 	type result struct{ name, reason string }
-	results := make(chan result, len(s.runtimes))
+	registered := s.registeredRuntimes()
+	results := make(chan result, len(registered))
 
 	var wg sync.WaitGroup
-	for name := range s.runtimes {
+	for name := range registered {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -128,7 +130,7 @@ func unavailableReason(runtime string) string {
 	switch runtime {
 	case RuntimeDocker:
 		return "Docker isn't running. Start it to use this runtime."
-	case RuntimeAppleVF:
+	case RuntimeAppleVF, RuntimeCloudHV:
 		return "The virtual machine runtime isn't responding."
 	default:
 		return "This runtime isn't available right now."
@@ -136,7 +138,8 @@ func unavailableReason(runtime string) string {
 }
 
 func (s *Service) dockerStatus(ctx context.Context) DockerStatus {
-	pinger, ok := s.runtimes[RuntimeDocker].(sandbox.Pinger)
+	driver, _ := s.lookupRuntime(RuntimeDocker)
+	pinger, ok := driver.(sandbox.Pinger)
 	if !ok {
 		// The backend can't report liveness; don't block on a signal
 		// we can't read; assume reachable.

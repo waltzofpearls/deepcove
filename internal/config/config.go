@@ -36,8 +36,8 @@ type Config struct {
 	LocalVMAssets bool `env:"DEEPCOVE_LOCAL_VM_ASSETS"`
 
 	// DefaultRuntime overrides which runtime a session gets when the create request does not choose
-	// one ("docker", "applevf"). Empty prefers the VM runtime wherever it is available, falling back to
-	// Docker on nodes that cannot provide VMs.
+	// one ("docker", "applevf", "cloudhv"). Empty prefers the VM runtime wherever it is available,
+	// falling back to Docker on nodes that cannot provide VMs.
 	DefaultRuntime string `env:"DEEPCOVE_DEFAULT_RUNTIME"`
 
 	// AllowSandboxHosts are private addresses a sandbox may still reach, which are otherwise blocked.
@@ -53,20 +53,49 @@ const (
 	DefaultLogLevel = "info"
 )
 
+// defaultDataDir is where a node keeps everything when DATA_DIR names nowhere.
+//
+// No leading dot. os.UserConfigDir already returns a hidden/conventional location per platform
+// (~/.config on Linux, ~/Library/Application Support on macOS, %AppData% on Windows), and dotfiles
+// inside those are either redundant or anomalous.
+func defaultDataDir() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "deepcove"), nil
+}
+
+// dataDirFromEnv answers where the data dir is before the config is loaded, which is when the stored
+// settings still have to be read. Nowhere to look is not an error here: the settings are simply not
+// found, and Load reports the same problem properly a moment later.
+func dataDirFromEnv() string {
+	if dir := os.Getenv("DATA_DIR"); dir != "" {
+		return dir
+	}
+	dir, err := defaultDataDir()
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
 func Load(ctx context.Context) (*Config, error) {
+	// Before anything reads the environment: the stored settings are part of it, and where they live is
+	// the one thing that cannot come from them.
+	if err := loadEnvFile(dataDirFromEnv()); err != nil {
+		return nil, err
+	}
 	var c Config
 	if err := envconfig.Process(ctx, &c); err != nil {
 		return nil, err
 	}
 	if c.DataDir == "" {
-		configDir, err := os.UserConfigDir()
+		dir, err := defaultDataDir()
 		if err != nil {
 			return nil, err
 		}
-		// No leading dot. os.UserConfigDir already returns a hidden/conventional location per
-		// platform (~/.config on Linux, ~/Library/Application Support on macOS, %AppData% on
-		// Windows), and dotfiles inside those are either redundant or anomalous.
-		c.DataDir = filepath.Join(configDir, "deepcove")
+		c.DataDir = dir
 	}
 	if c.NodeName == "" {
 		nodeName, err := os.Hostname()
