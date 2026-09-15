@@ -30,8 +30,8 @@ $(GUEST_INIT_EMBED):
 ui-build: ## Build the SvelteKit UI into ui/build/
 	cd ui && npm run build
 
-# Fallback stub when the real UI hasn't been built (e.g. cross-compile
-# in CI without Node). Only fires if ui/build/index.html doesn't exist.
+# A placeholder so the //go:embed target exists. Only lint and test use it; every build target builds
+# the real UI.
 ui/build/index.html:
 	@mkdir -p ui/build
 	@echo '<h1>deepcove is running</h1><p>SvelteKit not yet built. Run: make ui-build</p>' > ui/build/index.html
@@ -80,7 +80,7 @@ sign-darwin: ## Sign a darwin binary, e.g. make sign-darwin ARCH=arm64 [CODE_SIG
 build-darwin: build-darwin-arm64 build-darwin-amd64 ## Build darwin binaries for arm64 and amd64
 
 .PHONY: build-darwin-arm64
-build-darwin-arm64: ui/build/index.html ## Build a darwin/arm64 binary into dist/
+build-darwin-arm64: ui-build ## Build a darwin/arm64 binary into dist/
 	@mkdir -p dist/darwin-arm64
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=arm64
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
@@ -96,7 +96,7 @@ build-darwin-arm64: ui/build/index.html ## Build a darwin/arm64 binary into dist
 # GOOS/GOARCH; no source rebuild required (Apple's libc has no
 # musl/glibc split).
 .PHONY: build-darwin-amd64
-build-darwin-amd64: ui/build/index.html ## Build a darwin/amd64 binary (cross-compiled from arm64 host)
+build-darwin-amd64: ui-build ## Build a darwin/amd64 binary (cross-compiled from arm64 host)
 	@mkdir -p dist/darwin-amd64
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
@@ -125,7 +125,7 @@ build-darwin-amd64: ui/build/index.html ## Build a darwin/amd64 binary (cross-co
 build-windows: build-windows-amd64 ## Build windows binary for amd64
 
 .PHONY: build-windows-amd64
-build-windows-amd64: ui/build/index.html ## Build a windows/amd64 binary (cross-compiled via mingw-w64)
+build-windows-amd64: ui-build ## Build a windows/amd64 binary (cross-compiled via mingw-w64)
 	@mkdir -p dist/windows-amd64
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
@@ -146,7 +146,7 @@ build-windows-amd64: ui/build/index.html ## Build a windows/amd64 binary (cross-
 build-linux: build-linux-amd64 build-linux-arm64 ## Build linux binaries for amd64 and arm64
 
 .PHONY: build-linux-amd64
-build-linux-amd64: ## Build a linux/amd64 binary (glibc, dynamic)
+build-linux-amd64: ## Build a linux/amd64 binary (glibc, dynamic; the Dockerfile builds the UI)
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	docker buildx build --platform linux/amd64 \
 		-f build/linux.Dockerfile \
@@ -154,7 +154,7 @@ build-linux-amd64: ## Build a linux/amd64 binary (glibc, dynamic)
 		--output=type=local,dest=./dist/linux-amd64 .
 
 .PHONY: build-linux-arm64
-build-linux-arm64: ## Build a linux/arm64 binary (glibc, dynamic)
+build-linux-arm64: ## Build a linux/arm64 binary (glibc, dynamic; the Dockerfile builds the UI)
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=arm64
 	docker buildx build --platform linux/arm64 \
 		-f build/linux.Dockerfile \
@@ -362,5 +362,5 @@ clean: ## Remove built binaries
 
 .PHONY: clean-vm-artifacts
 clean-vm-artifacts: ## Remove the VM artifacts this node downloaded, so the next setup fetches them again
-	rm -rf "$(DATA_DIR)/vm-kernel" "$(DATA_DIR)/vm-guest"
+	rm -rf "$(DATA_DIR)/vm-artifacts" "$(DATA_DIR)/vm-guest"
 	@echo "removed the VM artifacts under $(DATA_DIR)"

@@ -105,6 +105,12 @@ type ResourceDefaulter interface {
 	DefaultResources() Resources
 }
 
+// ForceCloser abandons its sandboxes instead of stopping them politely. Exiting on top of a VM the
+// hypervisor still owns leaves a process the kernel cannot reap.
+type ForceCloser interface {
+	ForceClose() error
+}
+
 // Lister is an optional capability for drivers that can enumerate what they are actually hosting,
 // independent of what the session table believes. That gap is the whole point: comparing the two is how
 // you tell a leaked sandbox from a session whose sandbox is already gone.

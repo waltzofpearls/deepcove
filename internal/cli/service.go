@@ -16,7 +16,7 @@ import (
 //
 // Usage:
 //
-//	deepcove service install [--no-linger] [-- <flags for deepcove start>]
+//	deepcove service install [--no-linger] [--env KEY=VALUE] [-- <flags for deepcove start>]
 //	deepcove service uninstall
 //	deepcove service status
 //	deepcove service start | stop | restart
@@ -42,7 +42,7 @@ func cmdService(ctx context.Context, args []string) error {
 
 	switch args[0] {
 	case "install":
-		return cmdServiceInstall(manager, args[1:])
+		return cmdServiceInstall(ctx, manager, args[1:])
 	case "uninstall":
 		if err := manager.Uninstall(); err != nil {
 			return err
@@ -76,13 +76,28 @@ func newServiceManager(ctx context.Context) (service.Manager, error) {
 	return service.New(cfg.DataDir, exe)
 }
 
-func cmdServiceInstall(manager service.Manager, args []string) error {
+func cmdServiceInstall(ctx context.Context, manager service.Manager, args []string) error {
 	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
 	// Lingering is on by default: someone installing a background service means it to survive logout.
 	noLinger := fs.Bool("no-linger", false, "on Linux, do not keep the service running after you log out")
+	var env envFlag
+	fs.Var(&env, "env", "a KEY=VALUE the service should start with, repeatable")
 	before, after := splitAtDashDash(args)
 	if err := fs.Parse(before); err != nil {
 		return err
+	}
+
+	// Into the data dir, not the service definition: a unit file is world readable and permanent, and
+	// one of these is usually a token.
+	if len(env) > 0 {
+		cfg, err := config.Load(ctx)
+		if err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+		if err := config.SetEnvFileValues(cfg.DataDir, env); err != nil {
+			return err
+		}
+		fmt.Printf("stored %d setting(s) in %s\n", len(env), config.EnvFilePath(cfg.DataDir))
 	}
 
 	if err := manager.Install(after, service.InstallOptions{Linger: !*noLinger}); err != nil {
@@ -90,6 +105,19 @@ func cmdServiceInstall(manager service.Manager, args []string) error {
 	}
 	fmt.Println("deepcove is installed. It starts now, and again with your session.")
 	return printServiceStatus(manager)
+}
+
+// envFlag collects KEY=VALUE settings. Unlike repeatedFlag it never splits on commas, since a value may
+// contain one.
+type envFlag []string
+
+func (e *envFlag) String() string {
+	return strings.Join(*e, " ")
+}
+
+func (e *envFlag) Set(value string) error {
+	*e = append(*e, value)
+	return nil
 }
 
 // splitAtDashDash separates our own flags from the ones meant for `deepcove start`.
@@ -127,7 +155,7 @@ func serviceUsage(w *os.File) {
 		"deepcove service: run deepcove in the background, starting with your session",
 		"",
 		"Usage:",
-		"  deepcove service install [--no-linger] [-- <flags for deepcove start>]",
+		"  deepcove service install [--no-linger] [--env KEY=VALUE] [-- <flags for deepcove start>]",
 		"  deepcove service uninstall",
 		"  deepcove service status",
 		"  deepcove service start | stop | restart",

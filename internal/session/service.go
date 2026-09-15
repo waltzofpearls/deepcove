@@ -86,6 +86,10 @@ type Service struct {
 	// runtimes are the sandbox drivers this node provides, keyed by runtime name. A node can offer
 	// more than one (Docker everywhere, plus a VM runtime where the platform supports it), so each
 	// session records which one hosts it.
+	//
+	// Guarded: a runtime is installed from an HTTP request long after startup, and every request path
+	// reads this while that happens.
+	runtimesMu     sync.RWMutex
 	runtimes       map[string]sandbox.Sandbox
 	defaultRuntime string
 
@@ -183,7 +187,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	// Validate before any sandbox work so bad input fails as a clean 400 without
 	// rollback. Owns session-layer concerns (reserved /root target, dup targets, mode);
 	// the sandbox layer's validator owns host-path concerns (absolute, allowed root).
-	userMounts, err := validateMountRequests(req.Mounts)
+	userMounts, err := s.prepareMounts(req.Mounts)
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +420,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	userMounts, err := validateMountRequests(sess.Mounts)
+	userMounts, err := s.prepareMounts(sess.Mounts)
 	if err != nil {
 		return err
 	}
@@ -534,7 +538,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	if sess.OnWorkspaceVM {
 		return nil, fmt.Errorf("%w: this session is on the workspace VM, whose folder is edited on the machine itself", ErrInvalidInput)
 	}
-	userMounts, err := validateMountRequests(newMounts)
+	userMounts, err := s.prepareMounts(newMounts)
 	if err != nil {
 		return nil, err
 	}
@@ -762,6 +766,49 @@ func workdirFor(userMounts []sandbox.Mount) string {
 		return userMounts[0].Target
 	}
 	return workspaceDir
+}
+
+// prepareMounts validates the rows, then makes sure the folder each one shares is there.
+func (s *Service) prepareMounts(reqs []MountRequest) ([]sandbox.Mount, error) {
+	mounts, err := validateMountRequests(reqs)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range mounts {
+		if m.Type != sandbox.MountBind {
+			continue
+		}
+		if err := s.ensureSharedFolder(m.Source); err != nil {
+			return nil, fmt.Errorf("%w: mounts[%d]: %s", ErrMountInvalid, i, err)
+		}
+	}
+	return mounts, nil
+}
+
+// ensureSharedFolder makes a folder deepcove is about to share, and creates it when it is not there.
+// You name the folder in the dialog, and on a remote node you have no shell to make it yourself.
+//
+// Only inside an allowed root, which is checked first. So this never makes a folder somewhere it was
+// not told it may share, and cannot be used to find out what exists on the machine.
+func (s *Service) ensureSharedFolder(path string) error {
+	if len(s.allowedMountRoots) == 0 {
+		return nil
+	}
+	if err := sandbox.MountSourceAllowed(path, s.allowedMountRoots); err != nil {
+		return err
+	}
+	switch info, err := os.Stat(path); {
+	case err == nil && info.IsDir():
+		return nil
+	case err == nil:
+		return fmt.Errorf("%s is a file, not a folder", path)
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("cannot use %s: %s", path, err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("cannot create %s: %s", path, err)
+	}
+	return nil
 }
 
 // Errors wrap ErrMountInvalid with a [N] index so the UI can point at the bad row.

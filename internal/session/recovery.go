@@ -88,7 +88,7 @@ func (s *Service) RestartSessions(ctx context.Context, sessions []*Session) {
 // at it. The session keeps its id, name, mounts and size; what it loses is whatever lived in the previous
 // writable layer, which for a VM died with the VM regardless.
 func (s *Service) rebuildSandbox(ctx context.Context, sess *Session, runtime sandbox.Sandbox) (sandbox.ID, error) {
-	userMounts, err := validateMountRequests(sess.Mounts)
+	userMounts, err := s.prepareMounts(sess.Mounts)
 	if err != nil {
 		return "", err
 	}

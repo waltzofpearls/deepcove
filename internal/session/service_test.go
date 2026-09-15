@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1028,4 +1029,93 @@ func TestStartingStatus(t *testing.T) {
 			t.Errorf("status after restarting: got %q, want %q", sess.Status, StatusStarting)
 		}
 	})
+}
+
+func TestEnsureSharedFolder(t *testing.T) {
+	tests := []struct {
+		name string
+		// setup prepares the path inside the allowed root and returns the path to ask for.
+		setup           func(t *testing.T, root string) string
+		wantErrContains string
+	}{
+		{
+			name: "an existing folder is used as it is",
+			setup: func(t *testing.T, root string) string {
+				path := filepath.Join(root, "project")
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+		},
+		{
+			name: "a missing folder is created",
+			setup: func(_ *testing.T, root string) string {
+				return filepath.Join(root, "new-project")
+			},
+		},
+		{
+			name: "missing parents are created too",
+			setup: func(_ *testing.T, root string) string {
+				return filepath.Join(root, "a", "b", "c")
+			},
+		},
+		{
+			name: "a file in the way is refused",
+			setup: func(t *testing.T, root string) string {
+				path := filepath.Join(root, "notes.txt")
+				if err := os.WriteFile(path, []byte("hi"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			wantErrContains: "is a file, not a folder",
+		},
+		{
+			name: "a folder outside the allowed roots is refused",
+			setup: func(t *testing.T, _ string) string {
+				return filepath.Join(t.TempDir(), "elsewhere")
+			},
+			wantErrContains: "outside the allowed roots",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			svc := &Service{allowedMountRoots: []string{root}}
+			path := tc.setup(t, root)
+
+			err := svc.ensureSharedFolder(path)
+			if tc.wantErrContains != "" {
+				if err == nil {
+					t.Fatalf("want an error containing %q, got nil", tc.wantErrContains)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrContains) {
+					t.Errorf("err message: want substring %q, got %q", tc.wantErrContains, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want nil err, got %v", err)
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil || !info.IsDir() {
+				t.Errorf("%s is not a folder after the call: %v", path, statErr)
+			}
+		})
+	}
+}
+
+// A node that never said which folders it may share gets no folders made for it.
+func TestEnsureSharedFolderMakesNothingWithoutAllowedRoots(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "new-project")
+	svc := &Service{}
+
+	if err := svc.ensureSharedFolder(path); err != nil {
+		t.Fatalf("want nil err, got %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s was created with no allowed roots configured", path)
+	}
 }

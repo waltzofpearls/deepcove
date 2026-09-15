@@ -227,7 +227,8 @@ func TestSessionSandboxIDMigration(t *testing.T) {
 		`SELECT count(*) FROM duckdb_indexes() WHERE table_name = 'sessions'`).Scan(&indexes); err != nil {
 		t.Fatalf("count indexes: %v", err)
 	}
-	if indexes != 3 {
-		t.Errorf("%d indexes on sessions, want the 3 the migration recreates", indexes)
+	// 0016 dropped them all: a table this small never needed one, and a lost index hides every row.
+	if indexes != 0 {
+		t.Errorf("%d indexes on sessions, want none", indexes)
 	}
 }

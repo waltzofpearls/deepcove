@@ -15,7 +15,6 @@
   import LogoIcon from './LogoIcon.svelte';
   import LayoutGrid from '@lucide/svelte/icons/layout-grid';
   import Server from '@lucide/svelte/icons/server';
-  import Box from '@lucide/svelte/icons/box';
   import Plus from '@lucide/svelte/icons/plus';
 
   // Opens the New Session dialog mounted in +layout.svelte (and closes the mobile drawer). Same
@@ -33,7 +32,6 @@
   const navItems: Array<{ href: string; label: string; icon: typeof LayoutGrid }> = [
     { href: '/', label: 'Dashboard', icon: LayoutGrid },
     { href: '/nodes', label: 'Nodes', icon: Server },
-    { href: '/runtimes', label: 'Runtimes', icon: Box },
   ];
 
   function isActive(href: string): boolean {

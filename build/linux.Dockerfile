@@ -25,6 +25,14 @@
 # Output:
 #   - dist/linux-<arch>/deepcove
 
+# The UI is embedded in the binary, so it is built here rather than on the host.
+FROM node:24-bookworm AS ui-builder
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
 FROM golang:1.26-bookworm AS go-builder
 ARG VERSION=dev
 
@@ -37,11 +45,7 @@ RUN go mod download
 
 # Source.
 COPY . .
-
-# Ensure the embed target exists (placeholder; real SvelteKit build
-# replaces this).
-RUN mkdir -p ui/build && \
-    [ -f ui/build/index.html ] || echo '<h1>deepcove</h1>' > ui/build/index.html
+COPY --from=ui-builder /ui/build ./ui/build
 
 # CGO required by go-duckdb. No build tags needed — the bindings'
 # default cgo_static.go path pulls in their precompiled libduckdb_static.a

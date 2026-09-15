@@ -143,10 +143,13 @@
   // rather than assumed from the node serving this page. Otherwise we would block you on the primary's
   // state when the target is fine. Null until fetched, in which case we fall back to the global store.
   let nodeRuntimes = $state<RuntimesInfo | null>(null);
+  // True while the picked node has not answered yet.
+  let waitingForNodeRuntimes = $state(false);
   $effect(() => {
     const key = selectedHostKey;
     const host = untrack(() => selectedHost);
     nodeRuntimes = null;
+    waitingForNodeRuntimes = Boolean(open && key);
     if (!open || !key) return;
     let cancelled = false;
     const ac = new AbortController();
@@ -156,18 +159,26 @@
         if (cancelled) return;
         nodeRuntimes = p.runtimes;
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) waitingForNodeRuntimes = false;
+      });
     return () => {
       cancelled = true;
       ac.abort();
     };
   });
 
-  const preflightLoaded = $derived(nodeRuntimes !== null || preflight.loaded);
+  const preflightLoaded = $derived(
+    !waitingForNodeRuntimes && (nodeRuntimes !== null || preflight.loaded),
+  );
 
   // The runtimes the create target offers: the selected node's when known, else this node's. Older
   // nodes predate the field, so treat a missing list as "docker only" rather than showing nothing.
-  const runtimes = $derived(nodeRuntimes ?? preflight.runtimes);
+  //
+  // Nothing while the picked node is still answering. This page's own runtimes are not its runtimes, so
+  // showing them would offer a choice that node may not have.
+  const runtimes = $derived(waitingForNodeRuntimes ? null : (nodeRuntimes ?? preflight.runtimes));
   const runtimeOptions = $derived(runtimes?.available ?? []);
   // Only worth showing a picker when there is an actual choice to make.
   const showRuntimePicker = $derived(runtimeOptions.length > 1);
@@ -259,19 +270,31 @@
       : 'Greyed values are what you get if you leave a field blank.',
   );
 
-  // Resolve the host's home dir once, then seed the default folder row's host
-  // path so it opens pre-filled at $HOME/ rather than blank.
+  // Resolve the home dir of the node the session will run on, then seed the default folder row with it.
+  // Follows the node picker: your Mac's home is not a path that exists on a droplet.
   $effect(() => {
-    if (!open || homeDir) return;
+    void selectedHostKey;
+    const host = untrack(() => selectedHost);
+    if (!open) return;
+    let cancelled = false;
     api
-      .fsList(undefined, selectedHost)
+      .fsList(undefined, host)
       .then((res) => {
+        if (cancelled) return;
+        const previous = untrack(() => homeDir);
         homeDir = res.path;
-        if (mounts.length > 0 && !mounts[0].host_path) {
-          mounts[0].host_path = res.path + '/';
-        }
+        untrack(() => {
+          // Never clobber a folder you typed, only a blank row or the last node's home.
+          const first = mounts[0];
+          if (first && (!first.host_path || first.host_path === previous + '/')) {
+            first.host_path = res.path + '/';
+          }
+        });
       })
       .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   });
 
   // Pre-fill the Name field with a generated suggestion on open and when the agent
@@ -672,6 +695,12 @@
           <p class="text-sm">{soleRemoteNode.hostname}</p>
           <p class="text-xs text-muted-foreground">The session lives on that machine.</p>
         </div>
+      {/if}
+
+      {#if waitingForNodeRuntimes}
+        <p class="text-xs text-muted-foreground">
+          Checking what {selectedHost?.hostname ?? 'that machine'} can run…
+        </p>
       {/if}
 
       {#if onVMRuntime}
@@ -1088,6 +1117,7 @@
           onclick={submit}
           disabled={submitting ||
             pulling ||
+            waitingForNodeRuntimes ||
             !name.trim() ||
             !!runtimeBlocked ||
             (imageStrategy === 'official' && !selectedAgent?.official_image) ||

@@ -96,7 +96,7 @@ func (s *Service) savedSpecFor(ctx context.Context, sandboxID string) (sandbox.S
 	if err != nil {
 		return sandbox.SandboxSpec{}, fmt.Errorf("session: %w", err)
 	}
-	userMounts, err := validateMountRequests(sess.Mounts)
+	userMounts, err := s.prepareMounts(sess.Mounts)
 	if err != nil {
 		return sandbox.SandboxSpec{}, err
 	}

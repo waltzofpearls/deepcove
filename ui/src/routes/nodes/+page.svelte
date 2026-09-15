@@ -1,20 +1,25 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api } from '$lib/api/client';
   import { usePolling } from '$lib/polling';
   import { discoveryRequired } from '$lib/api/transport';
   import { tailnetAuth, webNodeInfo, wasmHostname, type WebNodeInfo } from '$lib/api/wasm';
   import { machineName } from '$lib/util/tailnet';
+  import { nodeHost } from '$lib/api/sessions';
+  import { runtimeNeedsSetup, runtimeSummary } from '$lib/util/runtime';
   import { discovery } from '$lib/stores/discovery.svelte';
+  import { sessions } from '$lib/stores/sessions.svelte';
   import { preferences } from '$lib/stores/preferences.svelte';
   import TailnetConnect from '$lib/components/TailnetConnect.svelte';
   import { Button } from '$lib/components/ui/button';
-  import type { ConnectStatus, NodeInfo } from '$lib/api/types';
+  import type { ConnectStatus, NodeInfo, RuntimesInfo } from '$lib/api/types';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Server from '@lucide/svelte/icons/server';
   import Globe from '@lucide/svelte/icons/globe';
   import Network from '@lucide/svelte/icons/network';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   // Your deepcove machines: this one plus same-user tailnet peers. Connected mode reads them from a
   // server (GET /api/nodes); dashboard mode reads the in-browser node's own discovery (status()).
@@ -76,8 +81,57 @@
   const webPeers = $derived(discoveryRequired() ? discovery.webNodes : fetchedWeb);
   const otherWebNodes = $derived(webPeers.filter((n) => n.dns_name !== webInfo?.dnsName));
 
+  // What each machine can host. Asked of the machine itself, since only it knows, and best effort: one
+  // that does not answer shows no summary rather than holding up the list.
+  let runtimeInfo = $state<Record<string, RuntimesInfo>>({});
+  // Bumped by the refresh button, because the fetch below only reruns when the set of machines changes.
+  let runtimeEpoch = $state(0);
+  const nodeIDs = $derived((nodes ?? []).map((n) => n.stable_node_id).join(','));
+  $effect(() => {
+    void nodeIDs;
+    void runtimeEpoch;
+    const list = untrack(() => nodes) ?? [];
+    const ac = new AbortController();
+    for (const node of list) {
+      if (!node.online) continue;
+      api
+        .preflight(node.self ? undefined : nodeHost(node), ac.signal)
+        .then((p) => {
+          runtimeInfo = { ...runtimeInfo, [node.stable_node_id]: p.runtimes };
+        })
+        .catch(() => {});
+    }
+    return () => ac.abort();
+  });
+
+  // Sessions come from the aggregated list, which already tags each one with the machine hosting it.
+  $effect(() => sessions.subscribe());
+  const sessionCounts = $derived.by(() => {
+    const counts: Record<string, number> = {};
+    const unknown = new Set(sessions.unreachable.map((h) => h.stable_node_id));
+    for (const node of nodes ?? []) {
+      if (!unknown.has(node.stable_node_id)) counts[node.stable_node_id] = 0;
+    }
+    for (const session of sessions.list) {
+      const id = session.host?.stable_node_id ?? sessions.self?.stable_node_id;
+      if (id && id in counts) counts[id] += 1;
+    }
+    return counts;
+  });
+
+  // One line under the name: how much is on this machine, and what it can host.
+  function detailLine(node: NodeInfo): string {
+    const parts: string[] = [];
+    const count = sessionCounts[node.stable_node_id];
+    if (count !== undefined) parts.push(`${count} ${count === 1 ? 'session' : 'sessions'}`);
+    const summary = runtimeSummary(runtimeInfo[node.stable_node_id]);
+    if (summary) parts.push(summary);
+    return parts.join(' \u00b7 ');
+  }
+
   let refreshing = $state(false);
   async function refreshNow() {
+    runtimeEpoch += 1;
     refreshing = true;
     try {
       if (discoveryRequired()) discovery.refreshNow();
@@ -152,53 +206,88 @@
       address?: string;
       mine?: string;
       online: boolean;
+      detail?: string;
+      needsSetup?: boolean;
+      href?: string;
     })}
-      <li class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
-        {#if opts.kind === 'session'}
-          <Server class="size-5 shrink-0 text-muted-foreground" />
+      <li>
+        {#if opts.href}
+          <a
+            href={opts.href}
+            class="flex items-center gap-3 rounded-lg border border-border bg-card p-3 transition-colors hover:bg-secondary/40"
+          >
+            {@render rowBody(opts)}
+            <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
+          </a>
         {:else}
-          <Globe class="size-5 shrink-0 text-muted-foreground" />
-        {/if}
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="truncate font-medium">{opts.name}</span>
-            <!-- Two node kinds, two colours. Ownership below stays neutral grey, so a category and an
-                 annotation never read as the same kind of fact. -->
-            {#if opts.kind === 'session'}
-              <span
-                class="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 text-xs text-blue-700 ring-1 ring-inset ring-blue-600/25 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-500/30"
-              >
-                Session node
-              </span>
-            {:else}
-              <span
-                class="shrink-0 rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-700 ring-1 ring-inset ring-violet-600/25 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-500/30"
-              >
-                Web node
-              </span>
-            {/if}
-            {#if opts.mine}
-              <span
-                class="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
-              >
-                {opts.mine}
-              </span>
-            {/if}
+          <div class="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
+            {@render rowBody(opts)}
           </div>
-          {#if opts.address}
-            <div class="truncate font-mono text-xs text-muted-foreground">{opts.address}</div>
+        {/if}
+      </li>
+    {/snippet}
+
+    {#snippet rowBody(opts: {
+      kind: 'session' | 'web';
+      name: string;
+      address?: string;
+      mine?: string;
+      online: boolean;
+      detail?: string;
+      needsSetup?: boolean;
+    })}
+      {#if opts.kind === 'session'}
+        <Server class="size-5 shrink-0 text-muted-foreground" />
+      {:else}
+        <Globe class="size-5 shrink-0 text-muted-foreground" />
+      {/if}
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <span class="truncate font-medium">{opts.name}</span>
+          <!-- Two node kinds, two colours. Ownership below stays neutral grey, so a category and an
+                 annotation never read as the same kind of fact. -->
+          {#if opts.kind === 'session'}
+            <span
+              class="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 text-xs text-blue-700 ring-1 ring-inset ring-blue-600/25 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-500/30"
+            >
+              Session node
+            </span>
+          {:else}
+            <span
+              class="shrink-0 rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-700 ring-1 ring-inset ring-violet-600/25 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-500/30"
+            >
+              Web node
+            </span>
+          {/if}
+          {#if opts.mine}
+            <span class="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
+              {opts.mine}
+            </span>
+          {/if}
+          {#if opts.needsSetup}
+            <span
+              class="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-700 ring-1 ring-inset ring-amber-600/25 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-500/30"
+            >
+              needs setup
+            </span>
           {/if}
         </div>
-        <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <span
-            class="size-2 rounded-full"
-            class:bg-green-500={opts.online}
-            class:bg-muted-foreground={!opts.online}
-            aria-hidden="true"
-          ></span>
-          {opts.online ? 'online' : 'offline'}
-        </div>
-      </li>
+        {#if opts.address}
+          <div class="truncate font-mono text-xs text-muted-foreground">{opts.address}</div>
+        {/if}
+        {#if opts.detail}
+          <div class="truncate text-xs text-muted-foreground">{opts.detail}</div>
+        {/if}
+      </div>
+      <div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <span
+          class="size-2 rounded-full"
+          class:bg-green-500={opts.online}
+          class:bg-muted-foreground={!opts.online}
+          aria-hidden="true"
+        ></span>
+        {opts.online ? 'online' : 'offline'}
+      </div>
     {/snippet}
 
     <section>
@@ -214,6 +303,9 @@
             address: node.dns_name,
             mine: node.self ? 'this machine' : undefined,
             online: node.online,
+            detail: detailLine(node),
+            needsSetup: runtimeNeedsSetup(runtimeInfo[node.stable_node_id]),
+            href: `/nodes/${node.stable_node_id}`,
           })}
         {/each}
         {#if webRunning}
