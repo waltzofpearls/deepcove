@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -45,6 +46,49 @@ type RuntimesInfo struct {
 	// WorkspaceDefaults is the size a new workspace VM gets on this host. Separate from Defaults, which
 	// is per runtime: this one is a property of the machine.
 	WorkspaceDefaults Resources `json:"workspace_defaults"`
+	// WorkspaceRoots maps a runtime that makes a folder for each session to where those folders live, so
+	// the create form can show the path before the session exists. Only a runtime with no guest has one.
+	WorkspaceRoots map[string]string `json:"workspace_roots,omitempty"`
+	// AgentsToInstall maps a runtime to the agents this node would have to install first, so the create
+	// form can say so before you pick one.
+	AgentsToInstall map[string][]string `json:"agents_to_install,omitempty"`
+}
+
+// runtimeAgentsToInstall lists, per runtime, the agents that are not on this node yet.
+func (s *Service) runtimeAgentsToInstall() map[string][]string {
+	out := map[string][]string{}
+	for name, driver := range s.registeredRuntimes() {
+		provisioner, ok := driver.(sandbox.AgentProvisioner)
+		if !ok {
+			continue
+		}
+		for _, agent := range allAgents() {
+			if !provisioner.AgentInstalled(sandbox.Agent{Name: agent.Name, Binary: agent.Sandboxless.Binary}) {
+				out[name] = append(out[name], agent.Name)
+			}
+		}
+		sort.Strings(out[name])
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// runtimeWorkspaceRoots collects where each runtime puts the folders it makes for sessions.
+func (s *Service) runtimeWorkspaceRoots() map[string]string {
+	out := map[string]string{}
+	for name, driver := range s.registeredRuntimes() {
+		if provisioner, ok := driver.(sandbox.AgentProvisioner); ok {
+			if root := provisioner.WorkspaceRoot(); root != "" {
+				out[name] = root
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // runtimeDefaults collects each runtime's own idea of a default size. Drivers that do not allocate a
@@ -87,6 +131,8 @@ func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 			Missing:     s.MissingRuntimes(),
 
 			WorkspaceDefaults: WorkspaceDefaults(s.dataDir),
+			WorkspaceRoots:    s.runtimeWorkspaceRoots(),
+			AgentsToInstall:   s.runtimeAgentsToInstall(),
 		},
 	})
 }

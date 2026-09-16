@@ -26,6 +26,7 @@
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import SessionTags from '$lib/components/session/SessionTags.svelte';
   import SessionSettingsDialog from '$lib/components/session/SessionSettingsDialog.svelte';
+  import SessionFolderNote from '$lib/components/session/SessionFolderNote.svelte';
   import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -563,13 +564,15 @@
         <AlertDialogTitle>Destroy session?</AlertDialogTitle>
         <AlertDialogDescription>
           {#if session}
-            This permanently destroys <span class="font-mono">{session.name}</span>
-            and its workspace. This action cannot be undone.
+            This permanently destroys “{session.name}”. This action cannot be undone.
           {:else}
-            This permanently destroys the session and its workspace. This action cannot be undone.
+            This permanently destroys the session. This action cannot be undone.
           {/if}
         </AlertDialogDescription>
       </AlertDialogHeader>
+      {#if session}
+        <SessionFolderNote {session} />
+      {/if}
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
         <AlertDialogAction variant="destructive" onclick={destroyConfirmed}>

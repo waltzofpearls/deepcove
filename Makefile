@@ -15,10 +15,11 @@ APPLE_TEAM_ID ?=
 APPLE_PASSWORD ?=
 APPLE_KEYCHAIN_PROFILE ?=
 
-# The guest init is embedded into the deepcove binary from this path, so it is built into the package
-# that embeds it rather than into dist/. Defined here because prerequisites are expanded as make reads
-# each rule, so a definition further down would expand to nothing.
-GUEST_INIT_EMBED := internal/guestasset/deepcove-guest-init
+# A native build boots guests of the host's architecture. Cross-compile targets override this.
+GUEST_ARCH ?= $(shell go env GOARCH)
+
+# Recursive, and defined above the rules that use it: prerequisites expand as make reads each rule.
+GUEST_INIT_EMBED = internal/guestasset/deepcove-guest-init-$(GUEST_ARCH)
 
 # Placeholder so the package compiles in a tree that has not built the init yet. Empty on purpose:
 # guestasset.Available() reads that as "not built", and the runtime reports that it needs setup.
@@ -278,11 +279,6 @@ format: ## Reformat the frontend (gofmt covers Go, and golangci-lint already enf
 	cd ui && npm run format
 
 # --- Apple VF runtime (macOS only) -----------------------------------------
-# The guest init is a static pure-Go Linux binary baked into the session image. It defaults to the host,
-# since a native build runs guests of the host's architecture. Cross-compile targets override it: the
-# init has to match the guest the released binary will boot.
-GUEST_ARCH ?= $(shell go env GOARCH)
-
 .PHONY: guest-init
 guest-init: ## Build the Linux guest init binary into the package that embeds it
 	@mkdir -p $(dir $(GUEST_INIT_EMBED))

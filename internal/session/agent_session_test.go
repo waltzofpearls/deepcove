@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 func TestTmuxSessionName(t *testing.T) {
@@ -49,7 +51,7 @@ func TestStartAgentSession(t *testing.T) {
 			"-c /workspace/repo",
 			// The launch script pins the conversation to this, so two sessions in one directory on a
 			// shared machine do not resume each other.
-			"DEEPCOVE_SESSION_ID=" + sess.ID + " " + agentLaunchPath,
+			"DEEPCOVE_SESSION_ID=" + sess.ID + " " + sandbox.SandboxedAgentLaunchPath,
 			// Whatever the machine holds, this session's answer is the only one that counts.
 			"env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL",
 		} {
@@ -98,5 +100,23 @@ func TestEntrypointPreparesButDoesNotLaunch(t *testing.T) {
 	}
 	if strings.Contains(body, "new-session") {
 		t.Error("the entrypoint starts an agent, which leaves a rebooted machine's other sessions dead")
+	}
+}
+
+// The entrypoint writes these paths and words as shell literals, and the runtime reads them back
+// through the constants. This is what keeps the two sides saying the same thing.
+func TestEntrypointWritesWhatTheRuntimeReadsBack(t *testing.T) {
+	body := strings.Join(buildEntrypoint("NAME", "SETUP", "LAUNCH"), " ")
+	want := []string{
+		"echo " + sandbox.SandboxedStatusInstalling + " > " + sandbox.SandboxedSetupStatusPath,
+		"echo " + sandbox.SandboxedStatusErrored + " > " + sandbox.SandboxedSetupStatusPath,
+		"echo " + sandbox.SandboxedStatusReady + " > " + sandbox.SandboxedSetupStatusPath,
+		"cat > " + sandbox.SandboxedAgentLaunchPath,
+		sandbox.SandboxedSetupLogPath,
+	}
+	for _, line := range want {
+		if !strings.Contains(body, line) {
+			t.Errorf("the entrypoint never does %q", line)
+		}
 	}
 }

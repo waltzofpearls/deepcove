@@ -7,16 +7,12 @@ package guestasset
 
 import (
 	"bytes"
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
-//go:embed deepcove-guest-init
-var binary []byte
-
-// Name is what the init is called on disk, matching what the Makefile builds.
+// Name is what the init is called on disk.
 const Name = "deepcove-guest-init"
 
 // Available reports whether a real init was embedded. A tree that has not run `make guest-init` embeds

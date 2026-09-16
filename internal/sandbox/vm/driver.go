@@ -30,6 +30,8 @@ import (
 // (cached per digest, so only the first session for an image pays for it), Start boots the VM, Stop asks
 // the guest to power off over the control channel, and Destroy releases everything.
 type Driver struct {
+	// The agent answers a guest runtime shares. Setup is in agent.go, since it reads this driver's guest.
+	sandbox.SandboxedProvisioner
 	backend   Backend
 	images    *imageStore
 	disks     string
@@ -55,12 +57,12 @@ type Driver struct {
 	// agent can read.
 	llmProxyURL func() string
 
-	mu       sync.Mutex
-	machines map[sandbox.ID]*session
+	mu        sync.Mutex
+	sandboxes map[sandbox.ID]*sandboxState
 }
 
-// session is one created sandbox: its spec, its resolved base image, and the VM once started.
-type session struct {
+// sandboxState is one created sandbox: its spec, its resolved base image, and the VM once started.
+type sandboxState struct {
 	spec      sandbox.SandboxSpec
 	baseImage string
 	machine   *Guest
@@ -136,7 +138,7 @@ func NewDriver(backend Backend, kernelPath, guestInitPath, stateDir string, opts
 		logs:      filepath.Join(stateDir, "logs"),
 		kernel:    kernelPath,
 		guestInit: guestInitPath,
-		machines:  map[sandbox.ID]*session{},
+		sandboxes: map[sandbox.ID]*sandboxState{},
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -196,47 +198,47 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.machines[handle] = &session{spec: spec, baseImage: base, createdAt: time.Now()}
+	d.sandboxes[handle] = &sandboxState{spec: spec, baseImage: base, createdAt: time.Now()}
 	return handle, nil
 }
 
 // Start boots the VM for a created sandbox and, when a credential store is configured, begins serving the
 // guest's credential requests.
-func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
-	s, err := d.lookup(h)
+func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
+	state, err := d.lookup(sandboxID)
 	if err != nil {
 		return err
 	}
 	d.mu.Lock()
-	started := s.machine != nil
-	s.starting = !started
+	started := state.machine != nil
+	state.starting = !started
 	d.mu.Unlock()
 	if started {
-		return fmt.Errorf("vm: sandbox %s is already started: %w", h, sandbox.ErrConflict)
+		return fmt.Errorf("vm: sandbox %s is already started: %w", sandboxID, sandbox.ErrConflict)
 	}
 	defer func() {
 		d.mu.Lock()
-		s.starting = false
+		state.starting = false
 		d.mu.Unlock()
 	}()
 
-	shares, guestMounts := hostShares(s.spec.Mounts)
-	home, err := d.homeDisk(s.spec)
+	shares, guestMounts := hostShares(state.spec.Mounts)
+	home, err := d.homeDisk(state.spec)
 	if err != nil {
 		return err
 	}
-	memory := memoryBytes(s.spec.Resources)
-	swap, err := d.swapDisk(h, memory)
+	memory := memoryBytes(state.spec.Resources)
+	swap, err := d.swapDisk(sandboxID, memory)
 	if err != nil {
 		return err
 	}
 	booted, err := d.backend.Boot(Spec{
 		KernelPath:   d.kernel,
 		Cmdline:      DefaultCmdline().String(),
-		BaseImage:    s.baseImage,
+		BaseImage:    state.baseImage,
 		ScratchImage: home,
 		SwapImage:    swap,
-		CPUCount:     cpuCount(s.spec.Resources),
+		CPUCount:     cpuCount(state.spec.Resources),
 		MemoryBytes:  memory,
 		Shares:       shares,
 	})
@@ -247,61 +249,61 @@ func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
 	// Recorded before it is ready: a hypervisor owns its VM as a separate process, so one booted while
 	// the node is shutting down has to be reachable by Close or it outlives deepcove.
 	d.mu.Lock()
-	s.machine = m
+	state.machine = m
 	d.mu.Unlock()
 
 	homeDevice, swapDevice := guestDevices(home, swap)
 	if err := m.ServeLLMForward(d.llmProxyURL, d.tailnetClient); err != nil {
-		return d.abandon(s, m, err)
+		return d.abandon(state, m, err)
 	}
 	// The guest asks for both of these at boot, so they have to be listening before it gets that far.
 	if err := m.ServeConfig(guestcfg.Config{
-		Entrypoint:     s.spec.Cmd,
-		Agent:          s.spec.Agent,
-		Env:            s.spec.Env,
-		OverlayBytes:   s.spec.Resources.Disk,
+		Entrypoint:     state.spec.Cmd,
+		Agent:          state.spec.Agent.Name,
+		Env:            state.spec.Env,
+		OverlayBytes:   state.spec.Resources.Disk,
 		Mounts:         guestMounts,
 		HomeDevice:     homeDevice,
-		HomeTarget:     homeMountTarget(s.spec.Mounts),
+		HomeTarget:     homeMountTarget(state.spec.Mounts),
 		SwapDevice:     swapDevice,
 		NetworkAllow:   d.networkAllow,
 		LLMRequestPort: llmproxy.LLMRequestPort,
 	}); err != nil {
-		return d.abandon(s, m, err)
+		return d.abandon(state, m, err)
 	}
 	if d.creds != nil {
 		if err := m.ServeCredentials(d.creds); err != nil {
-			return d.abandon(s, m, err)
+			return d.abandon(state, m, err)
 		}
 	}
 
 	// Drain the console before waiting: it is an OS pipe, so an undrained one eventually blocks the
 	// guest mid boot, and its contents are what explain a failure to come up.
-	m.CaptureConsole(d.consolePath(h))
+	m.CaptureConsole(d.consolePath(sandboxID))
 
 	// Do not report a running session until the guest actually answers. Otherwise a guest that panicked
 	// still looks healthy and only reveals itself later as an empty terminal.
 	if err := m.WaitReady(ctx, bootTimeout); err != nil {
-		return d.abandon(s, m, err)
+		return d.abandon(state, m, err)
 	}
 
 	d.mu.Lock()
-	ours := s.machine == m
+	ours := state.machine == m
 	live := d.liveCountLocked()
 	d.mu.Unlock()
 	if !ours {
-		return fmt.Errorf("vm: sandbox %s was stopped while it was starting", h)
+		return fmt.Errorf("vm: sandbox %s was stopped while it was starting", sandboxID)
 	}
-	d.logger.Info("vm started", "handle", h, "image", s.spec.Image, "live_vms", live)
+	d.logger.Info("vm started", "handle", sandboxID, "image", state.spec.Image, "live_vms", live)
 	return nil
 }
 
 // abandon puts down a machine that failed to finish starting, and forgets it unless a shutdown already
 // took it away.
-func (d *Driver) abandon(s *session, m *Guest, cause error) error {
+func (d *Driver) abandon(state *sandboxState, m *Guest, cause error) error {
 	d.mu.Lock()
-	if s.machine == m {
-		s.machine = nil
+	if state.machine == m {
+		state.machine = nil
 	}
 	d.mu.Unlock()
 	return errors.Join(cause, m.Stop())
@@ -334,11 +336,11 @@ func (d *Driver) sweepOldConsoleLogFiles(now time.Time) {
 }
 
 // consolePath is where a VM's console is kept, so a guest that dies leaves something to read.
-func (d *Driver) consolePath(h sandbox.ID) string {
+func (d *Driver) consolePath(sandboxID sandbox.ID) string {
 	if err := os.MkdirAll(d.logs, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(d.logs, string(h)+".log")
+	return filepath.Join(d.logs, string(sandboxID)+".log")
 }
 
 // ListSandboxes reports every VM this driver tracks. The registry is in memory and dies with the
@@ -348,23 +350,23 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	out := make([]sandbox.Instance, 0, len(d.machines))
-	for h, s := range d.machines {
-		state := sandbox.InstanceStopped
+	out := make([]sandbox.Instance, 0, len(d.sandboxes))
+	for sandboxID, state := range d.sandboxes {
+		instanceState := sandbox.InstanceStopped
 		switch {
-		case s.machine != nil:
-			state = sandbox.InstanceRunning
-		case s.starting:
-			state = sandbox.InstanceStarting
+		case state.machine != nil:
+			instanceState = sandbox.InstanceRunning
+		case state.starting:
+			instanceState = sandbox.InstanceStarting
 		}
 		out = append(out, sandbox.Instance{
-			ID:           h,
-			State:        state,
-			Unresponsive: s.machine != nil && s.machine.Unresponsive(),
-			Image:        s.spec.Image,
-			Mounts:       hostMounts(s.spec.Mounts),
-			Resources:    actualResources(s.spec.Resources),
-			CreatedAt:    s.createdAt,
+			ID:           sandboxID,
+			State:        instanceState,
+			Unresponsive: state.machine != nil && state.machine.Unresponsive(),
+			Image:        state.spec.Image,
+			Mounts:       hostMounts(state.spec.Mounts),
+			Resources:    actualResources(state.spec.Resources),
+			CreatedAt:    state.createdAt,
 		})
 	}
 	// Map iteration order is random, so sort for a view that does not reshuffle on every poll. Newest
@@ -436,8 +438,8 @@ func actualResources(r sandbox.Resources) sandbox.Resources {
 // liveCountLocked reports how many VMs are running. Callers hold d.mu.
 func (d *Driver) liveCountLocked() int {
 	n := 0
-	for _, s := range d.machines {
-		if s.machine != nil {
+	for _, state := range d.sandboxes {
+		if state.machine != nil {
 			n++
 		}
 	}
@@ -455,14 +457,14 @@ const bootTimeout = 20 * time.Second
 
 // Stop asks the guest to power itself off, which also gives it the chance to hand back refreshed
 // credentials. Stopping an already stopped sandbox is not an error.
-func (d *Driver) Stop(_ context.Context, h sandbox.ID) error {
-	s, err := d.lookup(h)
+func (d *Driver) Stop(_ context.Context, sandboxID sandbox.ID) error {
+	state, err := d.lookup(sandboxID)
 	if err != nil {
 		return err
 	}
 	d.mu.Lock()
-	m := s.machine
-	s.machine = nil
+	m := state.machine
+	state.machine = nil
 	d.mu.Unlock()
 	if m == nil {
 		return nil
@@ -472,33 +474,33 @@ func (d *Driver) Stop(_ context.Context, h sandbox.ID) error {
 	d.mu.Lock()
 	live := d.liveCountLocked()
 	d.mu.Unlock()
-	d.logger.Info("vm stopped", "handle", h, "live_vms", live, "err", err)
+	d.logger.Info("vm stopped", "handle", sandboxID, "live_vms", live, "err", err)
 	return err
 }
 
 // Destroy stops the VM if it is running and forgets the sandbox. The cached base image survives, because
 // it is shared by every session using that image.
-func (d *Driver) Destroy(ctx context.Context, h sandbox.ID) error {
-	if err := d.Stop(ctx, h); err != nil {
+func (d *Driver) Destroy(ctx context.Context, sandboxID sandbox.ID) error {
+	if err := d.Stop(ctx, sandboxID); err != nil {
 		return err
 	}
 	d.mu.Lock()
-	delete(d.machines, h)
+	delete(d.sandboxes, sandboxID)
 	live := d.liveCountLocked()
-	tracked := len(d.machines)
+	tracked := len(d.sandboxes)
 	d.mu.Unlock()
 	// Swap belongs to the machine, so it goes with it. The home disk does not: it is keyed by session and
 	// outlives the sandbox on purpose.
-	if err := os.Remove(filepath.Join(d.disks, "swap-"+string(h)+".img")); err != nil && !os.IsNotExist(err) {
-		d.logger.Warn("could not remove swap disk", "handle", h, "err", err)
+	if err := os.Remove(filepath.Join(d.disks, "swap-"+string(sandboxID)+".img")); err != nil && !os.IsNotExist(err) {
+		d.logger.Warn("could not remove swap disk", "handle", sandboxID, "err", err)
 	}
-	d.logger.Info("vm destroyed", "handle", h, "live_vms", live, "tracked_sandboxes", tracked)
+	d.logger.Info("vm destroyed", "handle", sandboxID, "live_vms", live, "tracked_sandboxes", tracked)
 	return nil
 }
 
 // Exec runs a command inside a started VM over vsock.
-func (d *Driver) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSpec) (sandbox.Process, error) {
-	m, err := d.runningMachine(h)
+func (d *Driver) Exec(ctx context.Context, sandboxID sandbox.ID, cmd sandbox.ExecSpec) (sandbox.Process, error) {
+	m, err := d.runningMachine(sandboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -536,8 +538,8 @@ func streamStdin(proc sandbox.Process, r io.Reader) {
 
 // Logs returns the guest's serial console, which carries kernel messages and the init's boot progress.
 // It is a live stream rather than a replayable buffer, so LogOpts is ignored.
-func (d *Driver) Logs(_ context.Context, h sandbox.ID, _ sandbox.LogOpts) (io.ReadCloser, error) {
-	m, err := d.runningMachine(h)
+func (d *Driver) Logs(_ context.Context, sandboxID sandbox.ID, _ sandbox.LogOpts) (io.ReadCloser, error) {
+	m, err := d.runningMachine(sandboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -636,7 +638,7 @@ func swapDiskBytes(memory uint64) int64 {
 //
 // Named by sandbox rather than by session, unlike the home disk: swap belongs to the machine and holds
 // nothing worth keeping, so a rebuilt sandbox gets a fresh one.
-func (d *Driver) swapDisk(h sandbox.ID, memory uint64) (string, error) {
+func (d *Driver) swapDisk(sandboxID sandbox.ID, memory uint64) (string, error) {
 	size := swapDiskBytes(memory)
 	if size <= 0 {
 		return "", nil
@@ -644,7 +646,7 @@ func (d *Driver) swapDisk(h sandbox.ID, memory uint64) (string, error) {
 	if err := os.MkdirAll(d.disks, 0o700); err != nil {
 		return "", fmt.Errorf("vm: create disk dir: %w", err)
 	}
-	path := filepath.Join(d.disks, "swap-"+string(h)+".img")
+	path := filepath.Join(d.disks, "swap-"+string(sandboxID)+".img")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("vm: create swap disk: %w", err)
@@ -738,11 +740,11 @@ func (d *Driver) closeWithin(budget time.Duration) error {
 func (d *Driver) takeRunning() []*Guest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	running := make([]*Guest, 0, len(d.machines))
-	for _, s := range d.machines {
-		if s.machine != nil {
-			running = append(running, s.machine)
-			s.machine = nil
+	running := make([]*Guest, 0, len(d.sandboxes))
+	for _, state := range d.sandboxes {
+		if state.machine != nil {
+			running = append(running, state.machine)
+			state.machine = nil
 		}
 	}
 	return running
@@ -768,8 +770,8 @@ func stopAll(running []*Guest, stop func(*Guest) error) error {
 //
 // The spec goes through the same checks as Create. Skipping them would make a restart a way to mount a
 // host folder this node refuses to share, and would leave a renamed image booting the old rootfs.
-func (d *Driver) Restart(ctx context.Context, h sandbox.ID, spec sandbox.SandboxSpec) error {
-	s, err := d.lookup(h)
+func (d *Driver) Restart(ctx context.Context, sandboxID sandbox.ID, spec sandbox.SandboxSpec) error {
+	state, err := d.lookup(sandboxID)
 	if err != nil {
 		return err
 	}
@@ -783,37 +785,37 @@ func (d *Driver) Restart(ctx context.Context, h sandbox.ID, spec sandbox.Sandbox
 	if err != nil {
 		return err
 	}
-	if err := d.Stop(ctx, h); err != nil {
+	if err := d.Stop(ctx, sandboxID); err != nil {
 		return err
 	}
 	d.mu.Lock()
-	s.spec = spec
-	s.baseImage = base
+	state.spec = spec
+	state.baseImage = base
 	d.mu.Unlock()
-	return d.Start(ctx, h)
+	return d.Start(ctx, sandboxID)
 }
 
-func (d *Driver) lookup(h sandbox.ID) (*session, error) {
+func (d *Driver) lookup(sandboxID sandbox.ID) (*sandboxState, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	s, ok := d.machines[h]
+	state, ok := d.sandboxes[sandboxID]
 	if !ok {
-		return nil, fmt.Errorf("vm: unknown sandbox %s: %w", h, sandbox.ErrNotFound)
+		return nil, fmt.Errorf("vm: unknown sandbox %s: %w", sandboxID, sandbox.ErrNotFound)
 	}
-	return s, nil
+	return state, nil
 }
 
-func (d *Driver) runningMachine(h sandbox.ID) (*Guest, error) {
-	s, err := d.lookup(h)
+func (d *Driver) runningMachine(sandboxID sandbox.ID) (*Guest, error) {
+	state, err := d.lookup(sandboxID)
 	if err != nil {
 		return nil, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if s.machine == nil {
-		return nil, fmt.Errorf("vm: sandbox %s is not running: %w", h, sandbox.ErrConflict)
+	if state.machine == nil {
+		return nil, fmt.Errorf("vm: sandbox %s is not running: %w", sandboxID, sandbox.ErrConflict)
 	}
-	return s.machine, nil
+	return state.machine, nil
 }
 
 // Resource defaults. A VM must be given concrete values, unlike a container that can inherit the host's,

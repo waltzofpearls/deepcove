@@ -87,21 +87,32 @@
   // Bumped by the refresh button, because the fetch below only reruns when the set of machines changes.
   let runtimeEpoch = $state(0);
   const nodeIDs = $derived((nodes ?? []).map((n) => n.stable_node_id).join(','));
+  const runtimeAnswerTimeoutMs = 8000;
   $effect(() => {
     void nodeIDs;
     void runtimeEpoch;
     const list = untrack(() => nodes) ?? [];
-    const ac = new AbortController();
+    // One per machine, so a slow one does not take the others down with it.
+    const asking: { controller: AbortController; timer: ReturnType<typeof setTimeout> }[] = [];
     for (const node of list) {
       if (!node.online) continue;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), runtimeAnswerTimeoutMs);
+      asking.push({ controller, timer });
       api
-        .preflight(node.self ? undefined : nodeHost(node), ac.signal)
+        .preflight(node.self ? undefined : nodeHost(node), controller.signal)
         .then((p) => {
           runtimeInfo = { ...runtimeInfo, [node.stable_node_id]: p.runtimes };
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => clearTimeout(timer));
     }
-    return () => ac.abort();
+    return () => {
+      for (const { controller, timer } of asking) {
+        clearTimeout(timer);
+        controller.abort();
+      }
+    };
   });
 
   // Sessions come from the aggregated list, which already tags each one with the machine hosting it.

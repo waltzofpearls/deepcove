@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,9 +13,6 @@ import (
 // A machine can host more than one session, so preparing the machine and starting an agent are separate
 // steps. The entrypoint does the first, once per sandbox. This does the second, once per session, which
 // is what lets a session join a sandbox that booted long ago.
-
-// agentLaunchPath is the script the entrypoint writes and this runs. A constant so the two cannot drift.
-const agentLaunchPath = "/usr/local/bin/deepcove-agent-launch"
 
 // tmuxSessionName is the tmux session an agent runs in, one per deepcove session.
 //
@@ -28,20 +26,31 @@ func tmuxSessionName(sessionID string) string { return "deepcove-" + sessionID }
 // Idempotent: an existing tmux session is left alone. That makes Start safe to repeat, and it heals a
 // sandbox that predates this change, where the entrypoint had already created one.
 func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir string) error {
+	// A stop before the agent exists kills nothing, so starting it now would undo the stop.
+	if current, err := s.Get(ctx, sess.ID); err == nil && current.Status == StatusStopped {
+		return fmt.Errorf("session: not starting the agent, %s is stopped", sess.ID)
+	}
 	name := tmuxSessionName(sess.ID)
 	if _, err := s.execTmux(ctx, sess, "has-session", "-t", name); err == nil {
 		return nil
 	}
-
-	// tmux refuses to start in a directory that does not exist, and on the shared machine this folder
-	// is the session's own, created here on first use.
-	if _, ok := s.execCapture(ctx, sess, []string{"mkdir", "-p", workdir}); !ok {
-		return fmt.Errorf("session: could not create %s", workdir)
+	// Nobody could say where this session works. Guessing would make a folder somewhere nobody asked
+	// for, and on a machine with no sandbox that is a real path on the user's disk.
+	if workdir == "" {
+		return fmt.Errorf("session: the %s runtime cannot say which folder this session works in", sess.Runtime)
 	}
 
 	runtime, err := s.runtimeFor(sess)
 	if err != nil {
 		return err
+	}
+
+	// deepcove creates the folder it chose for the session. If you chose the folder yourself and it is
+	// no longer there, deepcove leaves it alone, and the agent tells you it is gone.
+	if sess.WorkDir == "" || !workDirIsOnThisMachine(runtime) {
+		if _, ok := s.execCapture(ctx, sess, []string{"mkdir", "-p", workdir}); !ok {
+			return fmt.Errorf("session: could not create %s", workdir)
+		}
 	}
 	newSession := []string{
 		"new-session", "-d",
@@ -50,7 +59,11 @@ func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir 
 		"-c", workdir,
 	}
 	// env rather than a shell: nothing parses a string we built, and it works on any tmux version.
-	newSession = append(newSession, s.agentLaunchCommand(sess, runtime)...)
+	launch, err := s.agentLaunchCommand(sess, runtime)
+	if err != nil {
+		return err
+	}
+	newSession = append(newSession, launch...)
 	if _, err := s.execTmux(ctx, sess, newSession...); err != nil {
 		return fmt.Errorf("session: start agent: %w", err)
 	}
@@ -63,7 +76,7 @@ func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir 
 
 // agentLaunchCommand starts one session's agent with the environment that belongs to the session rather
 // than to the machine. Two sessions on one machine can differ because of this.
-func (s *Service) agentLaunchCommand(sess *Session, runtime sandbox.Sandbox) []string {
+func (s *Service) agentLaunchCommand(sess *Session, runtime sandbox.Sandbox) ([]string, error) {
 	proxyURL := s.LLMProxyURL()
 	proxied := sess.UseLLMProxy && proxyURL != ""
 	// env's options have to come before any assignment, or env reads them as the command to run.
@@ -79,20 +92,33 @@ func (s *Service) agentLaunchCommand(sess *Session, runtime sandbox.Sandbox) []s
 			// proxy never sees it: it is replaced on the way out.
 			"ANTHROPIC_AUTH_TOKEN="+llmproxy.AuthToken(sess.ID))
 	}
-	return append(argv, agentLaunchPath)
+	provisioner, ok := runtime.(sandbox.AgentProvisioner)
+	if !ok {
+		return nil, fmt.Errorf("session: the %s runtime cannot say what starts its agent", sess.Runtime)
+	}
+	launch, err := provisioner.AgentLaunchCommand(sandbox.ID(sess.SandboxID))
+	if err != nil {
+		return nil, fmt.Errorf("session: what starts the agent: %w", err)
+	}
+	return append(argv, launch...), nil
 }
 
-// sessionWorkdir is the directory this session's agent works in: its own folder on the shared machine,
-// else the first mount, else /workspace.
-func sessionWorkdir(sess *Session) string {
+// sessionWorkDir is the folder this session's agent works in: the one it was given, else whatever its
+// runtime says. Empty when nothing can say, which callers refuse rather than paper over: /workspace is
+// a folder inside a guest, and on a machine with no sandbox it would be one at the root of the disk.
+func (s *Service) sessionWorkDir(sess *Session) string {
 	if sess.WorkDir != "" {
 		return sess.WorkDir
 	}
-	userMounts, err := validateMountRequests(sess.Mounts)
+	provisioner, err := s.agentProvisionerFor(sess)
 	if err != nil {
-		return workspaceDir
+		return ""
 	}
-	return workdirFor(userMounts)
+	mounts, err := validateMountRequests(sess.Mounts)
+	if err != nil {
+		return ""
+	}
+	return provisioner.WorkDir(sess.ID, mounts)
 }
 
 // setupPollInterval is how often the machine is asked whether its setup has finished.
@@ -110,6 +136,17 @@ func (s *Service) ensureAgentAfterSetup(sess *Session, workdir string) {
 	defer cancel()
 
 	for {
+		// The session can be deleted or stopped while this waits. Deleted reads as still installing, so
+		// the wait would run its full five minutes; stopped would end with this starting the agent for
+		// a session the user just stopped.
+		current, err := s.Get(ctx, sess.ID)
+		if errors.Is(err, ErrNotFound) {
+			return
+		}
+		if err == nil && current.Status == StatusStopped {
+			return
+		}
+
 		// The machine is asked, not the row: the row reads as starting while this wait runs.
 		switch s.bootstrapOf(ctx, sess).Status {
 		case BootstrapErrored:

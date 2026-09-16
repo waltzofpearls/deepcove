@@ -220,7 +220,7 @@ func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (
 	vm := &WorkspaceVM{
 		HostRoot:    filepath.Clean(req.HostRoot),
 		GuestRoot:   guestRoot,
-		Image:       cmp.Or(req.Image, agent.OfficialImage),
+		Image:       cmp.Or(req.Image, agent.Sandboxed.OfficialImage),
 		Runtime:     runtime,
 		SetupScript: req.SetupScript,
 		Resources:   req.Resources,
@@ -384,14 +384,14 @@ func (s *Service) startOnWorkspaceVM(ctx context.Context, sess *Session) error {
 	if err := s.repo.MarkRunning(ctx, placeholderOwner, sess.ID, now); err != nil {
 		return fmt.Errorf("session: mark running: %w", err)
 	}
-	s.background(func() { s.ensureAgentAfterSetup(sess, sessionWorkdir(sess)) })
+	s.background(func() { s.ensureAgentAfterSetup(sess, s.sessionWorkDir(sess)) })
 	s.logger.Info("session started on the workspace vm", "id", sess.ID, "name", sess.Name)
 	return nil
 }
 
 // workspaceVMSpec describes the shared machine to the driver: the host root shared at /workspace, and
 // storage keyed to the machine rather than to a session.
-func workspaceVMSpec(vm *WorkspaceVM, agent AgentInfo) sandbox.SandboxSpec {
+func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec) sandbox.SandboxSpec {
 	return newSandboxSpec(sandboxRequest{
 		ID:        workspaceVMHomeDiskID,
 		Name:      "workspace",

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -450,20 +451,40 @@ func TestAgents_ClaudeRegistryDefaults(t *testing.T) {
 	if a.DisplayName == "" {
 		t.Errorf("DisplayName must be non-empty (UI displays it in the dropdown)")
 	}
-	if a.DefaultImage == "" {
-		t.Errorf("DefaultImage must be non-empty (default for 'Install at startup' radio)")
+	if a.Sandboxed.DefaultImage == "" {
+		t.Errorf("Sandboxed.DefaultImage must be non-empty (default for 'Install at startup' radio)")
 	}
-	if !strings.Contains(a.DefaultSetup, "claude.ai/install.sh") {
-		t.Errorf("DefaultSetup should reference the native installer URL; got: %s", a.DefaultSetup)
+	if !strings.Contains(a.Sandboxed.Setup, "claude.ai/install.sh") {
+		t.Errorf("Sandboxed.Setup should reference the native installer URL; got: %s", a.Sandboxed.Setup)
 	}
-	if !strings.Contains(a.LaunchCmd, "claude") {
-		t.Errorf("LaunchCmd should invoke the claude binary; got: %s", a.LaunchCmd)
+	if !strings.Contains(a.Sandboxed.LaunchCmd, "claude") {
+		t.Errorf("LaunchCmd should invoke the claude binary; got: %s", a.Sandboxed.LaunchCmd)
 	}
-	if !strings.Contains(a.LaunchCmd, "while") {
-		t.Errorf("LaunchCmd should auto-restart on exit (while loop); got: %s", a.LaunchCmd)
+	if !strings.Contains(a.Sandboxed.LaunchCmd, "while") {
+		t.Errorf("LaunchCmd should auto-restart on exit (while loop); got: %s", a.Sandboxed.LaunchCmd)
 	}
-	if a.Env["USE_BUILTIN_RIPGREP"] != "0" {
-		t.Errorf("Env should set USE_BUILTIN_RIPGREP=0 for Alpine musl; got: %v", a.Env)
+	if a.Sandboxed.Env["USE_BUILTIN_RIPGREP"] != "0" {
+		t.Errorf("Sandboxed.Env should set USE_BUILTIN_RIPGREP=0 for Alpine musl; got: %v", a.Sandboxed.Env)
+	}
+}
+
+// The registry's env is the guest image's: its locale, and a switch for a ripgrep that only breaks on
+// Alpine. A session on the machine has the user's own locale, and their own ripgrep or none.
+func TestAMachineSessionTakesNoneOfTheImagesEnv(t *testing.T) {
+	agent, err := resolveAgent("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := newSandboxSpec(sandboxRequest{ID: "s1", Name: "n", Agent: agent})
+	machine := newSandboxSpec(sandboxRequest{ID: "s1", Name: "n", Agent: agent, OnThisMachine: true})
+
+	for _, name := range []string{"USE_BUILTIN_RIPGREP", "LANG", "LC_ALL"} {
+		if _, ok := guest.Env[name]; !ok {
+			t.Errorf("the guest lost %s, which its image needs", name)
+		}
+		if value, ok := machine.Env[name]; ok {
+			t.Errorf("a session on the machine got %s=%s from the guest image", name, value)
+		}
 	}
 }
 
@@ -519,8 +540,8 @@ func TestService_Create_WithCustomSetupScript(t *testing.T) {
 }
 
 func TestService_Create_DefaultsToAgentRegistry(t *testing.T) {
-	// Blank Image + blank SetupScript should pick up agent.DefaultImage and inline
-	// agent.DefaultSetup in the entrypoint.
+	// Blank Image + blank SetupScript should pick up agent.Sandboxed.DefaultImage and inline
+	// agent.Sandboxed.Setup in the entrypoint.
 	svc, fake, _, _ := newTestService(t)
 
 	sess, err := svc.Create(context.Background(), CreateRequest{Agent: "claude"})
@@ -528,8 +549,8 @@ func TestService_Create_DefaultsToAgentRegistry(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	a, _ := resolveAgent("claude")
-	if sess.Image != a.DefaultImage {
-		t.Errorf("Image: want agent default %q, got %q", a.DefaultImage, sess.Image)
+	if sess.Image != a.Sandboxed.DefaultImage {
+		t.Errorf("Image: want agent default %q, got %q", a.Sandboxed.DefaultImage, sess.Image)
 	}
 	// SetupScript stays empty on the row (sentinel for "use agent default at runtime").
 	if sess.SetupScript != "" {
@@ -541,7 +562,7 @@ func TestService_Create_DefaultsToAgentRegistry(t *testing.T) {
 	}
 	cmd := strings.Join(fake.specs[0].Cmd, " ")
 	if !strings.Contains(cmd, "claude.ai/install.sh") {
-		t.Errorf("entrypoint should inline agent.DefaultSetup; got: %s", cmd)
+		t.Errorf("entrypoint should inline agent.Sandboxed.Setup; got: %s", cmd)
 	}
 }
 
@@ -939,12 +960,46 @@ func TestValidateMountRequests(t *testing.T) {
 	}
 }
 
+// GET /api/agents feeds the create form, which needs the images and the setup script it pre-fills.
+// The launch scripts and the install command are shell this node runs, so they stay here.
+func TestAgentsAPISendsOnlyWhatTheFormReads(t *testing.T) {
+	body, err := json.Marshal(allAgents())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var agents []map[string]any
+	if err := json.Unmarshal(body, &agents); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(agents) == 0 {
+		t.Fatal("no agents to check")
+	}
+
+	for _, agent := range agents {
+		if _, sent := agent["sandboxless"]; sent {
+			t.Error("the install command is going to the browser")
+		}
+		sandboxed, ok := agent["sandboxed"].(map[string]any)
+		if !ok {
+			t.Fatalf("agent %v has no sandboxed half", agent["name"])
+		}
+		if _, sent := sandboxed["launch_cmd"]; sent {
+			t.Error("the guest's launch script is going to the browser")
+		}
+		for _, want := range []string{"default_image", "official_image", "setup"} {
+			if _, sent := sandboxed[want]; !sent {
+				t.Errorf("the create form reads %q, which is not in the payload", want)
+			}
+		}
+	}
+}
+
 func TestAgents(t *testing.T) {
-	got := Agents()
+	got := allAgents()
 
 	// Whole-list invariants, checked once, not per case.
 	if len(got) == 0 {
-		t.Fatal("Agents() returned empty list")
+		t.Fatal("allAgents() returned empty list")
 	}
 	for i := 1; i < len(got); i++ {
 		if got[i-1].Name >= got[i].Name {
@@ -964,7 +1019,7 @@ func TestAgents(t *testing.T) {
 		t.Run(tc.agent, func(t *testing.T) {
 			for _, a := range got {
 				if a.Name == tc.agent {
-					if a.DefaultImage == "" {
+					if a.Sandboxed.DefaultImage == "" {
 						t.Errorf("agent %q has empty DefaultImage", tc.agent)
 					}
 					return
@@ -1117,5 +1172,33 @@ func TestEnsureSharedFolderMakesNothingWithoutAllowedRoots(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("%s was created with no allowed roots configured", path)
+	}
+}
+
+// Naming a folder creates it. Starting a session again does not: the folder held your code, and an
+// empty one in its place is worse than a clear failure.
+func TestSharedFolderCreatedOnlyWhenNamed(t *testing.T) {
+	root := t.TempDir()
+	svc := &Service{allowedMountRoots: []string{root}}
+	missing := filepath.Join(root, "project")
+	rows := []MountRequest{{HostPath: missing, ContainerPath: "/workspace"}}
+
+	if _, err := svc.prepareMountsRequiringFolders(rows); !errors.Is(err, ErrMountInvalid) {
+		t.Fatalf("starting with a folder that is gone: got %v, want ErrMountInvalid", err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatal("starting a session created the folder")
+	}
+
+	if _, err := svc.prepareMountsCreatingFolders(rows); err != nil {
+		t.Fatalf("naming a folder: %v", err)
+	}
+	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
+		t.Fatalf("naming a folder did not make it: %v", err)
+	}
+
+	// And once it is there, starting is happy.
+	if _, err := svc.prepareMountsRequiringFolders(rows); err != nil {
+		t.Errorf("starting with the folder there: %v", err)
 	}
 }

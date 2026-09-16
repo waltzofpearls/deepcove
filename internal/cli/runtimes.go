@@ -107,6 +107,13 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 	case vmRuntime.name != "":
 		svc.MarkRuntimeMissing(vmRuntime.name, vmRuntime.missing)
 	}
+	sandboxlessRuntime := newSandboxlessRuntime(deps)
+	switch {
+	case sandboxlessRuntime.driver != nil:
+		entries = append(entries, sandboxlessRuntime)
+	case sandboxlessRuntime.name != "":
+		svc.MarkRuntimeMissing(sandboxlessRuntime.name, sandboxlessRuntime.missing)
+	}
 
 	set := &runtimeSet{}
 	for _, e := range entries {

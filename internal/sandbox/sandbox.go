@@ -126,7 +126,7 @@ type Lister interface {
 // Restarter is a runtime that can stop and start a sandbox in place, picking up a new spec. A VM reads
 // its size and mounts at boot, so this applies changes without losing the sandbox.
 type Restarter interface {
-	Restart(ctx context.Context, h ID, spec SandboxSpec) error
+	Restart(ctx context.Context, sandboxID ID, spec SandboxSpec) error
 }
 
 // LLMForwarder is a runtime that carries a sandbox's LLM traffic itself, so the sandbox never reaches
@@ -134,6 +134,60 @@ type Restarter interface {
 type LLMForwarder interface {
 	// LLMEndpoint is the URL a sandbox calls instead of the provider.
 	LLMEndpoint() string
+}
+
+// AgentProvisioner is how a runtime answers for the agent it hosts. Every runtime implements it: a
+// guest runtime reads the files its entrypoint wrote, and one with no guest answers from its own state.
+type AgentProvisioner interface {
+	// Setup is how far this sandbox has got with getting the agent ready.
+	Setup(ctx context.Context, sandboxID ID) (SetupState, error)
+	// AgentLaunchCommand is what the terminal multiplexer runs to start the agent.
+	AgentLaunchCommand(sandboxID ID) ([]string, error)
+	// WorkDir is the folder the agent works in. Keyed by session, not sandbox, because the spec that
+	// names it is built before the sandbox exists.
+	WorkDir(sessionID string, mounts []Mount) string
+	// WorkspaceRoot is where a runtime that makes folders for sessions keeps them, and empty for one
+	// that does not. The create form shows it before a session exists.
+	WorkspaceRoot() string
+	// AgentInstalled reports whether the agent is already there, so the create form can say whether
+	// picking it means installing it first. A sandboxed runtime installs it at boot either way.
+	AgentInstalled(agent Agent) bool
+}
+
+// Agent is which coding agent a sandbox hosts, and for a runtime with no guest, how to put it there.
+//
+// Name is all a guest runtime needs: it brokers the agent's login with the host under that name, since
+// it cannot share the named volume that gives container sessions one shared login. The rest is for a
+// runtime that installs the agent on the machine itself.
+type Agent struct {
+	Name string
+	// Binary is what to look for on PATH and in the agent home.
+	Binary string
+	// Install runs only when there is no binary, with HOME set to the agent home.
+	Install string
+	// LaunchCmd starts the agent and restarts it when it exits. It runs the binary at $DEEPCOVE_AGENT,
+	// which the runtime sets to the path it resolved.
+	LaunchCmd string
+}
+
+// SetupStatus is how far the agent's setup has got. Its own type, so the guest's word for the same
+// idea, which differs (see SandboxedStatusErrored), cannot be assigned here by mistake.
+type SetupStatus string
+
+// Setup states, reported by a runtime that installs the agent itself.
+const (
+	// SetupInstalling: the agent is being put in place.
+	SetupInstalling SetupStatus = "installing"
+	// SetupReady: the agent is there and can be started.
+	SetupReady SetupStatus = "ready"
+	// SetupFailed: it did not work, and Log says what happened.
+	SetupFailed SetupStatus = "failed"
+)
+
+// SetupState is how far a runtime has got with preparing the agent, and whatever it printed on the way.
+type SetupState struct {
+	Status SetupStatus
+	Log    string
 }
 
 // InstanceState is a sandbox's lifecycle state as the driver sees it, normalized across backends. A
@@ -186,30 +240,30 @@ type ID string
 type Sandbox interface {
 	// Lifecycle.
 	Create(ctx context.Context, spec SandboxSpec) (ID, error)
-	Start(ctx context.Context, h ID) error
-	Stop(ctx context.Context, h ID) error
-	Destroy(ctx context.Context, h ID) error
+	Start(ctx context.Context, sandboxID ID) error
+	Stop(ctx context.Context, sandboxID ID) error
+	Destroy(ctx context.Context, sandboxID ID) error
 
 	// Exec runs a command inside an already-Started sandbox. The returned Process is owned by the
 	// caller; call Close on it (or Wait, which closes on completion) to release the underlying
 	// connection.
-	Exec(ctx context.Context, h ID, cmd ExecSpec) (Process, error)
+	Exec(ctx context.Context, sandboxID ID, cmd ExecSpec) (Process, error)
 
 	// Logs returns the sandbox's stdout/stderr stream. Follow=true
 	// keeps the reader open across new writes; closing the reader
 	// is the caller's responsibility.
-	Logs(ctx context.Context, h ID, opts LogOpts) (io.ReadCloser, error)
+	Logs(ctx context.Context, sandboxID ID, opts LogOpts) (io.ReadCloser, error)
 
 	// CopyIn / CopyOut move single paths between host and sandbox.
 	// Behavior on directories is driver-defined (most copy recursively).
-	CopyIn(ctx context.Context, h ID, src, dst string) error
-	CopyOut(ctx context.Context, h ID, src, dst string) error
+	CopyIn(ctx context.Context, sandboxID ID, src, dst string) error
+	CopyOut(ctx context.Context, sandboxID ID, src, dst string) error
 
 	// Snapshot / Restore are optional. Drivers without support
 	// return ErrNotSupported and the session layer falls back to
 	// cold-creating a fresh sandbox.
-	Snapshot(ctx context.Context, h ID) (SnapshotID, error)
-	Restore(ctx context.Context, h ID, id SnapshotID) error
+	Snapshot(ctx context.Context, sandboxID ID) (SnapshotID, error)
+	Restore(ctx context.Context, sandboxID ID, id SnapshotID) error
 
 	// RemoveStorage deletes a named persistent storage primitive (e.g. a Docker volume, a microVM
 	// volume image) by name. Used by the session layer to clean up the agent-home volume when a
@@ -237,10 +291,8 @@ type SandboxSpec struct {
 	// equivalent). Nil/empty = use the image default.
 	Cmd []string
 
-	// Agent names the coding agent this sandbox hosts. Container drivers ignore it; VM drivers use it
-	// to broker the agent's login with the host, since they cannot share the named volume that gives
-	// container sessions one shared login.
-	Agent string
+	// Agent is the coding agent this sandbox hosts.
+	Agent Agent
 
 	// Mounts are host paths shared with the sandbox. Source paths must be owned by this node;
 	// sessions never cross host boundaries. ValidateSpec enforces this.

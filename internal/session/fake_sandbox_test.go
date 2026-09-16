@@ -17,6 +17,8 @@ import (
 // every call and lets each lifecycle method be made to fail via a
 // hook, which is what the rollback-on-partial-failure tests need.
 type fakeSandbox struct {
+	// The agent answers a guest runtime shares, which is what this fake stands in for.
+	sandbox.SandboxedProvisioner
 	mu sync.Mutex
 
 	created   map[sandbox.ID]sandbox.SandboxSpec
@@ -243,6 +245,11 @@ func (f *fakeSandbox) RemoveStorage(ctx context.Context, name string) error {
 // liveCount is a test helper: how many sandboxes are still "alive"
 // (created but not destroyed). Used by rollback tests to assert no
 // orphans remain.
+// Setup reads the files the tests serve through Exec, the way a guest runtime reads its own.
+func (f *fakeSandbox) Setup(ctx context.Context, sandboxID sandbox.ID) (sandbox.SetupState, error) {
+	return sandbox.SandboxedSetup(ctx, f, sandboxID)
+}
+
 func (f *fakeSandbox) liveCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

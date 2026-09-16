@@ -99,7 +99,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 
 	// The agent's session can be missing: its background start failed, or the machine rebooted.
 	// Idempotent, so just create it rather than fail the attach.
-	if err := s.startAgentSession(setupCtx, sess, sessionWorkdir(sess)); err != nil {
+	if err := s.startAgentSession(setupCtx, sess, s.sessionWorkDir(sess)); err != nil {
 		s.logger.Warn("attach: could not ensure the agent session", "id", id, "err", err)
 	}
 

@@ -225,7 +225,7 @@ func TestImageExistsReflectsTheCache(t *testing.T) {
 // The registry is the only record these VMs have, so listing it is the only way to see them at all.
 func TestListSandboxes(t *testing.T) {
 	d := &Driver{
-		machines: map[sandbox.ID]*session{
+		sandboxes: map[sandbox.ID]*sandboxState{
 			"older": {
 				spec:      sandbox.SandboxSpec{Image: "alpine:3.20"},
 				createdAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
@@ -524,7 +524,7 @@ func TestListReportsAStartingVM(t *testing.T) {
 
 	// Set by hand: booting a real VM is what this test cannot do, and the flag is the whole point.
 	d.mu.Lock()
-	d.machines[h].starting = true
+	d.sandboxes[h].starting = true
 	d.mu.Unlock()
 
 	if got := stateOf(t, d, h); got != sandbox.InstanceStarting {
