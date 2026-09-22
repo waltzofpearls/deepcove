@@ -144,7 +144,7 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 		"-c", workdir,
 		"-P", "-F", "#{window_index}",
 	}
-	// SSH-mode shell window gets a wrapper that prints the MOTD before exec'ing the
+	// The shell window gets a wrapper that prints the MOTD before exec'ing the
 	// shell. The MOTD file is dropped in the entrypoint preamble.
 	//
 	// $SHELL, not sh: on a machine with no sandbox that is dash, which has no completion and no history.

@@ -44,7 +44,7 @@ while true; do
     echo "Retrying in 3s in case it was a one-off spike ($ooms of 3)."
   else
     ooms=0
-    echo "claude exited (code $ec); restarting in 3s. Switch to SSH mode for a shell"
+    echo "claude exited (code $ec); restarting in 3s. Switch to the Shell tab for a prompt"
   fi
   sleep 3
 done

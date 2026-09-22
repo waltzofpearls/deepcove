@@ -3,9 +3,9 @@
 
   // SessionMode is the user-facing concept of "what am I looking at?"
   //   agent  → the tmux window where the coding agent runs (main)
-  //   ssh    → a plain shell window in the same sandbox (lazy-created)
+  //   shell  → a plain shell window in the same sandbox (lazy-created)
   //   split  → both side-by-side; desktop-only, hidden on mobile
-  export type SessionMode = 'agent' | 'ssh' | 'split';
+  export type SessionMode = 'agent' | 'shell' | 'split';
 
   let {
     mode,
@@ -23,7 +23,7 @@
   type Opt = { value: SessionMode; label: string; mobileHidden?: boolean };
   const options: Opt[] = [
     { value: 'agent', label: 'Agent' },
-    { value: 'ssh', label: 'SSH' },
+    { value: 'shell', label: 'Shell' },
     { value: 'split', label: 'Split', mobileHidden: true },
   ];
 </script>

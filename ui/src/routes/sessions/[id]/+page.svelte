@@ -113,7 +113,7 @@
     }
   }
 
-  // Mode lives in the URL (?mode=agent|ssh|split) so it's
+  // Mode lives in the URL (?mode=agent|shell|split) so it's
   // shareable / refreshable. Default agent (omitted from URL).
   // currentMode falls back to 'agent' when the URL says 'split'
   // but the viewport is too narrow. This keeps the URL honest while
@@ -149,10 +149,10 @@
   });
 
   // The shell window lives in the sandbox's tmux, so a rebuilt sandbox has none, while the URL still
-  // says SSH. Without this the attach quietly lands on the agent's window instead.
+  // says Shell. Without this the attach quietly lands on the agent's window instead.
   let shellReady = $state(false);
   $effect(() => {
-    const needsShell = currentMode === 'ssh' || currentMode === 'split';
+    const needsShell = currentMode === 'shell' || currentMode === 'split';
     const ready = session?.status === 'running';
     // Re-runs when the sandbox is replaced, since the new one has no shell window either.
     void session?.sandbox_id;
@@ -623,11 +623,11 @@
           {/if}
         </div>
       {:else if currentMode === 'agent' || shellReady}
-        <!-- Single-pane: Agent or SSH. Terminal re-attaches
+        <!-- Single-pane: Agent or Shell. Terminal re-attaches
              reactively when tmuxWindow changes (see step 6). -->
         <Terminal
           sessionId={session.id}
-          tmuxWindow={currentMode === 'ssh' ? 'shell' : 'main'}
+          tmuxWindow={currentMode === 'shell' ? 'shell' : 'main'}
           {host}
         />
       {:else}
