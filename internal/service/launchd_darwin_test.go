@@ -40,6 +40,11 @@ func TestPlistText(t *testing.T) {
 	if !strings.Contains(text, "<key>SuccessfulExit</key>\n\t\t<false/>") {
 		t.Errorf("plist does not restart on failure only:\n%s", text)
 	}
+	// Without this launchd kills the process group on stop, taking every session's tmux server with it,
+	// and nothing is left to take back at the next start.
+	if !strings.Contains(text, "<key>AbandonProcessGroup</key>\n\t<true/>") {
+		t.Errorf("stopping deepcove would stop the sessions too:\n%s", text)
+	}
 }
 
 // A path with an ampersand or a quote must not break the file it is written into.

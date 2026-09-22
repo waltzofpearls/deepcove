@@ -44,6 +44,9 @@ Wants=network-online.target
 
 [Service]
 ExecStart=%s
+# Stop deepcove, not what it started. A session on the machine is a tmux server outside deepcove, and
+# the default kills every process in the unit's group, agents included.
+KillMode=process
 Restart=on-failure
 RestartSec=1
 

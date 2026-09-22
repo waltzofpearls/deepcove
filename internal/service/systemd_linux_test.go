@@ -37,6 +37,11 @@ func TestUnitText(t *testing.T) {
 	if !strings.Contains(text, "WantedBy=default.target") {
 		t.Errorf("unit will not start with the session:\n%s", text)
 	}
+	// Without this systemd kills every process in the unit's group on stop, taking every session's tmux
+	// server with it, and nothing is left to take back at the next start.
+	if !strings.Contains(text, "KillMode=process") {
+		t.Errorf("stopping deepcove would stop the sessions too:\n%s", text)
+	}
 }
 
 func TestInstallWritesTheUnitThenEnablesIt(t *testing.T) {

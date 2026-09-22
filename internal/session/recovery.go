@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,81 @@ import (
 //
 // The pair of operations here closes that gap. MarkLostSessions tells the truth at startup, and
 // rebuilding a vanished sandbox on Start makes the session usable again instead of only diagnosable.
+
+// AdoptRunningSandboxes hands every runtime that can take its sandboxes back the ids its sessions were
+// using. Called once at startup, before MarkLostSessions, so a session whose sandbox survived is not
+// seen as lost and rebuilt on top of itself.
+func (s *Service) AdoptRunningSandboxes(ctx context.Context) error {
+	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
+	if err != nil {
+		return err
+	}
+	byRuntime := runningSessionsByRuntime(sessions, s.DefaultRuntime())
+
+	var adoptErr error
+	for name, driver := range s.registeredRuntimes() {
+		adopter, ok := driver.(sandbox.Adopter)
+		if !ok {
+			continue
+		}
+		sandboxes := map[sandbox.ID]sandbox.SandboxSpec{}
+		for _, sess := range byRuntime[name] {
+			// Left out of this map it gets swept, which kills a session that is running fine. So one we
+			// cannot describe is handed over with an empty spec rather than dropped.
+			spec, err := s.savedSpecForSession(sess)
+			if err != nil {
+				s.logger.Warn("taking a session back without knowing what it was made with",
+					"id", sess.ID, "err", err)
+			}
+			sandboxes[sandbox.ID(sess.SandboxID)] = spec
+		}
+		// Even with nothing to take back: this is also when it stops what it left running.
+		taken, err := adopter.Adopt(ctx, sandboxes)
+		if err != nil {
+			adoptErr = errors.Join(adoptErr, fmt.Errorf("session: %s: %w", name, err))
+		}
+		s.logger.Info("asked a runtime for the sessions it was running",
+			"runtime", name, "asked", len(sandboxes), "taken back", len(taken))
+	}
+	return adoptErr
+}
+
+// A row that names no runtime is on the default one, the same answer runtimeByName gives.
+func runningSessionsByRuntime(sessions []*Session, defaultRuntime string) map[string][]*Session {
+	byRuntime := map[string][]*Session{}
+	// A sandbox id means something only to the runtime holding it, so two runtimes can use the same one.
+	type sandboxOnRuntime struct{ runtime, sandbox string }
+	seen := map[sandboxOnRuntime]bool{}
+	for _, sess := range sessions {
+		if sess.Status != StatusRunning || sess.SandboxID == "" {
+			continue
+		}
+		name := cmp.Or(sess.Runtime, defaultRuntime)
+		if seen[sandboxOnRuntime{name, sess.SandboxID}] {
+			continue
+		}
+		seen[sandboxOnRuntime{name, sess.SandboxID}] = true
+		byRuntime[name] = append(byRuntime[name], sess)
+	}
+	return byRuntime
+}
+
+// savedSpecForSession makes no folders, unlike a start: it only describes a sandbox already running.
+func (s *Service) savedSpecForSession(sess *Session) (sandbox.SandboxSpec, error) {
+	agent, err := resolveAgent(sess.Agent)
+	if err != nil {
+		return sandbox.SandboxSpec{}, fmt.Errorf("session: %s: %w", sess.ID, err)
+	}
+	mounts, err := validateMountRequests(sess.Mounts)
+	if err != nil {
+		return sandbox.SandboxSpec{}, fmt.Errorf("session: %s: %w", sess.ID, err)
+	}
+	runtime, err := s.runtimeByName(sess.Runtime)
+	if err != nil {
+		return sandbox.SandboxSpec{}, fmt.Errorf("session: %s: %w", sess.ID, err)
+	}
+	return s.buildSandboxSpec(sess, agent, mounts, runtime), nil
+}
 
 // MarkLostSessions marks a session stopped when its runtime no longer has the sandbox the row points
 // at, and returns those sessions. They were running a moment ago, so the caller can bring them back.
@@ -50,12 +126,13 @@ func (s *Service) MarkLostSessions(ctx context.Context) ([]*Session, error) {
 	}
 
 	now := time.Now().UTC()
+	defaultRuntime := s.DefaultRuntime()
 	var lost []*Session
 	for _, sess := range sessions {
 		if sess.Status != StatusRunning {
 			continue
 		}
-		sandboxes, known := alive[sess.Runtime]
+		sandboxes, known := alive[cmp.Or(sess.Runtime, defaultRuntime)]
 		if !known || sandboxes[sess.SandboxID] {
 			continue
 		}

@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -274,5 +276,61 @@ func TestRebuildUpdatesTheSessionItWasGiven(t *testing.T) {
 	}
 	if sess.SandboxID == old {
 		t.Error("session still points at the sandbox that is gone")
+	}
+}
+
+func TestRunningSessionsByRuntime(t *testing.T) {
+	cases := []struct {
+		name     string
+		sessions []*Session
+		want     map[string][]string
+	}{
+		{
+			name:     "a row that names no runtime is on the default one",
+			sessions: []*Session{{ID: "a", Status: StatusRunning, SandboxID: "sb-a"}},
+			want:     map[string][]string{RuntimeSandboxless: {"a"}},
+		},
+		{
+			name: "a stopped session is not asked for",
+			sessions: []*Session{
+				{ID: "a", Status: StatusRunning, SandboxID: "sb-a", Runtime: RuntimeDocker},
+				{ID: "b", Status: StatusStopped, SandboxID: "sb-b", Runtime: RuntimeDocker},
+			},
+			want: map[string][]string{RuntimeDocker: {"a"}},
+		},
+		{
+			name: "two sessions on one sandbox ask for it once",
+			sessions: []*Session{
+				{ID: "a", Status: StatusRunning, SandboxID: "sb-a", Runtime: RuntimeCloudHV},
+				{ID: "b", Status: StatusRunning, SandboxID: "sb-a", Runtime: RuntimeCloudHV},
+			},
+			want: map[string][]string{RuntimeCloudHV: {"a"}},
+		},
+		{
+			name: "one id used by two runtimes is asked of both",
+			sessions: []*Session{
+				{ID: "a", Status: StatusRunning, SandboxID: "sb", Runtime: RuntimeDocker},
+				{ID: "b", Status: StatusRunning, SandboxID: "sb", Runtime: RuntimeSandboxless},
+			},
+			want: map[string][]string{RuntimeDocker: {"a"}, RuntimeSandboxless: {"b"}},
+		},
+		{
+			name:     "a session with no sandbox yet",
+			sessions: []*Session{{ID: "a", Status: StatusRunning, Runtime: RuntimeDocker}},
+			want:     map[string][]string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := map[string][]string{}
+			for name, list := range runningSessionsByRuntime(tc.sessions, RuntimeSandboxless) {
+				for _, sess := range list {
+					got[name] = append(got[name], sess.ID)
+				}
+			}
+			if !maps.EqualFunc(got, tc.want, slices.Equal) {
+				t.Errorf("grouped %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

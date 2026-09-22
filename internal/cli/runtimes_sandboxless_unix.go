@@ -3,7 +3,6 @@
 package cli
 
 import (
-	"context"
 	"os/exec"
 	"path/filepath"
 
@@ -30,12 +29,6 @@ func newSandboxlessRuntime(deps runtimeDeps) runtimeEntry {
 	if err != nil {
 		deps.logger.Warn("sandboxless runtime unavailable", "err", err)
 		return runtimeEntry{}
-	}
-
-	if swept, err := driver.SweepOrphans(context.Background()); err != nil {
-		deps.logger.Warn("could not clear out the sessions a previous run left behind", "err", err)
-	} else if swept > 0 {
-		deps.logger.Info("stopped sessions left over from a previous run", "sessions", swept)
 	}
 
 	deps.logger.Info("sandboxless runtime available", "ipc_dir", ipcDir)

@@ -3,8 +3,10 @@ package session
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,8 @@ type fakeProvisioner struct {
 	workDir        string
 	setupErr       error
 	agentInstalled bool
+	adopted        []sandbox.ID
+	adoptedSpecs   map[sandbox.ID]sandbox.SandboxSpec
 }
 
 func (f *fakeProvisioner) Setup(context.Context, sandbox.ID) (sandbox.SetupState, error) {
@@ -34,6 +38,12 @@ func (f *fakeProvisioner) WorkDir(string, []sandbox.Mount) string { return f.wor
 func (f *fakeProvisioner) WorkspaceRoot() string { return f.workDir }
 
 func (f *fakeProvisioner) AgentInstalled(sandbox.Agent) bool { return f.agentInstalled }
+
+func (f *fakeProvisioner) Adopt(_ context.Context, sandboxes map[sandbox.ID]sandbox.SandboxSpec) ([]sandbox.ID, error) {
+	f.adoptedSpecs = sandboxes
+	f.adopted = append(f.adopted, slices.Sorted(maps.Keys(sandboxes))...)
+	return f.adopted, nil
+}
 
 func TestBootstrapOf(t *testing.T) {
 	cases := []struct {
@@ -175,6 +185,71 @@ func TestStartAgentSession_LeavesAPickedFolderAlone(t *testing.T) {
 		if call[0] == "mkdir" {
 			t.Errorf("deepcove made a folder you picked: %v", call)
 		}
+	}
+}
+
+func TestAdoptRunningSandboxes(t *testing.T) {
+	provisioner := &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: "/data/sandboxless/workspaces/s1"}
+	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
+	svc.RegisterRuntime(RuntimeDocker, newFakeSandbox())
+	ctx := context.Background()
+
+	running, err := svc.Create(ctx, CreateRequest{Agent: "claude", Name: "running"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stopped, err := svc.Create(ctx, CreateRequest{Agent: "claude", Name: "stopped"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := svc.Stop(ctx, stopped.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if err := svc.AdoptRunningSandboxes(ctx); err != nil {
+		t.Fatalf("AdoptRunningSandboxes: %v", err)
+	}
+	// Only what the table says is running, and only to the runtime that can take its sandboxes back.
+	want := []sandbox.ID{sandbox.ID(running.SandboxID)}
+	if got := provisioner.adopted; !slices.Equal(got, want) {
+		t.Errorf("adopted %v, want %v", got, want)
+	}
+	// With the spec, a stop and start after a restart can install the agent again. Without it, that
+	// fails with "the spec names no agent binary".
+	if got := provisioner.adoptedSpecs[sandbox.ID(running.SandboxID)].Agent.Name; got != "claude" {
+		t.Errorf("adopted a spec naming agent %q, want claude", got)
+	}
+}
+
+func TestAdoptRunningSandboxes_ASessionItCannotDescribe(t *testing.T) {
+	provisioner := &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: "/data/sandboxless/workspaces/s1"}
+	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	err := svc.repo.Insert(ctx, &Session{
+		ID:             "019ff000-0000-7000-8000-000000000042",
+		Name:           "made-with-an-agent-we-no-longer-have",
+		Agent:          "gone",
+		SandboxID:      "sb-gone",
+		Runtime:        RuntimeSandboxless,
+		OwnerEmail:     placeholderOwner,
+		Status:         StatusRunning,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LastActivityAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := svc.AdoptRunningSandboxes(ctx); err != nil {
+		t.Fatalf("AdoptRunningSandboxes: %v", err)
+	}
+	// Asked for anyway. A sandbox the runtime is not asked about is one it stops, and this session's
+	// agent is running.
+	if got := provisioner.adopted; !slices.Contains(got, sandbox.ID("sb-gone")) {
+		t.Errorf("asked for %v, which leaves sb-gone to be swept", got)
 	}
 }
 
