@@ -749,7 +749,7 @@ func (s *Service) buildSandboxSpec(sess *Session, agent AgentSpec, userMounts []
 func buildEntrypoint(sessName, setupScript, launchCmd string) []string {
 	body := fmt.Sprintf(`mkdir -p /etc /usr/local/bin /var/log /workspace
 
-# deepcove preamble: drop the SSH-mode MOTD. Refreshed every boot so name/path
+# deepcove preamble: drop the shell tab's MOTD. Refreshed every boot so name/path
 # changes propagate; not in user setup because it's not theirs to edit.
 cat > /etc/deepcove-motd <<'DEEPCOVE_MOTD_END'
 
@@ -799,7 +799,7 @@ setup_rc=$?
 if [ $setup_rc -ne 0 ]; then
   echo errored > /etc/deepcove-bootstrap-status
   echo "[deepcove] Setup failed (exit $setup_rc); see log above" >> /var/log/deepcove-bootstrap.log
-  # Park so the user can inspect via SSH mode.
+  # Park so the user can inspect from the shell tab.
   exec sleep infinity
 fi
 
