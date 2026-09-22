@@ -100,7 +100,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 			runtime: forwarding,
 			want: []string{
 				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
-				"DEEPCOVE_SESSION_ID=s1", agentLaunchPath,
+				"DEEPCOVE_SESSION_ID=s1", sandbox.SandboxedAgentLaunchPath,
 			},
 		},
 		{
@@ -111,7 +111,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 			want: []string{
 				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
 				"DEEPCOVE_SESSION_ID=s1",
-				"ANTHROPIC_BASE_URL=http://127.0.0.1:9100", "ANTHROPIC_AUTH_TOKEN=deepcove-s1", agentLaunchPath,
+				"ANTHROPIC_BASE_URL=http://127.0.0.1:9100", "ANTHROPIC_AUTH_TOKEN=deepcove-s1", sandbox.SandboxedAgentLaunchPath,
 			},
 		},
 		{
@@ -121,7 +121,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 			want: []string{
 				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
 				"DEEPCOVE_SESSION_ID=s1",
-				"ANTHROPIC_BASE_URL=http://100.75.35.244:9000", "ANTHROPIC_AUTH_TOKEN=deepcove-s1", agentLaunchPath,
+				"ANTHROPIC_BASE_URL=http://100.75.35.244:9000", "ANTHROPIC_AUTH_TOKEN=deepcove-s1", sandbox.SandboxedAgentLaunchPath,
 			},
 		},
 		{
@@ -130,7 +130,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 			use:     true,
 			want: []string{
 				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
-				"DEEPCOVE_SESSION_ID=s1", agentLaunchPath,
+				"DEEPCOVE_SESSION_ID=s1", sandbox.SandboxedAgentLaunchPath,
 			},
 		},
 	}
@@ -143,7 +143,11 @@ func TestAgentLaunchCommand(t *testing.T) {
 				runtime = fake
 			}
 			sess := &Session{ID: "s1", UseLLMProxy: tc.use}
-			if got := svc.agentLaunchCommand(sess, runtime); !slices.Equal(got, tc.want) {
+			got, err := svc.agentLaunchCommand(sess, runtime)
+			if err != nil {
+				t.Fatalf("agentLaunchCommand: %v", err)
+			}
+			if !slices.Equal(got, tc.want) {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})

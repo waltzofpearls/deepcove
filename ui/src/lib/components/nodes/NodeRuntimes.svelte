@@ -3,7 +3,13 @@
   import { usePolling } from '$lib/polling';
   import { preferences } from '$lib/stores/preferences.svelte';
   import { sessions } from '$lib/stores/sessions.svelte';
-  import { bootsVMs, runtimeLabel, runtimeMissingReason } from '$lib/util/runtime';
+  import {
+    bootsVMs,
+    RUNTIME_SANDBOXLESS,
+    runtimeLabel,
+    runtimeMissingReason,
+    sharesHostFolders,
+  } from '$lib/util/runtime';
   import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
   import { ageOf, shortId } from '$lib/format';
   import { Button } from '$lib/components/ui/button';
@@ -166,11 +172,12 @@
   const pendingWorkspaceOn = (view: RuntimeView) =>
     Boolean(workspaceVM) && !workspaceVM?.sandbox_id && workspaceVM?.runtime === view.name;
 
-  // What a row is, said in the row rather than implied by where it sits.
-  function kindOf(sandbox: SandboxView): string {
+  // Which kind of VM a row is, which only a VM runtime has: everywhere else the section header already
+  // says what it is. Empty means no chip, except for one nobody owns, which is worth saying anywhere.
+  function kindOf(sandbox: SandboxView, runtime: string): string {
     if (sandbox.is_workspace_vm) return 'Workspace VM';
     if (sandbox.sessions.length === 0) return 'Unused';
-    return 'Session VM';
+    return bootsVMs(runtime) ? 'Session VM' : '';
   }
 
   // A sandbox nothing owns. Sorted to the top of its runtime, because it is the only row here that
@@ -192,6 +199,19 @@
 
   function sizeOf(s: SandboxView): string {
     return savedSize(s) || formatResources(s.resources) || 'runtime defaults';
+  }
+
+  // What the row says under the name. A session on the machine itself has no size: nothing caps it, so
+  // only its age is left.
+  function sizeAndAge(s: SandboxView, runtime: string): string {
+    const parts: string[] = [];
+    if (runtime !== RUNTIME_SANDBOXLESS) {
+      parts.push(sizeOf(s));
+    }
+    if (s.created_at) {
+      parts.push(`${ageOf(s.created_at)} old`);
+    }
+    return parts.join(' · ');
   }
 
   // Only worth saying when something is actually saved and the machine is running something else.
@@ -235,12 +255,15 @@
   );
 </script>
 
+<!-- No label, no chip: a runtime with no VM has no kind to tell apart. -->
 {#snippet kindChip(label: string)}
-  <span
-    class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-700 ring-1 ring-inset ring-sky-600/25 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-500/30"
-  >
-    {label}
-  </span>
+  {#if label}
+    <span
+      class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-700 ring-1 ring-inset ring-sky-600/25 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-500/30"
+    >
+      {label}
+    </span>
+  {/if}
 {/snippet}
 
 {#snippet restartButton(runtime: string, sandbox: SandboxView)}
@@ -396,7 +419,7 @@
                         No session owns this
                       </span>
                     {/if}
-                    {@render kindChip(kindOf(sandbox))}
+                    {@render kindChip(kindOf(sandbox, view.name))}
                     <span
                       class="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
                     >
@@ -419,10 +442,7 @@
                     </div>
                   {/each}
                   <div class="mt-0.5 text-xs text-muted-foreground">
-                    {sizeOf(sandbox)}
-                    {#if sandbox.created_at}
-                      · {ageOf(sandbox.created_at)} old
-                    {/if}
+                    {sizeAndAge(sandbox, view.name)}
                   </div>
                   {#if sandbox.unresponsive}
                     <div class="mt-0.5 text-xs text-amber-600 dark:text-amber-400">
@@ -457,15 +477,17 @@
                   {#if bootsVMs(view.name)}
                     {@render restartButton(view.name, sandbox)}
                   {/if}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class="shrink-0"
-                    disabled={!sessions.list.some((s) => s.id === sandbox.sessions[0]?.id)}
-                    onclick={() => editFolders(sandbox)}
-                  >
-                    Edit
-                  </Button>
+                  {#if sharesHostFolders(view.name)}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="shrink-0"
+                      disabled={!sessions.list.some((s) => s.id === sandbox.sessions[0]?.id)}
+                      onclick={() => editFolders(sandbox)}
+                    >
+                      Edit
+                    </Button>
+                  {/if}
                 {/if}
               </li>
             {/each}

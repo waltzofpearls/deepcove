@@ -8,6 +8,7 @@ import type { RuntimesInfo } from '$lib/api/types';
 export const RUNTIME_DOCKER = 'docker';
 export const RUNTIME_APPLEVF = 'applevf';
 export const RUNTIME_CLOUDHV = 'cloudhv';
+export const RUNTIME_SANDBOXLESS = 'sandboxless';
 
 // One VM runtime name per hypervisor, mirroring vmRuntimes on the server. A node offers at most one of
 // them, so these never appear side by side in a picker.
@@ -32,6 +33,8 @@ export function runtimeMissingReason(code: string): string {
       return 'Part of its setup is missing.';
     case 'no_host_binaries':
       return 'The programs it runs virtual machines with are not downloaded yet.';
+    case 'no_tmux':
+      return 'tmux is not installed on that machine, and deepcove cannot install it for you.';
     default:
       return 'It needs to be set up before it can run sessions.';
   }
@@ -43,6 +46,12 @@ export function bootsVMs(name: string): boolean {
   return VM_RUNTIMES.includes(name);
 }
 
+// sharesHostFolders reports whether a runtime can share a folder with the session. A runtime with no
+// guest has nothing to share it into: the agent reads the machine's own folders.
+export function sharesHostFolders(name: string): boolean {
+  return name !== RUNTIME_SANDBOXLESS;
+}
+
 // runtimeLabel names the runtime the way it is talked about. "Virtual machine" describes the isolation
 // boundary; Docker is known by its name, so "Container (Docker)" only added a word.
 export function runtimeLabel(name: string): string {
@@ -52,6 +61,8 @@ export function runtimeLabel(name: string): string {
     case RUNTIME_APPLEVF:
     case RUNTIME_CLOUDHV:
       return 'Virtual machine';
+    case RUNTIME_SANDBOXLESS:
+      return 'No sandbox';
     default:
       return name;
   }
@@ -65,6 +76,8 @@ export function runtimeHint(name: string): string {
     case RUNTIME_APPLEVF:
     case RUNTIME_CLOUDHV:
       return 'Its own Linux kernel, so the session is fully isolated from your machine. Slower to start.';
+    case RUNTIME_SANDBOXLESS:
+      return 'Runs on this machine with your files, network and logins. Nothing is isolated.';
     default:
       return '';
   }

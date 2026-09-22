@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"syscall"
 
 	"github.com/waltzofpearls/deepcove/internal/config"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -31,7 +29,7 @@ type hostBinaries struct {
 // at the directory a live node is using.
 var (
 	hostCanRunVMs = cloudhv.RequireKVM
-	vmSocketDir   = vmIPCDir
+	vmSocketDir   = ensureIPCDir
 )
 
 // newVMRuntime builds the VM runtime this machine can provide. On Linux that is Cloud Hypervisor. A
@@ -59,7 +57,7 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 		deps.logger.Info("cloud hypervisor runtime needs setup: no guest init binary", "err", err)
 		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingGuestInit}
 	}
-	ipcDir, err := vmSocketDir()
+	ipcDir, err := vmSocketDir(deps.cfg.DataDir)
 	if err != nil {
 		deps.logger.Warn("cloud hypervisor runtime unavailable", "err", err)
 		return runtimeEntry{}
@@ -69,7 +67,9 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 		CloudHypervisor: binaries.cloudHypervisor.path,
 		Virtiofsd:       binaries.virtiofsd.path,
 		Passt:           binaries.passt.path,
-		IPCDir:          ipcDir,
+		// Its own folder in there. The sweep below claims everything under it, and the sandboxless
+		// runtime keeps its tmux sockets in the same ipc directory.
+		IPCDir: filepath.Join(ipcDir, "vm"),
 	}
 	// Before the driver is built: these VMs are separate processes, so a previous deepcove can have left
 	// some running, and the driver is about to sweep the disks they are still using.
@@ -102,48 +102,6 @@ func resolveHostBinaries(cfg *config.Config) (hostBinaries, bool) {
 		return hostBinaries{}, false
 	}
 	return hostBinaries{cloudHypervisor: cloudHypervisor, virtiofsd: virtiofsd, passt: passt}, true
-}
-
-// vmIPCDir holds a running VM's sockets. Not the data dir: under $HOME the path is too long for one.
-func vmIPCDir() (string, error) {
-	uid := os.Getuid()
-	runDir := filepath.Join("/run/user", strconv.Itoa(uid), "deepcove")
-	if err := os.MkdirAll(runDir, ipcDirMode); err == nil {
-		return runDir, keepPrivate(runDir, uid)
-	}
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("deepcove-%d", uid))
-	if err := os.MkdirAll(tmpDir, ipcDirMode); err != nil {
-		return "", fmt.Errorf("no place to put the VM sockets: %w", err)
-	}
-	return tmpDir, keepPrivate(tmpDir, uid)
-}
-
-// ipcDirMode is what the directory holding a VM's sockets must be. One of those sockets hands out this
-// session's credentials, so the directory is the whole of its protection.
-const ipcDirMode = 0o700
-
-// keepPrivate refuses a directory another user owns, and tightens one of ours that is open to others.
-// In /tmp anyone can create the name first and wait for us to put sockets in it.
-func keepPrivate(path string, uid int) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("check %s: %w", path, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", path)
-	}
-	owner, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot tell who owns %s", path)
-	}
-	if int(owner.Uid) != uid {
-		return fmt.Errorf("%s belongs to uid %d, not to you, so the VM sockets are not going in it",
-			path, owner.Uid)
-	}
-	if info.Mode().Perm()&0o077 == 0 {
-		return nil
-	}
-	return os.Chmod(path, ipcDirMode)
 }
 
 // ensurePasstCanIsolateItself gets passt the AppArmor profile this host needs, installing it when this

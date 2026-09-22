@@ -8,7 +8,7 @@
   import { api } from '$lib/api/client';
   import { sessions } from '$lib/stores/sessions.svelte';
   import { formatResources } from '$lib/util/resources';
-  import { runtimeLabel } from '$lib/util/runtime';
+  import { bootsVMs, runtimeLabel, RUNTIME_SANDBOXLESS } from '$lib/util/runtime';
   import { shortId } from '$lib/format';
   import SharedFolderEditor from './SharedFolderEditor.svelte';
   import WorkspaceVMDialog from './WorkspaceVMDialog.svelte';
@@ -80,7 +80,24 @@
     }
   }
 
-  const machine = $derived(session.on_workspace_vm ? 'Workspace VM' : 'Session VM');
+  // No guest, so there is nothing to mount into and no shared folder to edit.
+  const onThisMachine = $derived(session.runtime === RUNTIME_SANDBOXLESS);
+  // What this session runs on. Session VM and Workspace VM are VM words, so a runtime without one says
+  // its own name, and a session with no sandbox runs on the machine itself.
+  const machine = $derived.by(() => {
+    if (onThisMachine) {
+      return 'This machine';
+    }
+    if (!bootsVMs(session.runtime)) {
+      return runtimeLabel(session.runtime);
+    }
+    const kind = session.on_workspace_vm ? 'Workspace VM' : 'Session VM';
+    return `${kind} · ${runtimeLabel(session.runtime)}`;
+  });
+  // The agent runs as the user deepcove runs as, so it reads that user's own login.
+  const loginNote = $derived(
+    onThisMachine ? 'the login already on this machine' : "this session's own login",
+  );
   const size = $derived(
     session.on_workspace_vm
       ? formatResources(workspaceVM?.resources) || 'runtime defaults'
@@ -102,7 +119,7 @@
       <dd>{session.status}</dd>
 
       <dt class="text-muted-foreground">Machine</dt>
-      <dd>{machine} · {runtimeLabel(session.runtime)}</dd>
+      <dd>{machine}</dd>
 
       <dt class="text-muted-foreground">Folder</dt>
       <dd class="font-mono text-xs break-all">
@@ -111,6 +128,8 @@
           {#if workspaceVM}
             <span class="text-muted-foreground">(in {workspaceVM.host_root})</span>
           {/if}
+        {:else if onThisMachine}
+          {session.agent_work_dir || 'a folder deepcove made for this session'}
         {:else if session.mounts?.length}
           {session.mounts.map((m) => `${m.host_path} → ${m.container_path}`).join(', ')}
         {:else}
@@ -118,11 +137,16 @@
         {/if}
       </dd>
 
-      <dt class="text-muted-foreground">Size</dt>
-      <dd>{size}</dd>
+      <!-- Nothing caps a session that runs on the machine itself, so there is no size to show. -->
+      {#if !onThisMachine}
+        <dt class="text-muted-foreground">Size</dt>
+        <dd>{size}</dd>
+      {/if}
 
-      <dt class="text-muted-foreground">Image</dt>
-      <dd class="font-mono text-xs break-all">{session.image}</dd>
+      {#if session.image}
+        <dt class="text-muted-foreground">Image</dt>
+        <dd class="font-mono text-xs break-all">{session.image}</dd>
+      {/if}
 
       <dt class="text-muted-foreground">Sandbox</dt>
       <dd class="font-mono text-xs">{shortId(session.sandbox_id ?? '', 24) || 'none yet'}</dd>
@@ -141,7 +165,7 @@
         <span class="block text-sm font-medium">Use the LLM proxy</span>
         <span class="block text-xs leading-relaxed text-muted-foreground">
           {#if llmProxyUrl}<span class="font-mono">{llmProxyUrl}</span>{:else}The proxy{/if} supplies
-          the key. Off uses this session's own login. Changing this restarts the agent.
+          the key. When it's off, the agent uses {loginNote}. Changing this restarts the agent.
         </span>
         {#if saveError}<span class="block text-xs text-destructive">{saveError}</span>{/if}
       </button>
@@ -175,6 +199,11 @@
             Edit the machine
           </Button>
         </div>
+      {:else if onThisMachine}
+        <p class="text-xs leading-relaxed text-muted-foreground">
+          This session runs on the machine, so there is nothing to mount: the agent reads the folder
+          it works in directly.
+        </p>
       {:else}
         <SharedFolderEditor bind:session {host} />
       {/if}

@@ -129,6 +129,11 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 		name = pickNextShellName(existingNames)
 	}
 
+	workdir := s.sessionWorkDir(sess)
+	if workdir == "" {
+		return nil, fmt.Errorf("session: the %s runtime cannot say which folder this session works in", sess.Runtime)
+	}
+
 	// -d: don't switch focus. -P -F: print the new window's index. The trailing colon targets the
 	// SESSION rather than a window inside it; without it tmux tries to insert at an existing window's
 	// index and fails.
@@ -136,13 +141,15 @@ func (s *Service) CreateTmuxWindow(ctx context.Context, id string, req CreateTmu
 		"new-window", "-d", "-t", tmuxSessionName(sess.ID) + ":", "-n", name,
 		// Start where the agent works, not wherever tmux would land: the shell tab is for poking at the
 		// same code the agent has open.
-		"-c", sessionWorkdir(sess),
+		"-c", workdir,
 		"-P", "-F", "#{window_index}",
 	}
 	// SSH-mode shell window gets a wrapper that prints the MOTD before exec'ing the
 	// shell. The MOTD file is dropped in the entrypoint preamble.
+	//
+	// $SHELL, not sh: on a machine with no sandbox that is dash, which has no completion and no history.
 	if name == "shell" {
-		args = append(args, "sh", "-c", "cat /etc/deepcove-motd 2>/dev/null; exec sh")
+		args = append(args, "sh", "-c", `cat /etc/deepcove-motd 2>/dev/null; exec "${SHELL:-/bin/sh}"`)
 	}
 	out, err := s.execTmux(ctx, sess, args...)
 	if err != nil {

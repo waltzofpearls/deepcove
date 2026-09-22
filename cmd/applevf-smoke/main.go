@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -42,7 +43,10 @@ func run() error {
 	base := flag.String("base", "", "path to a read-only ext4 base image (deepcove boot)")
 	scratch := flag.String("scratch", "", "path to a writable scratch disk (optional)")
 	image := flag.String("image", "", "OCI reference to build a base image from, injecting the guest init")
-	guestInit := flag.String("guest-init", "internal/guestasset/deepcove-guest-init", "guest init binary to inject when --image is set")
+	// Named per architecture since the Makefile builds one for each, and this boots a guest of the
+	// host's.
+	guestInit := flag.String("guest-init", "internal/guestasset/deepcove-guest-init-"+runtime.GOARCH,
+		"guest init binary to inject when --image is set")
 	launch := flag.String("launch", "sleep infinity", "shell command the guest runs as its session entrypoint")
 	out := flag.String("out", "dist/guest/smoke-rootfs.ext4", "where to write the ext4 base built from --image")
 	cmdline := flag.String("cmdline", "", "kernel command line (default boots the deepcove guest init)")

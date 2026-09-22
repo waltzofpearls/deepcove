@@ -30,6 +30,8 @@ import (
 
 // Driver implements sandbox.Sandbox against the Docker daemon.
 type Driver struct {
+	// The agent answers a guest runtime shares. Setup is in agent.go, since it reads this driver's guest.
+	sandbox.SandboxedProvisioner
 	// nodeScope identifies the deepcove instance that owns these containers, so a listing never claims
 	// another instance's sessions. See labelNode.
 	nodeScope    string
@@ -192,22 +194,22 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 	return sandbox.ID(resp.ID), nil
 }
 
-func (d *Driver) Start(ctx context.Context, h sandbox.ID) error {
-	_, err := d.cli.ContainerStart(ctx, string(h), client.ContainerStartOptions{})
+func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
+	_, err := d.cli.ContainerStart(ctx, string(sandboxID), client.ContainerStartOptions{})
 	return normalizeErr(err)
 }
 
-func (d *Driver) Stop(ctx context.Context, h sandbox.ID) error {
+func (d *Driver) Stop(ctx context.Context, sandboxID sandbox.ID) error {
 	// Empty options → Docker default (SIGTERM, 10s grace, then SIGKILL).
-	_, err := d.cli.ContainerStop(ctx, string(h), client.ContainerStopOptions{})
+	_, err := d.cli.ContainerStop(ctx, string(sandboxID), client.ContainerStopOptions{})
 	return normalizeErr(err)
 }
 
-func (d *Driver) Destroy(ctx context.Context, h sandbox.ID) error {
+func (d *Driver) Destroy(ctx context.Context, sandboxID sandbox.ID) error {
 	// Force removes a running container in one shot. Anonymous volumes
 	// attached to the container are removed; bind mounts (host paths)
 	// stay on the host.
-	_, err := d.cli.ContainerRemove(ctx, string(h), client.ContainerRemoveOptions{
+	_, err := d.cli.ContainerRemove(ctx, string(sandboxID), client.ContainerRemoveOptions{
 		RemoveVolumes: true,
 		Force:         true,
 	})
@@ -217,14 +219,14 @@ func (d *Driver) Destroy(ctx context.Context, h sandbox.ID) error {
 // Exec creates an exec instance in the container and attaches to it.
 // The returned Process owns the hijacked connection; callers must
 // Wait or Close it (forgetting both leaks the connection).
-func (d *Driver) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSpec) (sandbox.Process, error) {
+func (d *Driver) Exec(ctx context.Context, sandboxID sandbox.ID, cmd sandbox.ExecSpec) (sandbox.Process, error) {
 	// AttachStdin is true whenever the caller might want to write
 	// input: explicitly via ExecSpec.Stdin (one-shot input ready at
 	// create time) OR interactively when a TTY is requested
 	// (caller writes via Process.Stdin() after exec starts). Without
 	// AttachStdin true, the daemon doesn't connect the exec's stdin to our hijacked stream; writes go
 	// to /dev/null.
-	createResp, err := d.cli.ExecCreate(ctx, string(h), client.ExecCreateOptions{
+	createResp, err := d.cli.ExecCreate(ctx, string(sandboxID), client.ExecCreateOptions{
 		Cmd:          cmd.Cmd,
 		Env:          envList(cmd.Env),
 		WorkingDir:   cmd.WorkingDir,
@@ -250,26 +252,26 @@ func (d *Driver) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSpec) (
 // Logs, CopyIn, CopyOut: stubs for the next pass. Return ErrNotSupported so callers can detect with
 // errors.Is and fall back.
 
-func (d *Driver) Logs(ctx context.Context, h sandbox.ID, opts sandbox.LogOpts) (io.ReadCloser, error) {
+func (d *Driver) Logs(ctx context.Context, sandboxID sandbox.ID, opts sandbox.LogOpts) (io.ReadCloser, error) {
 	return nil, sandbox.ErrNotSupported
 }
 
-func (d *Driver) CopyIn(ctx context.Context, h sandbox.ID, src, dst string) error {
+func (d *Driver) CopyIn(ctx context.Context, sandboxID sandbox.ID, src, dst string) error {
 	return sandbox.ErrNotSupported
 }
 
-func (d *Driver) CopyOut(ctx context.Context, h sandbox.ID, src, dst string) error {
+func (d *Driver) CopyOut(ctx context.Context, sandboxID sandbox.ID, src, dst string) error {
 	return sandbox.ErrNotSupported
 }
 
 // Snapshot / Restore: Docker has no microVM-snapshot equivalent. The session layer degrades to a
 // fresh sandbox.
 
-func (d *Driver) Snapshot(ctx context.Context, h sandbox.ID) (sandbox.SnapshotID, error) {
+func (d *Driver) Snapshot(ctx context.Context, sandboxID sandbox.ID) (sandbox.SnapshotID, error) {
 	return "", sandbox.ErrNotSupported
 }
 
-func (d *Driver) Restore(ctx context.Context, h sandbox.ID, id sandbox.SnapshotID) error {
+func (d *Driver) Restore(ctx context.Context, sandboxID sandbox.ID, id sandbox.SnapshotID) error {
 	return sandbox.ErrNotSupported
 }
 

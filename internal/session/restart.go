@@ -54,7 +54,7 @@ func (s *Service) RestartSandbox(ctx context.Context, runtimeName, sandboxID str
 	s.background(func() {
 		defer release()
 		for _, sess := range riders {
-			s.ensureAgentAfterSetup(sess, sessionWorkdir(sess))
+			s.ensureAgentAfterSetup(sess, s.sessionWorkDir(sess))
 		}
 	})
 	return nil
@@ -96,7 +96,7 @@ func (s *Service) savedSpecFor(ctx context.Context, sandboxID string) (sandbox.S
 	if err != nil {
 		return sandbox.SandboxSpec{}, fmt.Errorf("session: %w", err)
 	}
-	userMounts, err := s.prepareMounts(sess.Mounts)
+	userMounts, err := s.prepareMountsRequiringFolders(sess.Mounts)
 	if err != nil {
 		return sandbox.SandboxSpec{}, err
 	}

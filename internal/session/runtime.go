@@ -21,6 +21,9 @@ const (
 	// RuntimeCloudHV runs each session in its own Linux VM via Cloud Hypervisor. Linux only, and only
 	// when KVM is usable and the VM artifacts are present.
 	RuntimeCloudHV = "cloudhv"
+	// RuntimeSandboxless runs each session on the machine itself, with no VM and no container. For a
+	// machine that is already the boundary. Needs tmux, which it cannot install.
+	RuntimeSandboxless = "sandboxless"
 )
 
 // vmRuntimes are the runtime names that boot a VM, one per hypervisor. A node offers at most one of
@@ -143,7 +146,7 @@ func (s *Service) pickVMRuntime(requested string) (string, error) {
 // runtimeOrder is the order runtimes are offered in, strongest isolation first. Map iteration is random,
 // so without this the picker reshuffles between restarts and there is no stable "first" option to land
 // on. A runtime not named here sorts last, alphabetically, rather than disappearing.
-var runtimeOrder = []string{RuntimeAppleVF, RuntimeCloudHV, RuntimeDocker}
+var runtimeOrder = []string{RuntimeAppleVF, RuntimeCloudHV, RuntimeDocker, RuntimeSandboxless}
 
 // Runtimes lists the runtimes this node provides, so the UI can offer them and the create path can
 // validate a requested one. The order is deliberate and stable; see runtimeOrder.
@@ -201,6 +204,20 @@ func (s *Service) runtimeByName(name string) (sandbox.Sandbox, error) {
 // created it.
 func (s *Service) runtimeFor(sess *Session) (sandbox.Sandbox, error) {
 	return s.runtimeByName(sess.Runtime)
+}
+
+// agentProvisionerFor is how a session asks its runtime about the agent: setup progress, what starts it,
+// and where it works. Every runtime answers, so a driver that does not is a build this node cannot use.
+func (s *Service) agentProvisionerFor(sess *Session) (sandbox.AgentProvisioner, error) {
+	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return nil, err
+	}
+	provisioner, ok := runtime.(sandbox.AgentProvisioner)
+	if !ok {
+		return nil, fmt.Errorf("session: the %s runtime cannot answer for its agent", sess.Runtime)
+	}
+	return provisioner, nil
 }
 
 // ErrRuntimeUnavailable means the runtime exists on this node but cannot host a session right now, which

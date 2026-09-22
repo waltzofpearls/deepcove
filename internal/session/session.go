@@ -56,7 +56,10 @@ type Session struct {
 	UseLLMProxy bool `json:"use_llm_proxy"`
 	// WorkDir is where the agent and the shell start, a folder under the workspace root. Empty falls
 	// back to the first mount, then /workspace.
-	WorkDir        string    `json:"work_dir,omitempty"`
+	WorkDir string `json:"work_dir,omitempty"`
+	// AgentWorkDir is the folder the agent works in, answered by the runtime and filled on the way out,
+	// never stored. A runtime that makes the folder itself is the only one that can name it.
+	AgentWorkDir   string    `json:"agent_work_dir,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 	LastActivityAt time.Time `json:"last_activity_at"`
@@ -155,4 +158,9 @@ func (r Resources) Validate() error {
 		return fmt.Errorf("disk_mb must be between 0 and %d, got %d", maxMB, r.DiskMB)
 	}
 	return nil
+}
+
+// Asked returns whether this request caps anything at all. Zero means the runtime decides.
+func (r Resources) Asked() bool {
+	return r.CPU != 0 || r.MemoryMB != 0 || r.DiskMB != 0
 }

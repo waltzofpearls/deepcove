@@ -9,6 +9,7 @@
   import StatusIndicator from './StatusIndicator.svelte';
   import SessionTags from './SessionTags.svelte';
   import SessionSettingsDialog from './SessionSettingsDialog.svelte';
+  import SessionFolderNote from './SessionFolderNote.svelte';
   import {
     DropdownMenu,
     DropdownMenuTrigger,
@@ -377,9 +378,10 @@
     <AlertDialogHeader>
       <AlertDialogTitle>Destroy session?</AlertDialogTitle>
       <AlertDialogDescription>
-        This permanently removes “{session.name}” and its container. This can't be undone.
+        This permanently removes “{session.name}”. This can't be undone.
       </AlertDialogDescription>
     </AlertDialogHeader>
+    <SessionFolderNote {session} />
     <AlertDialogFooter>
       <AlertDialogCancel>Cancel</AlertDialogCancel>
       <AlertDialogAction variant="destructive" onclick={doDestroy}>Destroy</AlertDialogAction>

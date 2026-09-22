@@ -12,14 +12,14 @@ import (
 // row would blow it, so they have to go at once.
 func TestCloseStopsMachinesAtOnce(t *testing.T) {
 	const stopDelay = 300 * time.Millisecond
-	d := &Driver{machines: map[sandbox.ID]*session{}}
+	d := &Driver{sandboxes: map[sandbox.ID]*sandboxState{}}
 	var machines []*fakeMachine
 	for _, id := range []sandbox.ID{"one", "two", "three"} {
 		m := newFakeMachine()
 		m.stopDelay = stopDelay
 		m.answerControl()
 		machines = append(machines, m)
-		d.machines[id] = &session{machine: NewGuest(m, nil)}
+		d.sandboxes[id] = &sandboxState{machine: NewGuest(m, nil)}
 	}
 
 	start := time.Now()
@@ -40,10 +40,10 @@ func TestCloseStopsMachinesAtOnce(t *testing.T) {
 
 // A wedged shutdown has no time left to ask a guest anything, and asking is what wedged it.
 func TestForceCloseDoesNotAskTheGuest(t *testing.T) {
-	d := &Driver{machines: map[sandbox.ID]*session{}}
+	d := &Driver{sandboxes: map[sandbox.ID]*sandboxState{}}
 	m := newFakeMachine()
 	m.answerControl()
-	d.machines["one"] = &session{machine: NewGuest(m, nil)}
+	d.sandboxes["one"] = &sandboxState{machine: NewGuest(m, nil)}
 
 	if err := d.ForceClose(); err != nil {
 		t.Fatalf("ForceClose: %v", err)
@@ -60,10 +60,10 @@ func TestForceCloseDoesNotAskTheGuest(t *testing.T) {
 
 // A polite stop does ask, which is the difference the forced one exists to skip.
 func TestCloseAsksTheGuest(t *testing.T) {
-	d := &Driver{machines: map[sandbox.ID]*session{}}
+	d := &Driver{sandboxes: map[sandbox.ID]*sandboxState{}}
 	m := newFakeMachine()
 	m.answerControl()
-	d.machines["one"] = &session{machine: NewGuest(m, nil)}
+	d.sandboxes["one"] = &sandboxState{machine: NewGuest(m, nil)}
 
 	if err := d.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -77,11 +77,11 @@ func TestCloseAsksTheGuest(t *testing.T) {
 
 // Shutdown has a budget. A guest that takes the request and never halts must not spend it all.
 func TestCloseForcesAGuestThatWillNotHalt(t *testing.T) {
-	d := &Driver{machines: map[sandbox.ID]*session{}}
+	d := &Driver{sandboxes: map[sandbox.ID]*sandboxState{}}
 	m := newFakeMachine()
 	m.answerControl()
 	m.stubborn = true
-	d.machines["one"] = &session{machine: NewGuest(m, nil)}
+	d.sandboxes["one"] = &sandboxState{machine: NewGuest(m, nil)}
 
 	start := time.Now()
 	err := d.closeWithin(50 * time.Millisecond)

@@ -35,7 +35,7 @@ func toSandboxResources(r Resources) sandbox.Resources {
 // code lives there), and it's the default the New Session form pre-fills. When no mount
 // targets it, the entrypoint creates an empty /workspace so the agent always has a
 // landing dir. The agent cd's to DEEPCOVE_WORKDIR (the first user mount, else this).
-const workspaceDir = "/workspace"
+const workspaceDir = sandbox.SandboxedWorkDir
 
 // /root is hardcoded; agent images run as root today. Non-root images would need a
 // per-image override (out of scope).
@@ -173,7 +173,7 @@ func NewService(repo SessionRepository, logger *slog.Logger) *Service {
 }
 
 // Image override is resolved + locked in at create time. SetupScript override is
-// stored verbatim; empty means "use agent.DefaultSetup at spec-build time" so registry
+// stored verbatim; empty means "use the agent's own setup at spec-build time" so registry
 // updates flow into existing sessions on recreate.
 func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, error) {
 	if req.Agent == "" {
@@ -187,8 +187,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	// Validate before any sandbox work so bad input fails as a clean 400 without
 	// rollback. Owns session-layer concerns (reserved /root target, dup targets, mode);
 	// the sandbox layer's validator owns host-path concerns (absolute, allowed root).
-	userMounts, err := s.prepareMounts(req.Mounts)
-	if err != nil {
+	if _, err := validateMountRequests(req.Mounts); err != nil {
 		return nil, err
 	}
 	if err := req.Resources.Validate(); err != nil {
@@ -203,7 +202,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 
 	image := req.Image
 	if image == "" {
-		image = agent.DefaultImage
+		image = agent.Sandboxed.DefaultImage
 	}
 
 	sess := &Session{
@@ -254,6 +253,29 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		return nil, ErrRuntimeUnavailable{Runtime: sess.Runtime, Reason: reason}
 	}
 
+	// A runtime with no guest boots nothing, so the row must not name an image the session never uses.
+	if workDirIsOnThisMachine(runtime) {
+		if unused := unusedOnThisMachine(req); unused != "" {
+			return nil, fmt.Errorf("%w: the %s runtime runs the agent on the machine itself, so it takes no %s",
+				ErrInvalidInput, sess.Runtime, unused)
+		}
+		sess.Image = ""
+	}
+
+	// Made once the runtime is known, so a refused create leaves no folders behind.
+	userMounts, err := s.prepareMountsCreatingFolders(req.Mounts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Used if it is there, created if not, and only under the folders this node shares.
+	if req.WorkDir != "" && !req.OnWorkspaceVM && workDirIsOnThisMachine(runtime) {
+		if err := s.ensureSharedFolder(req.WorkDir); err != nil {
+			return nil, fmt.Errorf("%w: work_dir: %s", ErrInvalidInput, err)
+		}
+		sess.WorkDir = filepath.Clean(req.WorkDir)
+	}
+
 	if req.OnWorkspaceVM {
 		if err := s.joinWorkspaceVM(ctx, sess, req); err != nil {
 			return nil, err
@@ -281,7 +303,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		}
 		return nil, fmt.Errorf("session: insert row: %w", err)
 	}
-	s.background(func() { s.ensureAgentAfterSetup(sess, sessionWorkdir(sess)) })
+	s.background(func() { s.ensureAgentAfterSetup(sess, s.sessionWorkDir(sess)) })
 
 	s.logger.Info("session created", "id", sess.ID, "name", sess.Name, "agent", sess.Agent)
 	return sess, nil
@@ -301,6 +323,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]*Session, erro
 	}
 	for _, sess := range sessions {
 		s.reportStarting(sess)
+		s.reportWorkDir(sess)
 	}
 	return sessions, nil
 }
@@ -312,6 +335,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 		return nil, err
 	}
 	s.reportStarting(sess)
+	s.reportWorkDir(sess)
 	return sess, nil
 }
 
@@ -346,6 +370,15 @@ func (s *Service) reportStarting(sess *Session) {
 	if inFlight {
 		sess.Status = StatusStarting
 	}
+}
+
+// reportWorkDir answers where this session's agent works. The row knows only the folder you picked, so
+// for a session on a folder deepcove made, this is the only place that path comes from.
+func (s *Service) reportWorkDir(sess *Session) {
+	if sess == nil {
+		return
+	}
+	sess.AgentWorkDir = s.sessionWorkDir(sess)
 }
 
 // maxSessionNameLen bounds the name. Ids drive routing and storage, so this is a sanity cap rather
@@ -420,8 +453,8 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	userMounts, err := s.prepareMounts(sess.Mounts)
-	if err != nil {
+	// Checked, not used: a session whose mounted folder went away should say so instead of starting.
+	if _, err := s.prepareMountsRequiringFolders(sess.Mounts); err != nil {
 		return err
 	}
 	if sess.OnWorkspaceVM {
@@ -433,7 +466,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		}
 		// Same wait as a fresh machine: running means the VM answers, not that setup has finished, and
 		// tmux exists only once it has.
-		s.background(func() { s.ensureAgentAfterSetup(sess, workdirFor(userMounts)) })
+		s.background(func() { s.ensureAgentAfterSetup(sess, s.sessionWorkDir(sess)) })
 		s.logger.Info("session started on a running machine", "id", id, "name", sess.Name)
 		return nil
 	}
@@ -452,7 +485,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err := s.repo.MarkRunning(ctx, placeholderOwner, id, time.Now().UTC()); err != nil {
 		return fmt.Errorf("session: mark running: %w", err)
 	}
-	s.background(func() { s.ensureAgentAfterSetup(sess, workdirFor(userMounts)) })
+	s.background(func() { s.ensureAgentAfterSetup(sess, s.sessionWorkDir(sess)) })
 	s.logger.Info("session started", "id", id, "name", sess.Name)
 	return nil
 }
@@ -538,14 +571,24 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	if sess.OnWorkspaceVM {
 		return nil, fmt.Errorf("%w: this session is on the workspace VM, whose folder is edited on the machine itself", ErrInvalidInput)
 	}
-	userMounts, err := s.prepareMounts(newMounts)
-	if err != nil {
+	if _, err := validateMountRequests(newMounts); err != nil {
 		return nil, err
 	}
 
 	// The recreate stays on the session's existing runtime: changing mounts must not silently move a
 	// session between a container and a VM.
 	runtime, err := s.runtimeFor(sess)
+	if err != nil {
+		return nil, err
+	}
+	// Refused here, before the old sandbox goes: this runtime takes no mounts, so the recreate below
+	// would fail and leave the session with nothing to run on.
+	if workDirIsOnThisMachine(runtime) {
+		return nil, fmt.Errorf("%w: the %s runtime runs the agent on the machine itself, which shares no folders",
+			ErrInvalidInput, sess.Runtime)
+	}
+	// Made once the refusals are past, so a rejected edit leaves no folders behind.
+	userMounts, err := s.prepareMountsCreatingFolders(newMounts)
 	if err != nil {
 		return nil, err
 	}
@@ -604,13 +647,15 @@ type sandboxRequest struct {
 	// machine's own id for the shared one.
 	ID        string
 	Name      string
-	Agent     AgentInfo
+	Agent     AgentSpec
 	Image     string
 	Resources Resources
 	Setup     string
 	Env       map[string]string
 	Mounts    []sandbox.Mount
 	WorkDir   string
+	// OnThisMachine is a runtime with no guest, where the agent home is a folder rather than a volume.
+	OnThisMachine bool
 }
 
 // llmProxyEndpoint is the address the agent calls. Inside a VM that is a localhost port the host
@@ -632,19 +677,28 @@ func llmProxyEndpoint(runtime sandbox.Sandbox, proxyURL string) string {
 // The home volume is first so a stray mount cannot shadow /root; the validator rejects that target
 // anyway, while /workspace is deliberately mountable.
 func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
-	mounts := []sandbox.Mount{{
-		Source: agentHomeVolumeName(req.Agent.Name),
-		Target: agentHomeMountTarget,
-		Type:   sandbox.MountVolume,
-	}}
+	var mounts []sandbox.Mount
+	if !req.OnThisMachine {
+		mounts = append(mounts, sandbox.Mount{
+			Source: agentHomeVolumeName(req.Agent.Name),
+			Target: agentHomeMountTarget,
+			Type:   sandbox.MountVolume,
+		})
+	}
 	mounts = append(mounts, req.Mounts...)
 
 	setup := req.Setup
 	if setup == "" {
-		setup = req.Agent.DefaultSetup
+		setup = req.Agent.Sandboxed.Setup
 	}
-	env := make(map[string]string, len(req.Agent.Env)+len(req.Env)+1)
-	for k, v := range req.Agent.Env {
+	// The guest's env is the image's: its locale, its ripgrep. A session on the machine takes the
+	// machine as it finds it.
+	agentEnv := req.Agent.Sandboxed.Env
+	if req.OnThisMachine {
+		agentEnv = req.Agent.Sandboxless.Env
+	}
+	env := make(map[string]string, len(agentEnv)+len(req.Env)+1)
+	for k, v := range agentEnv {
 		env[k] = v
 	}
 	for k, v := range req.Env {
@@ -656,9 +710,14 @@ func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
 		// Stable across sandbox recreates, which is what lets a runtime keep per sandbox storage.
 		SessionID: req.ID,
 		Image:     req.Image,
-		Agent:     req.Agent.Name,
+		Agent: sandbox.Agent{
+			Name:      req.Agent.Name,
+			Binary:    req.Agent.Sandboxless.Binary,
+			Install:   req.Agent.Sandboxless.Install,
+			LaunchCmd: req.Agent.Sandboxless.LaunchCmd,
+		},
 		Resources: toSandboxResources(req.Resources),
-		Cmd:       buildEntrypoint(req.Name, setup, req.Agent.LaunchCmd),
+		Cmd:       buildEntrypoint(req.Name, setup, req.Agent.Sandboxed.LaunchCmd),
 		Env:       env,
 		Mounts:    mounts,
 		// NetNAT for outbound LLM API calls and package installs. NetIsolated would block apk at boot.
@@ -667,7 +726,7 @@ func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
 }
 
 // buildSandboxSpec describes a session's own machine. The runtime decides how LLM traffic leaves.
-func (s *Service) buildSandboxSpec(sess *Session, agent AgentInfo, userMounts []sandbox.Mount, runtime sandbox.Sandbox) sandbox.SandboxSpec {
+func (s *Service) buildSandboxSpec(sess *Session, agent AgentSpec, userMounts []sandbox.Mount, runtime sandbox.Sandbox) sandbox.SandboxSpec {
 	return newSandboxSpec(sandboxRequest{
 		ID:        sess.ID,
 		Name:      sess.Name,
@@ -677,7 +736,9 @@ func (s *Service) buildSandboxSpec(sess *Session, agent AgentInfo, userMounts []
 		Setup:     sess.SetupScript,
 		Env:       sess.Env,
 		Mounts:    userMounts,
-		WorkDir:   workdirFor(userMounts),
+		// The folder the agent is started in, which its launch script cds into first.
+		WorkDir:       workDirOf(sess, userMounts, runtime),
+		OnThisMachine: workDirIsOnThisMachine(runtime),
 	})
 }
 
@@ -759,17 +820,54 @@ exec sleep infinity
 	return []string{"sh", "-c", body}
 }
 
-// workdirFor returns the directory the agent should start in: the first user mount's
-// target (your code), or the default /workspace when nothing is mounted there.
-func workdirFor(userMounts []sandbox.Mount) string {
-	if len(userMounts) > 0 {
-		return userMounts[0].Target
-	}
-	return workspaceDir
+// workDirIsOnThisMachine reports whether this runtime keeps session folders here rather than inside a
+// guest, which is what makes work_dir a real path.
+func workDirIsOnThisMachine(runtime sandbox.Sandbox) bool {
+	provisioner, ok := runtime.(sandbox.AgentProvisioner)
+	return ok && provisioner.WorkspaceRoot() != ""
 }
 
-// prepareMounts validates the rows, then makes sure the folder each one shares is there.
-func (s *Service) prepareMounts(reqs []MountRequest) ([]sandbox.Mount, error) {
+// unusedOnThisMachine names the first thing a request asks for that a runtime with no guest has no use
+// for. Stored and ignored is worse than refused: the session would run, quietly not doing what it was
+// asked to do. The setup script is the sharpest of the three, since it is the one that installs things.
+func unusedOnThisMachine(req CreateRequest) string {
+	switch {
+	case req.Image != "":
+		return "image"
+	case len(req.Mounts) > 0:
+		return "shared folders"
+	case req.SetupScript != "":
+		return "setup script"
+	case req.Resources.Asked():
+		return "size"
+	}
+	return ""
+}
+
+// workDirOf asks the runtime where this session's agent works, with the mounts it is being created
+// with rather than the ones on the row, which a recreate is about to change.
+func workDirOf(sess *Session, userMounts []sandbox.Mount, runtime sandbox.Sandbox) string {
+	if sess.WorkDir != "" {
+		return sess.WorkDir
+	}
+	provisioner, ok := runtime.(sandbox.AgentProvisioner)
+	if !ok {
+		return sandbox.SandboxedWorkDir
+	}
+	return provisioner.WorkDir(sess.ID, userMounts)
+}
+
+var errFolderGone = errors.New("the folder is not there")
+
+func (s *Service) prepareMountsCreatingFolders(reqs []MountRequest) ([]sandbox.Mount, error) {
+	return s.prepareMounts(reqs, s.ensureSharedFolder)
+}
+
+func (s *Service) prepareMountsRequiringFolders(reqs []MountRequest) ([]sandbox.Mount, error) {
+	return s.prepareMounts(reqs, s.requireSharedFolder)
+}
+
+func (s *Service) prepareMounts(reqs []MountRequest, folder func(string) error) ([]sandbox.Mount, error) {
 	mounts, err := validateMountRequests(reqs)
 	if err != nil {
 		return nil, err
@@ -778,19 +876,15 @@ func (s *Service) prepareMounts(reqs []MountRequest) ([]sandbox.Mount, error) {
 		if m.Type != sandbox.MountBind {
 			continue
 		}
-		if err := s.ensureSharedFolder(m.Source); err != nil {
+		if err := folder(m.Source); err != nil {
 			return nil, fmt.Errorf("%w: mounts[%d]: %s", ErrMountInvalid, i, err)
 		}
 	}
 	return mounts, nil
 }
 
-// ensureSharedFolder makes a folder deepcove is about to share, and creates it when it is not there.
-// You name the folder in the dialog, and on a remote node you have no shell to make it yourself.
-//
-// Only inside an allowed root, which is checked first. So this never makes a folder somewhere it was
-// not told it may share, and cannot be used to find out what exists on the machine.
-func (s *Service) ensureSharedFolder(path string) error {
+// The allowed roots come first on purpose, so this cannot be used to find out what is on the machine.
+func (s *Service) requireSharedFolder(path string) error {
 	if len(s.allowedMountRoots) == 0 {
 		return nil
 	}
@@ -802,8 +896,17 @@ func (s *Service) ensureSharedFolder(path string) error {
 		return nil
 	case err == nil:
 		return fmt.Errorf("%s is a file, not a folder", path)
-	case !errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("%s: %w", path, errFolderGone)
+	default:
 		return fmt.Errorf("cannot use %s: %s", path, err)
+	}
+}
+
+func (s *Service) ensureSharedFolder(path string) error {
+	err := s.requireSharedFolder(path)
+	if !errors.Is(err, errFolderGone) {
+		return err
 	}
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return fmt.Errorf("cannot create %s: %s", path, err)

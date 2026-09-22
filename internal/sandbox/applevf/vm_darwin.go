@@ -88,19 +88,19 @@ func bootVM(spec vm.Spec, logger *slog.Logger) (*machine, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	// The stream owns two of the four pipe ends, so closing it alone leaves the guest's two open.
 	if _, err := config.Validate(); err != nil {
-		_ = console.Close()
+		closeAll(consoleCloser)
 		return nil, fmt.Errorf("invalid vm configuration: %w", err)
 	}
 
 	vm, err := vz.NewVirtualMachine(config)
 	if err != nil {
-		_ = console.Close()
+		closeAll(consoleCloser)
 		return nil, fmt.Errorf("create vm: %w", err)
 	}
 	if err := vm.Start(); err != nil {
-		_ = console.Close()
+		closeAll(consoleCloser)
 		return nil, fmt.Errorf("start vm: %w", err)
 	}
 
@@ -163,19 +163,27 @@ func serialConsole(config *vz.VirtualMachineConfiguration) (io.ReadWriteCloser, 
 		return nil, nil, fmt.Errorf("console input pipe: %w", err)
 	}
 
+	pipes := []io.Closer{guestOutR, guestOutW, guestInR, guestInW}
+
 	attachment, err := vz.NewFileHandleSerialPortAttachment(guestInR, guestOutW)
 	if err != nil {
+		closeAll(pipes)
 		return nil, nil, fmt.Errorf("serial attachment: %w", err)
 	}
 	port, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(attachment)
 	if err != nil {
+		closeAll(pipes)
 		return nil, nil, fmt.Errorf("serial port: %w", err)
 	}
 	config.SetSerialPortsVirtualMachineConfiguration([]*vz.VirtioConsoleDeviceSerialPortConfiguration{port})
 
-	stream := &consoleStream{r: guestOutR, w: guestInW}
-	closers := []io.Closer{guestOutR, guestOutW, guestInR, guestInW}
-	return stream, closers, nil
+	return &consoleStream{r: guestOutR, w: guestInW}, pipes, nil
+}
+
+func closeAll(closers []io.Closer) {
+	for _, c := range closers {
+		_ = c.Close()
+	}
 }
 
 // consoleStream presents the host ends of the console pipes as one duplex stream.
@@ -226,9 +234,7 @@ func (m *machine) Stop() error {
 	if waitErr := m.WaitStopped(stopWait); waitErr != nil && err == nil {
 		err = waitErr
 	}
-	for _, c := range m.closers {
-		_ = c.Close()
-	}
+	closeAll(m.closers)
 	return err
 }
 

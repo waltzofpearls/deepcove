@@ -89,14 +89,14 @@ func (s *Service) SetUseLLMProxy(ctx context.Context, id string, use bool) (*Ses
 		// The agent reads this once, at launch, so it has to be restarted. Nothing about the machine
 		// changes.
 		_, _ = s.execTmux(ctx, sess, "kill-session", "-t", tmuxSessionName(sess.ID))
-		if err := s.startAgentSession(ctx, sess, sessionWorkdir(sess)); err != nil {
+		if err := s.startAgentSession(ctx, sess, s.sessionWorkDir(sess)); err != nil {
 			// The old agent is already gone, so a session left with none is the one outcome to avoid:
 			// put the setting back and start it the way it was.
 			sess.UseLLMProxy = !use
 			if rerr := s.repo.UpdateUseLLMProxy(ctx, placeholderOwner, id, !use, time.Now().UTC()); rerr != nil {
 				s.logger.Error("could not undo the llm proxy change", "id", id, "err", rerr)
 			}
-			if rerr := s.startAgentSession(ctx, sess, sessionWorkdir(sess)); rerr != nil {
+			if rerr := s.startAgentSession(ctx, sess, s.sessionWorkDir(sess)); rerr != nil {
 				return nil, fmt.Errorf("session: the agent did not restart: %w", errors.Join(err, rerr))
 			}
 			return nil, fmt.Errorf("session: could not switch the llm proxy, the agent was restarted unchanged: %w", err)

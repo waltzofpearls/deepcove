@@ -9,7 +9,7 @@ export interface Session {
   id: string;
   name: string;
   agent: string;
-  // Which sandbox runtime hosts this session ("docker", "applevf", "cloudhv").
+  // Which sandbox runtime hosts this session ("docker", "applevf", "cloudhv", "sandboxless").
   runtime: string;
   image: string;
   owner_email: string;
@@ -28,6 +28,9 @@ export interface Session {
   use_llm_proxy?: boolean;
   // The folder this session works in, inside the sandbox.
   work_dir?: string;
+  // Where the agent actually works, answered by the runtime. The one place the path comes from when
+  // deepcove made the folder rather than you picking it.
+  agent_work_dir?: string;
   created_at: string; // ISO-8601 timestamp
   updated_at: string;
   last_activity_at: string; // added in Phase 4 / migration 0002
@@ -185,10 +188,15 @@ export interface ConnectStatus {
 export interface Agent {
   name: string;
   display_name: string;
+  sandboxed: SandboxedAgent;
+}
+
+// How the agent is built into a guest, for the runtimes that have one. The script that starts it stays
+// on the node, along with everything about installing it on a machine with no guest.
+export interface SandboxedAgent {
   default_image: string;
   official_image: string;
-  default_setup: string;
-  launch_cmd: string;
+  setup: string;
   env: Record<string, string>;
 }
 
@@ -257,6 +265,11 @@ export interface RuntimesInfo {
   // workspace_defaults is the size a new workspace VM gets on this host, derived from what the machine
   // actually has. Not part of defaults, which is per runtime: this one is per machine.
   workspace_defaults?: SessionResources;
+  // workspace_roots maps a runtime that makes a folder per session to where those folders live. Only a
+  // runtime with no sandbox has one.
+  workspace_roots?: Record<string, string>;
+  // agents_to_install maps a runtime to the agents that machine does not have yet.
+  agents_to_install?: Record<string, string[]>;
 }
 
 export interface DockerStatus {

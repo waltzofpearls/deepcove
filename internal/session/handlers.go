@@ -63,7 +63,7 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleAgents(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, Agents())
+	writeJSON(w, http.StatusOK, allAgents())
 }
 
 // handleSuggestName returns a generated session name so the web UI can pre-fill

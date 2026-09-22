@@ -28,7 +28,7 @@ func (r *restartingSandbox) Exec(_ context.Context, _ sandbox.ID, spec sandbox.E
 	defer r.mu.Unlock()
 	r.execCalls = append(r.execCalls, append([]string(nil), spec.Cmd...))
 	switch {
-	case len(spec.Cmd) == 2 && spec.Cmd[0] == "cat" && spec.Cmd[1] == bootstrapStatusPath:
+	case len(spec.Cmd) == 2 && spec.Cmd[0] == "cat" && spec.Cmd[1] == sandbox.SandboxedSetupStatusPath:
 		r.statusReads++
 		if r.statusReads <= r.installingReads {
 			return newScriptedProcess("installing\n", "", 0), nil
@@ -38,6 +38,12 @@ func (r *restartingSandbox) Exec(_ context.Context, _ sandbox.ID, spec sandbox.E
 		return newScriptedProcess("", "", 1), nil
 	}
 	return newScriptedProcess("", "", 0), nil
+}
+
+// Setup has to name this fake, not the one it embeds, or the reads land on the embedded Exec and the
+// status never changes.
+func (r *restartingSandbox) Setup(ctx context.Context, sandboxID sandbox.ID) (sandbox.SetupState, error) {
+	return sandbox.SandboxedSetup(ctx, r, sandboxID)
 }
 
 // ListSandboxes reports what this driver built. A workspace VM is refused on a runtime that cannot

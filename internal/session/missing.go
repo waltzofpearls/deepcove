@@ -24,6 +24,8 @@ const (
 	MissingGuestInit = "no_guest_init"
 	// MissingHostBinaries: the host programs that run a VM are not downloaded yet.
 	MissingHostBinaries = "no_host_binaries"
+	// MissingTmux: tmux is not installed, and installing it needs a package manager and a password.
+	MissingTmux = "no_tmux"
 )
 
 // RuntimeInstaller sets up a runtime this node is missing, reporting progress as it goes. On success the

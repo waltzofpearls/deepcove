@@ -26,8 +26,10 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 	agent := args[0]
 
 	fs := flag.NewFlagSet("session "+agent, flag.ContinueOnError)
-	var name, image, setupScript string
+	var name, image, setupScript, runtime, workDir string
 	fs.StringVar(&name, "name", "", "session name (auto-generated if omitted)")
+	fs.StringVar(&runtime, "runtime", "", "runtime to host the session (default: the node's own)")
+	fs.StringVar(&workDir, "work-dir", "", "folder the agent works in, for a runtime that works in one")
 	fs.StringVar(&image, "image", "", "container image override (default: agent's registered image)")
 	fs.StringVar(&setupScript, "setup-script", "", "shell script run on container start (default: agent's registered setup)")
 	mounts := &mountFlag{}
@@ -45,6 +47,8 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 	sess, err := client.Create(ctx, session.CreateRequest{
 		Agent:       agent,
 		Name:        name,
+		Runtime:     runtime,
+		WorkDir:     workDir,
 		Image:       image,
 		SetupScript: setupScript,
 		Mounts:      mounts.values,

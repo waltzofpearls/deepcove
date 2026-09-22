@@ -30,7 +30,13 @@
     SessionResources,
     WorkspaceVM,
   } from '$lib/api/types';
-  import { bootsVMs, runtimeCapsDisk, runtimeHint, runtimeLabel } from '$lib/util/runtime';
+  import {
+    bootsVMs,
+    runtimeCapsDisk,
+    runtimeHint,
+    runtimeLabel,
+    RUNTIME_SANDBOXLESS,
+  } from '$lib/util/runtime';
   import { emptyResourceFields, fieldsFromDefaults, parseResources } from '$lib/util/resources';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
@@ -198,6 +204,24 @@
   // just a container.
   const onVMRuntime = $derived(bootsVMs(effectiveRuntime));
 
+  // No sandbox means no image and no size caps, and the folder is a real folder on that machine rather
+  // than something mounted into a guest.
+  const onSandboxless = $derived(effectiveRuntime === RUNTIME_SANDBOXLESS);
+  // The agent runs as the user deepcove runs as, so it reads that user's own login.
+  const loginNote = $derived(
+    onSandboxless ? 'the login already on this machine' : "this session's own login",
+  );
+  // Where that runtime puts the folder it makes, so the form can show it before the session exists.
+  const sandboxlessRoot = $derived(runtimes?.workspace_roots?.[effectiveRuntime] ?? '');
+  // Off means deepcove makes the folder and owns it. On means you pick one, and it is never deleted.
+  let ownFolder = $state(false);
+
+  // Agents this machine does not have yet, so the dropdown can say that picking one installs it.
+  const agentsToInstall = $derived(runtimes?.agents_to_install?.[effectiveRuntime] ?? []);
+  // The option text never changes, so the list cannot rewrite itself when the node answers. What the
+  // node said goes in a line under it, once it has said anything.
+  const installsTheAgent = $derived(runtimes !== null && agentsToInstall.includes(agent));
+
   // Why the SELECTED runtime cannot host a session, or null when it can. Docker being down says nothing
   // about the VM runtime, so this is asked per runtime rather than treating Docker as a prerequisite.
   const runtimeBlocked = $derived(runtimes?.unavailable?.[effectiveRuntime] ?? null);
@@ -222,6 +246,10 @@
   const onWorkspace = $derived(placement === 'workspace' && onVMRuntime);
   // No machine yet means this dialog creates it too, so it asks for the folder and size first.
   const creatingWorkspaceVM = $derived(onWorkspace && workspaceVM === null);
+  // Which controls this session shows. If a control is hidden, it cannot stop you from creating the
+  // session, so the Create button checks these too.
+  const showsImageControls = $derived((!onWorkspace || creatingWorkspaceVM) && !onSandboxless);
+  const showsSizeControls = $derived(!onWorkspace && !onSandboxless);
   const parsedWorkspaceResources = $derived(parseResources(workspaceFields, true));
 
   // Reads the workspace VM when the dialog opens. Null is normal rather than an error: this node
@@ -276,6 +304,11 @@
     void selectedHostKey;
     const host = untrack(() => selectedHost);
     if (!open) return;
+    // A folder belongs to one machine, so opening this or picking another node starts over.
+    untrack(() => {
+      ownFolder = false;
+      workDir = '';
+    });
     let cancelled = false;
     api
       .fsList(undefined, host)
@@ -288,6 +321,10 @@
           const first = mounts[0];
           if (first && (!first.host_path || first.host_path === previous + '/')) {
             first.host_path = res.path + '/';
+          }
+          // Blank only: a slow node must not overwrite a folder you typed while it answered.
+          if (!workDir) {
+            workDir = res.path + '/';
           }
         });
       })
@@ -319,9 +356,9 @@
   const selectedAgent = $derived(agents.find((a) => a.name === agent));
   $effect(() => {
     if (!selectedAgent) return;
-    baseImage = selectedAgent.default_image;
-    setupScript = selectedAgent.default_setup;
-    imageStrategy = selectedAgent.official_image ? 'official' : 'install';
+    baseImage = selectedAgent.sandboxed.default_image;
+    setupScript = selectedAgent.sandboxed.setup;
+    imageStrategy = selectedAgent.sandboxed.official_image ? 'official' : 'install';
   });
 
   const command = $derived.by(() => {
@@ -334,17 +371,24 @@
       if (workDir.trim()) parts.push('--work-dir', shellQuote(workDir.trim()));
       return parts.join(' ');
     }
-    if (imageStrategy === 'official' && selectedAgent?.official_image) {
-      parts.push('--image', shellQuote(selectedAgent.official_image));
+    // Matches buildPayload, which sends a runtime only when you had a choice.
+    if (showRuntimePicker && effectiveRuntime) parts.push('--runtime', effectiveRuntime);
+    if (onSandboxless) {
+      // No image, no setup script and no mounts on this runtime, so the folder is all that is left.
+      if (ownFolder && workDir.trim()) parts.push('--work-dir', shellQuote(workDir.trim()));
+      return parts.join(' ');
+    }
+    if (imageStrategy === 'official' && selectedAgent?.sandboxed.official_image) {
+      parts.push('--image', shellQuote(selectedAgent.sandboxed.official_image));
     } else if (imageStrategy === 'custom' && customImage) {
       parts.push('--image', shellQuote(customImage));
       if (customSetup) parts.push('--setup-script', shellQuote(customSetup));
     } else if (imageStrategy === 'install') {
       // Only emit overrides, which keeps the CLI line short in the common case.
-      if (selectedAgent && baseImage !== selectedAgent.default_image) {
+      if (selectedAgent && baseImage !== selectedAgent.sandboxed.default_image) {
         parts.push('--image', shellQuote(baseImage));
       }
-      if (selectedAgent && setupScript !== selectedAgent.default_setup) {
+      if (selectedAgent && setupScript !== selectedAgent.sandboxed.setup) {
         parts.push('--setup-script', shellQuote(setupScript));
       }
     }
@@ -405,6 +449,8 @@
     customImage = '';
     customSetup = '';
     runtimeChoice = '';
+    ownFolder = false;
+    workDir = '';
     resourceFields = { ...emptyResourceFields };
     // Let the defaults seed again on the next open, rather than keeping the last session's sizes.
     sizeEdited = false;
@@ -430,7 +476,7 @@
   });
 
   function chosenImage(): string | undefined {
-    if (imageStrategy === 'official') return selectedAgent?.official_image;
+    if (imageStrategy === 'official') return selectedAgent?.sandboxed.official_image;
     if (imageStrategy === 'custom') return customImage.trim() || undefined;
     return baseImage || undefined;
   }
@@ -445,6 +491,17 @@
         node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
         on_workspace_vm: true,
         work_dir: workDir.trim() || undefined,
+        use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
+        mounts: [],
+      };
+    }
+    if (onSandboxless) {
+      return {
+        agent,
+        name: name.trim() || undefined,
+        node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
+        runtime: effectiveRuntime,
+        work_dir: ownFolder ? workDir.trim() : undefined,
         use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
         mounts: [],
       };
@@ -477,17 +534,17 @@
           mode: m.read_only ? 'ro' : 'rw',
         })),
     };
-    if (imageStrategy === 'official' && selectedAgent?.official_image) {
-      payload.image = selectedAgent.official_image;
+    if (imageStrategy === 'official' && selectedAgent?.sandboxed.official_image) {
+      payload.image = selectedAgent.sandboxed.official_image;
     } else if (imageStrategy === 'custom') {
       payload.image = customImage.trim();
       if (customSetup.trim()) payload.setup_script = customSetup;
     } else {
       // install: only emit overrides so registry updates flow into sessions on recreate.
-      if (selectedAgent && baseImage !== selectedAgent.default_image) {
+      if (selectedAgent && baseImage !== selectedAgent.sandboxed.default_image) {
         payload.image = baseImage;
       }
-      if (selectedAgent && setupScript !== selectedAgent.default_setup) {
+      if (selectedAgent && setupScript !== selectedAgent.sandboxed.setup) {
         payload.setup_script = setupScript;
       }
     }
@@ -497,9 +554,9 @@
   // The image ref a create will actually use. Mirrors the image
   // resolution in buildPayload (install falls back to the base image).
   function effectiveImage(): string {
-    if (imageStrategy === 'official') return selectedAgent?.official_image ?? '';
+    if (imageStrategy === 'official') return selectedAgent?.sandboxed.official_image ?? '';
     if (imageStrategy === 'custom') return customImage.trim();
-    return baseImage || selectedAgent?.default_image || '';
+    return baseImage || selectedAgent?.sandboxed.default_image || '';
   }
 
   // Proactively check whether the selected image is downloaded so we can
@@ -510,12 +567,16 @@
     const img = effectiveImage();
     // Asking a runtime that cannot host anything whether it has an image just fails.
     const blocked = runtimeBlocked;
+    // Read here, not in the timer below: a value only read inside the callback is not a dependency, so
+    // switching the runtime would leave the previous one's answer standing.
+    const runtime = effectiveRuntime;
     imagePresent = null;
-    if (!img || blocked) return;
+    // A runtime with no guest has no image to download, and nothing to ask about one.
+    if (!img || blocked || onSandboxless) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const present = await api.imageExists(img, selectedHost, undefined, effectiveRuntime);
+        const present = await api.imageExists(img, selectedHost, undefined, runtime);
         if (!cancelled) imagePresent = present;
       } catch {
         // Don't block create on a flaky check; leave it unknown. The
@@ -552,8 +613,13 @@
 
   async function submit() {
     if (submitting || pulling) return;
-    if (imageStrategy === 'official' && !selectedAgent?.official_image) return;
-    if (imageStrategy === 'custom' && !customImage.trim()) {
+    if (
+      showsImageControls &&
+      imageStrategy === 'official' &&
+      !selectedAgent?.sandboxed.official_image
+    )
+      return;
+    if (showsImageControls && imageStrategy === 'custom' && !customImage.trim()) {
       submitError = {
         title: 'Enter an image reference',
         raw: 'Bring your own image requires an image reference.',
@@ -588,7 +654,7 @@
       }
       // Download first if we know it's absent, so the create itself is fast and we can show a real
       // progress bar. The workspace VM already has its image.
-      if (!onWorkspace && imagePresent === false) await pullCurrentImage();
+      if (!onWorkspace && !onSandboxless && imagePresent === false) await pullCurrentImage();
 
       // Create via the boot transport with node_id in the payload: the receiving node routes it (creates
       // locally if it's the target, else proxies to the target over its own tailnet). This works in both
@@ -636,23 +702,50 @@
 
     <div class="flex min-h-0 flex-col gap-5 overflow-y-auto px-6 pb-6 pt-4">
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div class="space-y-2">
-          <Label for="agent">Agent</Label>
-          {#if agentsError}
-            <div class="text-sm text-destructive">{agentsError}</div>
-          {:else}
+        {#if hostNodes.length > 1}
+          <div class="space-y-2">
+            <Label for="node">Node</Label>
             <select
-              id="agent"
-              bind:value={agent}
+              id="node"
+              bind:value={nodeId}
               class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
             >
-              {#each agents as a (a.name)}
-                <option value={a.name}>{a.display_name || a.name}</option>
+              {#each hostNodes as node (node.stable_node_id)}
+                <option value={node.stable_node_id}>
+                  {node.hostname}{node.self ? ' (this machine)' : ''}
+                </option>
               {/each}
             </select>
-          {/if}
-        </div>
+            <p class="text-xs text-muted-foreground">
+              The session and its container live on the machine you pick.
+            </p>
+          </div>
+        {:else if soleRemoteNode}
+          <div class="space-y-2">
+            <Label>Node</Label>
+            <p class="text-sm">{soleRemoteNode.hostname}</p>
+            <p class="text-xs text-muted-foreground">The session lives on that machine.</p>
+          </div>
+        {/if}
+        {#if showRuntimePicker}
+          <div class="space-y-2">
+            <Label for="runtime">Isolation</Label>
+            <select
+              id="runtime"
+              value={effectiveRuntime}
+              onchange={(e) => (runtimeChoice = e.currentTarget.value)}
+              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {#each runtimeOptions as runtimeName (runtimeName)}
+                <option value={runtimeName}>{runtimeLabel(runtimeName)}</option>
+              {/each}
+            </select>
+            <p class="text-xs text-muted-foreground">{runtimeHint(effectiveRuntime)}</p>
+          </div>
+        {/if}
+      </div>
 
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div class="space-y-2">
           <Label for="session-name">Name</Label>
           <div class="flex gap-2">
@@ -669,33 +762,28 @@
             </Button>
           </div>
         </div>
+        <div class="space-y-2">
+          <Label for="agent">Agent</Label>
+          {#if agentsError}
+            <div class="text-sm text-destructive">{agentsError}</div>
+          {:else}
+            <select
+              id="agent"
+              bind:value={agent}
+              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {#each agents as a (a.name)}
+                <option value={a.name}>{a.display_name || a.name}</option>
+              {/each}
+            </select>
+          {/if}
+          {#if installsTheAgent}
+            <p class="text-xs text-muted-foreground">
+              Not on that machine yet. Creating this session installs it first.
+            </p>
+          {/if}
+        </div>
       </div>
-
-      {#if hostNodes.length > 1}
-        <div class="space-y-2">
-          <Label for="node">Run on</Label>
-          <select
-            id="node"
-            bind:value={nodeId}
-            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            {#each hostNodes as node (node.stable_node_id)}
-              <option value={node.stable_node_id}>
-                {node.hostname}{node.self ? ' (this machine)' : ''}
-              </option>
-            {/each}
-          </select>
-          <p class="text-xs text-muted-foreground">
-            The session and its container live on the machine you pick.
-          </p>
-        </div>
-      {:else if soleRemoteNode}
-        <div class="space-y-2">
-          <Label>Run on</Label>
-          <p class="text-sm">{soleRemoteNode.hostname}</p>
-          <p class="text-xs text-muted-foreground">The session lives on that machine.</p>
-        </div>
-      {/if}
 
       {#if waitingForNodeRuntimes}
         <p class="text-xs text-muted-foreground">
@@ -756,24 +844,7 @@
         </div>
       {/if}
 
-      {#if showRuntimePicker && !onWorkspace}
-        <div class="space-y-2">
-          <Label for="runtime">Isolation</Label>
-          <select
-            id="runtime"
-            value={effectiveRuntime}
-            onchange={(e) => (runtimeChoice = e.currentTarget.value)}
-            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            {#each runtimeOptions as name (name)}
-              <option value={name}>{runtimeLabel(name)}</option>
-            {/each}
-          </select>
-          <p class="text-xs text-muted-foreground">{runtimeHint(effectiveRuntime)}</p>
-        </div>
-      {/if}
-
-      {#if !onWorkspace}
+      {#if showsSizeControls}
         <div class="space-y-2">
           <Label>Size</Label>
           <div
@@ -832,29 +903,29 @@
         </div>
       {/if}
 
-      {#if !onWorkspace || creatingWorkspaceVM}
+      {#if showsImageControls}
         <div class="space-y-2">
           <Label>Image</Label>
           <div class="space-y-2 rounded-md border border-border p-3">
             <label
               class="flex items-start gap-2.5 text-sm"
-              class:cursor-pointer={selectedAgent?.official_image}
-              class:cursor-not-allowed={!selectedAgent?.official_image}
-              class:opacity-60={!selectedAgent?.official_image}
+              class:cursor-pointer={selectedAgent?.sandboxed.official_image}
+              class:cursor-not-allowed={!selectedAgent?.sandboxed.official_image}
+              class:opacity-60={!selectedAgent?.sandboxed.official_image}
             >
               <input
                 type="radio"
                 bind:group={imageStrategy}
                 value="official"
-                disabled={!selectedAgent?.official_image}
+                disabled={!selectedAgent?.sandboxed.official_image}
                 class="mt-0.5 size-4 border-input disabled:cursor-not-allowed"
               />
               <div class="flex-1">
                 <div class="font-medium">Default deepcove image</div>
                 <div class="text-xs text-muted-foreground">
-                  {#if selectedAgent?.official_image}
+                  {#if selectedAgent?.sandboxed.official_image}
                     Prebuilt and ready, the fastest boot. <code>
-                      {selectedAgent.official_image}
+                      {selectedAgent.sandboxed.official_image}
                     </code>
                   {:else}
                     Not yet published for this agent. Use "Run install script at startup" for now.
@@ -950,7 +1021,39 @@
         </div>
       {/if}
 
-      {#if !onWorkspace}
+      {#if onSandboxless}
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <Label>Folder</Label>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                onclick={() => (ownFolder = !ownFolder)}
+                class="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Use my own folder
+              </button>
+              <Switch
+                checked={ownFolder}
+                onCheckedChange={() => (ownFolder = !ownFolder)}
+                aria-label="Use my own folder"
+              />
+            </div>
+          </div>
+          {#if ownFolder}
+            <HostPathField id="sandboxless-work-dir" bind:value={workDir} host={selectedHost} />
+            <p class="text-xs text-muted-foreground">
+              The agent works here, with your files. Deleting the session leaves this folder alone.
+            </p>
+          {:else}
+            <p class="text-xs text-muted-foreground">deepcove makes a folder for this session:</p>
+            <p class="font-mono text-xs text-muted-foreground">
+              {sandboxlessRoot ? sandboxlessRoot + '/<session id>' : 'under deepcove’s data folder'}
+            </p>
+            <p class="text-xs text-muted-foreground">It is deleted with the session.</p>
+          {/if}
+        </div>
+      {:else if !onWorkspace}
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <Label>Folder</Label>
@@ -1098,7 +1201,7 @@
             <span class="block text-sm font-medium">Use the LLM proxy</span>
             <span class="block text-xs leading-relaxed text-muted-foreground">
               <span class="font-mono">{llmProxyUrl}</span>
-              supplies the key. Off uses this session's own login.
+              supplies the key. When it's off, the agent uses {loginNote}.
             </span>
           </button>
           <Switch
@@ -1120,9 +1223,12 @@
             waitingForNodeRuntimes ||
             !name.trim() ||
             !!runtimeBlocked ||
-            (imageStrategy === 'official' && !selectedAgent?.official_image) ||
-            (imageStrategy === 'custom' && !customImage.trim()) ||
-            !!parsedResources.error}
+            (onSandboxless && ownFolder && !workDir.trim()) ||
+            (showsImageControls &&
+              imageStrategy === 'official' &&
+              !selectedAgent?.sandboxed.official_image) ||
+            (showsImageControls && imageStrategy === 'custom' && !customImage.trim()) ||
+            (showsSizeControls && !!parsedResources.error)}
         >
           {#if pulling}
             Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}
