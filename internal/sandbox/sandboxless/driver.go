@@ -6,8 +6,9 @@
 // network and credentials. It is for a machine that is already the boundary, such as a cloud instance
 // you set aside for this, where a second layer buys nothing.
 //
-// What it tracks lives in memory, like the VM driver, so sessions do not survive a deepcove restart:
-// the tmux servers a previous run left are swept at startup and their sessions are rebuilt.
+// A session outlives deepcove: its agent runs in a tmux server on this machine. What this driver
+// tracks lives in memory, so at startup it is told which sandbox ids its sessions had, takes those
+// back, and stops whatever else it left running.
 package sandboxless
 
 import (
@@ -29,7 +30,7 @@ import (
 const idPrefix = "sandboxless-"
 
 // socketsDirName is a folder of our own inside the ipc directory, which the VM runtime also writes
-// sockets into. SweepOrphans stops the server behind every socket it finds in ours.
+// sockets into. The sweep stops the server behind every socket it finds in ours.
 const socketsDirName = "tmux"
 
 // Driver implements sandbox.Sandbox by running processes on this machine.
@@ -39,10 +40,15 @@ type Driver struct {
 	// socketDir holds the tmux sockets, in the runtime directory rather than under the data dir, where
 	// the path would be too long for one. See shortID.
 	socketDir string
-	// installAgent and killServer are fields so tests can put an agent in place without the network, and
-	// can fail a kill without a tmux to break.
+	// installAgent, killServer and serverAlive are fields so tests can put an agent in place without the
+	// network, and can answer for a tmux server without one to break.
 	installAgent func(ctx context.Context, agentHome, install string) (string, error)
 	killServer   func(ctx context.Context, socket string) error
+	serverAlive  func(ctx context.Context, socket string) (bool, error)
+	// tmuxCallBudget is a field for the same reason, so a test waits milliseconds for a tmux that never
+	// answers rather than seconds.
+	tmuxCallBudget time.Duration
+	adoptBudget    time.Duration
 
 	// installMu keeps two sessions from installing into the shared agent home at the same time. It is
 	// held while agentMu is taken, never the other way round.
@@ -84,13 +90,16 @@ func NewDriver(stateDir, agentHome, ipcDir string) (*Driver, error) {
 		return nil, fmt.Errorf("sandboxless: the socket folder: %w", err)
 	}
 	return &Driver{
-		stateDir:     stateDir,
-		agentHome:    agentHome,
-		socketDir:    socketDir,
-		installAgent: runInstall,
-		killServer:   killTmuxServer,
-		instances:    map[sandbox.ID]*instance{},
-		agentPaths:   map[string]string{},
+		stateDir:       stateDir,
+		agentHome:      agentHome,
+		socketDir:      socketDir,
+		installAgent:   runInstall,
+		killServer:     killTmuxServer,
+		serverAlive:    tmuxServerAlive,
+		tmuxCallBudget: tmuxCallBudget,
+		adoptBudget:    adoptBudget,
+		instances:      map[sandbox.ID]*instance{},
+		agentPaths:     map[string]string{},
 	}, nil
 }
 
@@ -116,6 +125,7 @@ var (
 	_ sandbox.Sandbox     = (*Driver)(nil)
 	_ sandbox.Pinger      = (*Driver)(nil)
 	_ sandbox.Lister      = (*Driver)(nil)
+	_ sandbox.Adopter     = (*Driver)(nil)
 	_ sandbox.ForceCloser = (*Driver)(nil)
 )
 
@@ -345,24 +355,13 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 	return out, nil
 }
 
-// closeBudget is how long tmux gets to stop every session before deepcove stops waiting for it.
-const closeBudget = 8 * time.Second
-
-// Close stops every session's agent, and any install still running.
+// Close stops any install still running. The agents stay up: they are tmux servers on this machine,
+// not something deepcove holds, and the next start takes them back.
 func (d *Driver) Close() error {
-	return d.closeWithin(closeBudget)
+	return d.ForceClose()
 }
 
-// closeWithin stops what it can inside the budget. Shutdown then takes a known amount of time, rather
-// than however long a tmux that stopped answering feels like taking.
-func (d *Driver) closeWithin(budget time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
-	return d.stopAll(ctx)
-}
-
-// ForceClose leaves the tmux servers where they are, for a shutdown that already waited. The next
-// start finds them and stops them, which is what the sweep is for.
+// ForceClose is the same: nothing here has to be torn down for deepcove to exit.
 func (d *Driver) ForceClose() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -372,24 +371,6 @@ func (d *Driver) ForceClose() error {
 		}
 	}
 	return nil
-}
-
-func (d *Driver) stopAll(ctx context.Context) error {
-	d.mu.Lock()
-	instanceIDs := make([]sandbox.ID, 0, len(d.instances))
-	for instanceID, inst := range d.instances {
-		instanceIDs = append(instanceIDs, instanceID)
-		if inst.cancelSetup != nil {
-			inst.cancelSetup()
-		}
-	}
-	d.mu.Unlock()
-
-	var err error
-	for _, instanceID := range instanceIDs {
-		err = errors.Join(err, d.Stop(ctx, instanceID))
-	}
-	return err
 }
 
 func (d *Driver) lookup(instanceID sandbox.ID) (*instance, error) {

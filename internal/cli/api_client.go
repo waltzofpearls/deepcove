@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"slices"
 
 	"github.com/waltzofpearls/deepcove/internal/config"
 	"github.com/waltzofpearls/deepcove/internal/session"
@@ -95,6 +97,53 @@ func (c *apiClient) List(ctx context.Context, includeAll bool) ([]*session.Sessi
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out, nil
+}
+
+func (c *apiClient) Stop(ctx context.Context, id string) error {
+	stopURL := c.baseURL + "/api/sessions/" + url.PathEscape(id) + "/stop"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, stopURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return readAPIError(resp)
+	}
+	return nil
+}
+
+// runningSessions is what this node is running right now.
+func runningSessions(ctx context.Context, client *apiClient) ([]*session.Session, error) {
+	sessions, err := client.List(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(sessions, func(sess *session.Session) bool {
+		return sess.Status != session.StatusRunning
+	}), nil
+}
+
+// stopRunningSessions stops every session this node is running, and returns how many it stopped. One
+// that will not stop is reported, and the rest are still stopped.
+func stopRunningSessions(ctx context.Context, client *apiClient) (int, error) {
+	sessions, err := runningSessions(ctx, client)
+	if err != nil {
+		return 0, err
+	}
+	var stopped int
+	var stopErr error
+	for _, sess := range sessions {
+		if err := client.Stop(ctx, sess.ID); err != nil {
+			stopErr = errors.Join(stopErr, fmt.Errorf("%s: %w", sess.Name, err))
+			continue
+		}
+		stopped++
+	}
+	return stopped, stopErr
 }
 
 func readAPIError(resp *http.Response) error {

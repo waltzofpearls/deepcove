@@ -61,6 +61,10 @@ func plistText(command []string, logPath string) string {
 	<key>ProgramArguments</key>
 	<array>%s
 	</array>
+	<!-- Stop deepcove, not what it started: without this launchd kills the whole process group, and a
+	     session on the machine is a tmux server in it. -->
+	<key>AbandonProcessGroup</key>
+	<true/>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

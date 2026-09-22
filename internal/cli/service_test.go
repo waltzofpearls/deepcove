@@ -2,8 +2,28 @@ package cli
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestServiceStoppedMessage(t *testing.T) {
+	cases := []struct {
+		name   string
+		agents int
+		want   string
+	}{
+		{name: "nothing was running", agents: 0, want: "deepcove is stopped."},
+		{name: "one agent", agents: 1, want: "1 agent is still running"},
+		{name: "more than one", agents: 3, want: "3 agents are still running"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serviceStoppedMessage(tc.agents); !strings.Contains(got, tc.want) {
+				t.Errorf("got %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
 
 // Everything after `--` belongs to `deepcove start`, and everything before it is ours.
 func TestSplitAtDashDash(t *testing.T) {

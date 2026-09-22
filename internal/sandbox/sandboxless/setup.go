@@ -61,10 +61,15 @@ func (d *Driver) WorkspaceRoot() string {
 // workspacePath is the folder this driver makes for a session. The session id has to be a plain name:
 // anything that could climb out of the workspaces folder is refused rather than cleaned up.
 func (d *Driver) workspacePath(sessionID string) (string, error) {
-	if sessionID == "" || sessionID != filepath.Base(sessionID) || sessionID == "." || sessionID == ".." {
+	if !isPlainFolderName(sessionID) {
 		return "", fmt.Errorf("sandboxless: %q is not a session id", sessionID)
 	}
 	return filepath.Join(d.WorkspaceRoot(), sessionID), nil
+}
+
+// isPlainFolderName refuses a name that could climb out of the folder it is joined to.
+func isPlainFolderName(name string) bool {
+	return name != "" && name == filepath.Base(name) && name != "." && name != ".."
 }
 
 // workspaceToRemove returns the one folder RemoveStorage may delete, or an empty path when there is
@@ -265,8 +270,8 @@ func writeLaunchScript(instanceDir, agentPath, launchCmd string) error {
 	return nil
 }
 
-// agentInLaunchScript reads back the path writeLaunchScript recorded, for a session taken over from a
-// previous run. Empty when there is no script, or nothing in it that names an agent.
+// agentInLaunchScript reads back the path writeLaunchScript recorded. Empty when there is no script, or
+// nothing in it that names an agent.
 func agentInLaunchScript(instanceDir string) string {
 	body, err := os.ReadFile(launchScript(instanceDir))
 	if err != nil {

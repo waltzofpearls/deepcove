@@ -492,3 +492,23 @@ func TestRegisterRuntimeWhileReading(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestSandboxesOutliveDeepcove(t *testing.T) {
+	cases := []struct {
+		runtime string
+		want    bool
+	}{
+		{runtime: RuntimeSandboxless, want: true},
+		{runtime: RuntimeDocker, want: true},
+		{runtime: RuntimeAppleVF},
+		{runtime: RuntimeCloudHV},
+		{runtime: "something we have never heard of"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.runtime, func(t *testing.T) {
+			if got := SandboxesOutliveDeepcove(tc.runtime); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -15,36 +15,91 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// SweepOrphans clears out what a previous deepcove left: the tmux servers still running, their
-// sockets, and the folders their sessions worked from.
-//
-// A tmux server outlives the deepcove that started it, and the instances are only in memory, so after a
-// restart nothing here knows about them and nothing would ever stop them.
-func (d *Driver) SweepOrphans(ctx context.Context) (int, error) {
-	swept, stillRunning, err := d.sweepSockets(ctx)
-	if stillRunning == nil {
-		// The socket folder could not be read, so nothing here knows which servers are still up. Their
-		// folders are the only way back to them, so none of them go.
-		return swept, err
+// tmuxCallBudget bounds one call to tmux. Adoption runs before deepcove serves anything, and a tmux
+// client waiting on a server that has stopped answering waits forever, so one wedged session would
+// keep the node from ever starting.
+const tmuxCallBudget = 5 * time.Second
+
+// adoptBudget bounds adoption as a whole. Sessions are taken back one after another, so a node with
+// several wedged ones would add up to minutes of not starting, even with every call bounded.
+const adoptBudget = 30 * time.Second
+
+// Adopt takes back the sessions whose tmux servers are still running, and stops what is left.
+func (d *Driver) Adopt(ctx context.Context, sandboxes map[sandbox.ID]sandbox.SandboxSpec) ([]sandbox.ID, error) {
+	// Out of time, everything left is kept and nothing is swept, which is the safe way to be wrong.
+	ctx, cancel := context.WithTimeout(ctx, d.adoptBudget)
+	defer cancel()
+	var taken []sandbox.ID
+	var err error
+	for instanceID, spec := range sandboxes {
+		ok, takeErr := d.take(ctx, instanceID, spec)
+		err = errors.Join(err, takeErr)
+		if ok {
+			taken = append(taken, instanceID)
+		}
 	}
-	// Before the folders go: a session we adopt keeps its own.
-	err = errors.Join(err, d.adoptSurvivors(stillRunning))
-	// Counted separately: a folder left behind is not a session that had to be stopped.
-	return swept, errors.Join(err, d.sweepInstanceDirs())
+	_, sweepErr := d.sweep(ctx)
+	return taken, errors.Join(err, sweepErr)
 }
 
-// swept is how many servers this stopped, and stillRunning holds the short ids of the ones it could not.
-func (d *Driver) sweepSockets(ctx context.Context) (swept int, stillRunning map[string]bool, err error) {
+// take rebuilds one instance from its record and the folder its previous run left. The socket and the
+// folder are named after the id. The error is what it could not find out, which is not the same as a
+// session that is gone.
+func (d *Driver) take(ctx context.Context, instanceID sandbox.ID, spec sandbox.SandboxSpec) (bool, error) {
+	if !isPlainFolderName(string(instanceID)) {
+		return false, nil
+	}
+	dir := filepath.Join(d.instancesDir(), string(instanceID))
+	socket := filepath.Join(d.socketDir, shortID(instanceID)+".sock")
+
+	// Only "it is not there" means gone. A folder or a tmux that cannot be asked about is taken back
+	// instead, because a session read as gone is swept and started again, and a second agent in the
+	// folder the first is working in is the one outcome worth avoiding.
+	info, statErr := os.Stat(dir)
+	if os.IsNotExist(statErr) || (statErr == nil && !info.IsDir()) {
+		return false, nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, d.tmuxCallBudget)
+	defer cancel()
+	alive, probeErr := d.serverAlive(probeCtx, socket)
+	if !alive && probeErr == nil {
+		return false, nil
+	}
+	createdAt := time.Now()
+	if info != nil {
+		createdAt = info.ModTime()
+	}
+	// Its tmux server answering is the agent running in it, so there is nothing left to install.
+	taken := &instance{
+		spec:      spec,
+		dir:       dir,
+		socket:    socket,
+		running:   true,
+		createdAt: createdAt,
+		setup:     sandbox.SetupState{Status: sandbox.SetupReady},
+	}
+	// What its script will run, not wherever the agent is now. A start has to find this one missing to
+	// write the script again, which is what the spec is carried for.
+	if path := agentInLaunchScript(dir); isExecutable(path) {
+		taken.agentPath = path
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.instances[instanceID] = taken
+	return true, errors.Join(statErr, probeErr)
+}
+
+// sweep stops every tmux server this driver does not know about and removes what it worked in. A server
+// that would not stop keeps both, since its socket is the only way back to it.
+func (d *Driver) sweep(ctx context.Context) (swept int, err error) {
 	entries, readErr := os.ReadDir(d.socketDir)
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			// Nothing to sweep, and nothing unaccounted for either.
-			return 0, map[string]bool{}, nil
+			return 0, nil
 		}
-		return 0, nil, fmt.Errorf("sandboxless: read %s: %w", d.socketDir, readErr)
+		// Without the sockets there is no telling what is still up, so no folder goes either.
+		return 0, fmt.Errorf("sandboxless: read %s: %w", d.socketDir, readErr)
 	}
-
-	stillRunning = map[string]bool{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sock") {
 			continue
@@ -53,54 +108,17 @@ func (d *Driver) sweepSockets(ctx context.Context) (swept int, stillRunning map[
 		if d.socketHasAnInstance(socket) {
 			continue
 		}
-		if killErr := d.killServer(ctx, socket); killErr != nil {
+		killCtx, cancel := context.WithTimeout(ctx, d.tmuxCallBudget)
+		killErr := d.killServer(killCtx, socket)
+		cancel()
+		if killErr != nil {
 			err = errors.Join(err, killErr)
-			stillRunning[strings.TrimSuffix(entry.Name(), ".sock")] = true
 			continue
 		}
 		err = errors.Join(err, os.Remove(socket))
 		swept++
 	}
-	return swept, stillRunning, err
-}
-
-// adoptSurvivors takes back the sessions whose servers would not stop, so the session layer finds them
-// where it left them. Without this their rows read as lost, and rebuilding one puts a second agent in
-// the folder the first is still working in.
-func (d *Driver) adoptSurvivors(stillRunning map[string]bool) error {
-	if len(stillRunning) == 0 {
-		return nil
-	}
-	entries, err := os.ReadDir(d.instancesDir())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("sandboxless: read %s: %w", d.instancesDir(), err)
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, entry := range entries {
-		instanceID := sandbox.ID(entry.Name())
-		if !stillRunning[shortID(instanceID)] {
-			continue
-		}
-		dir := filepath.Join(d.instancesDir(), entry.Name())
-		adopted := &instance{
-			dir:       dir,
-			socket:    filepath.Join(d.socketDir, shortID(instanceID)+".sock"),
-			running:   true,
-			createdAt: time.Now(),
-		}
-		// The spec that made it is gone with the previous run, but its launch script names the agent it
-		// runs. With that, stopping and starting it again works like any other session.
-		if path := agentInLaunchScript(dir); isExecutable(path) {
-			adopted.agentPath = path
-			adopted.setup = sandbox.SetupState{Status: sandbox.SetupReady}
-		}
-		d.instances[instanceID] = adopted
-	}
-	return nil
+	return swept, errors.Join(err, d.sweepInstanceDirs())
 }
 
 // sweepInstanceDirs removes the folder of every instance this run does not know about. At startup that
@@ -117,6 +135,11 @@ func (d *Driver) sweepInstanceDirs() error {
 	for _, entry := range entries {
 		instanceID := sandbox.ID(entry.Name())
 		if d.hasInstance(instanceID) {
+			continue
+		}
+		// Its socket outliving the sweep above means its server would not stop, and it is still working
+		// in here.
+		if _, err := os.Stat(filepath.Join(d.socketDir, shortID(instanceID)+".sock")); err == nil {
 			continue
 		}
 		removeErr = errors.Join(removeErr, os.RemoveAll(filepath.Join(d.instancesDir(), entry.Name())))
@@ -141,4 +164,19 @@ func killTmuxServer(ctx context.Context, socket string) error {
 		return nil
 	}
 	return fmt.Errorf("the tmux server on %s is still running", socket)
+}
+
+// tmuxServerAlive reports whether a server is answering on this socket. The error is for not being able
+// to tell: tmux exiting non-zero is an answer, tmux failing to run at all is not.
+func tmuxServerAlive(ctx context.Context, socket string) (bool, error) {
+	err := exec.CommandContext(ctx, "tmux", "-S", socket, "has-session").Run()
+	if err == nil {
+		return true, nil
+	}
+	// A command that died with the context proves nothing about the server.
+	var exited *exec.ExitError
+	if errors.As(err, &exited) && ctx.Err() == nil {
+		return false, nil
+	}
+	return false, fmt.Errorf("sandboxless: ask the tmux server on %s: %w", socket, err)
 }

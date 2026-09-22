@@ -147,6 +147,11 @@ func cmdStart(ctx context.Context, args []string) error {
 	// Bring the session table back in line with what the runtimes are actually hosting, then restart what
 	// was running. VM sessions died with the previous process, so without this they all sit stopped.
 	// Must run AFTER the runtimes are registered, or there is nothing to ask.
+	// A runtime whose sandboxes outlive deepcove takes them back here, so the check below does not read
+	// them as gone.
+	if err := sessionSvc.AdoptRunningSandboxes(ctx); err != nil {
+		logger.Warn("could not take back what a previous run left running", "err", err)
+	}
 	lost, err := sessionSvc.MarkLostSessions(ctx)
 	if err != nil {
 		logger.Warn("could not check sessions against their runtimes", "err", err)

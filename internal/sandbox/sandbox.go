@@ -111,6 +111,14 @@ type ForceCloser interface {
 	ForceClose() error
 }
 
+// Adopter is a runtime whose sandboxes outlive deepcove and can be taken back at startup.
+type Adopter interface {
+	// Adopt takes back the sandboxes it can find among these, stops whatever else it left behind, and
+	// returns the ones it took. Each spec is that sandbox's session record rebuilt, which is what the
+	// previous run created it with.
+	Adopt(ctx context.Context, sandboxes map[ID]SandboxSpec) (taken []ID, err error)
+}
+
 // Lister is an optional capability for drivers that can enumerate what they are actually hosting,
 // independent of what the session table believes. That gap is the whole point: comparing the two is how
 // you tell a leaked sandbox from a session whose sandbox is already gone.

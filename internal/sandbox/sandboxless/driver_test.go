@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
@@ -481,25 +480,6 @@ func TestProcessClose(t *testing.T) {
 	}
 	if _, err := p.Wait(context.Background()); err != nil {
 		t.Fatalf("Wait after Close: %v", err)
-	}
-}
-
-func TestClose_WhenTmuxWillNotAnswer(t *testing.T) {
-	d := newTestDriver(t)
-	instanceID := created(t, d)
-	deadSocket(t, instanceOf(t, d, instanceID).socket)
-	d.killServer = func(ctx context.Context, _ string) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- d.closeWithin(50 * time.Millisecond) }()
-	select {
-	case <-done:
-	// deepcove waited its budget and gave up. Without one, a wedged tmux holds the shutdown for good.
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close is still waiting")
 	}
 }
 

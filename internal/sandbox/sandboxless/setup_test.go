@@ -251,6 +251,25 @@ func TestStart_AlreadyRunning(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	d := newTestDriver(t)
+	instanceID := created(t, d)
+	inst := instanceOf(t, d, instanceID)
+	deadSocket(t, inst.socket)
+	d.killServer = func(context.Context, string) error {
+		t.Error("stopped an agent that deepcove does not own")
+		return nil
+	}
+
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// The agent outlives deepcove, and the next start takes it back.
+	if _, err := os.Stat(inst.socket); err != nil {
+		t.Errorf("the socket was removed: %v", err)
+	}
+}
+
+func TestClose_CancelsAnInstallInFlight(t *testing.T) {
+	d := newTestDriver(t)
 	installing := make(chan struct{})
 	stopped := make(chan error, 1)
 	d.installAgent = func(ctx context.Context, _, _ string) (string, error) {

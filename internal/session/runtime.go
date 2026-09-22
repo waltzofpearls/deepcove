@@ -26,6 +26,16 @@ const (
 	RuntimeSandboxless = "sandboxless"
 )
 
+// SandboxesOutliveDeepcove reports whether this runtime's sandboxes are still there once deepcove
+// exits. A VM runs inside deepcove, as threads of this process, so its sandboxes go when it does.
+func SandboxesOutliveDeepcove(runtime string) bool {
+	switch runtime {
+	case RuntimeSandboxless, RuntimeDocker:
+		return true
+	}
+	return false
+}
+
 // vmRuntimes are the runtime names that boot a VM, one per hypervisor. A node offers at most one of
 // them, because a host has one hypervisor worth using.
 var vmRuntimes = []string{RuntimeAppleVF, RuntimeCloudHV}
