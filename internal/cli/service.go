@@ -170,7 +170,7 @@ func cmdServiceInstall(ctx context.Context, manager service.Manager, args []stri
 	if err := manager.Install(after, service.InstallOptions{Linger: !*noLinger}); err != nil {
 		return err
 	}
-	fmt.Println("deepcove is installed. It starts now, and again with your session.")
+	fmt.Println("deepcove is running in the background, and starts on its own from now on.")
 	return printServiceStatus(manager)
 }
 

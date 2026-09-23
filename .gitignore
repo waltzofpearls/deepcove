@@ -56,3 +56,7 @@ go.work.sum
 /build-errors.log
 /tmp/
 /internal/guestasset/deepcove-guest-init-*
+
+# Website build output, and the cache wrangler leaves wherever it runs
+/website/dist/
+.wrangler/

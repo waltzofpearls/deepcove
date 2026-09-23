@@ -1,0 +1,9 @@
+{
+  "name": "deepcove-website",
+  "compatibility_date": "2026-09-22",
+  "assets": {
+    "directory": "./dist",
+    // Without this, a path that matches nothing gets an empty body and 404.html is never served.
+    "not_found_handling": "404-page"
+  }
+}

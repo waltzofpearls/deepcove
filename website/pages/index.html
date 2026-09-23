@@ -1,0 +1,77 @@
+{{define "title"}}deepcove{{end}}
+{{define "description"}}Run coding agents in their own VMs, across all your machines.{{end}}
+{{define "content"}}
+<section class="hero">
+  <h1>Run coding agents in their own VMs, across all your machines.</h1>
+  <p class="lede">Different agents, on your laptop and your cloud boxes, each with its own terminal and folder.
+    Watch and steer them all from one browser tab.</p>
+  <div class="install">
+    <p>macOS and Linux</p>
+    <div class="command">
+      <pre><code>curl -fsSL https://deepcove.dev/install.sh | sh</code></pre>
+      <button class="copy" type="button">Copy</button>
+    </div>
+    <p>Windows</p>
+    <div class="command">
+      <pre><code>irm https://deepcove.dev/install.ps1 | iex</code></pre>
+      <button class="copy" type="button">Copy</button>
+    </div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="feature">
+    <h2>A VM for every session</h2>
+    <p>Each session boots its own small Linux VM. The agent can install, delete and break things in there
+      without touching your machine.</p>
+  </div>
+  <div class="feature">
+    <h2>Many agents, side by side</h2>
+    <p>Run Claude Code, Codex and OpenCode at the same time, each in its own session. Keep the one that
+      does the job best.</p>
+  </div>
+  <div class="feature">
+    <h2>Runs where you run it</h2>
+    <p>Your laptop, the desktop under your desk or a cloud box. No account to make, and no hosted service
+      in the middle.</p>
+  </div>
+</section>
+
+<section class="remote">
+  <h2>One dashboard, every machine</h2>
+  <p>Start a session on the cloud box from your laptop, then check on it from your phone. Each session runs
+    on the machine you pick, and every machine shows up in the same dashboard. Your machines find each other
+    over Tailscale, so nothing is exposed to the internet.</p>
+</section>
+
+<section class="steps">
+  <h2>How it works</h2>
+  <ol>
+    <li>
+      <h3>Install it</h3>
+      <p>One line, no sudo. It keeps running in the background and starts on its own.</p>
+    </li>
+    <li>
+      <h3>Start a session</h3>
+      <p>Pick a machine, a folder and an agent. deepcove builds the VM and starts the agent in it.</p>
+    </li>
+    <li>
+      <h3>Add your other machines</h3>
+      <p>Install deepcove on each one and sign in to Tailscale. They join the same dashboard.</p>
+    </li>
+  </ol>
+</section>
+
+<section class="runtimes">
+  <h2>Where sessions run</h2>
+  <dl>
+    <dt>macOS</dt>
+    <dd>A Linux VM per session, on Apple Virtualization.</dd>
+    <dt>Linux</dt>
+    <dd>A microVM per session, on Cloud Hypervisor. Needs KVM.</dd>
+    <dt>On the machine itself</dt>
+    <dd>No VM at all, for a machine that is already the boundary, such as a cloud box set aside for
+      this.</dd>
+  </dl>
+</section>
+{{end}}
