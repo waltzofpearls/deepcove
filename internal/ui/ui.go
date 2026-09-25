@@ -76,6 +76,21 @@ func WithDiscover() Option {
 	}
 }
 
+// DashboardMode is how a page with no API of its own is served: the in-browser Tailscale node signs in and
+// finds your nodes itself. `deepcove dashboard` and the hosted web node both use it.
+func DashboardMode() Option {
+	return func(ui *UI) {
+		WithTransport("wasm")(ui)
+		WithDiscover()(ui)
+	}
+}
+
+// DashboardIndexHTML returns the SPA shell set up for DashboardMode, for the hosted web node to ship.
+func DashboardIndexHTML(indexHTML []byte) []byte {
+	dashboard := New(DashboardMode())
+	return injectRuntimeConfig(indexHTML, dashboard.transport, dashboard.target, dashboard.discover)
+}
+
 func New(options ...Option) *UI {
 	ui := &UI{transport: transportDirect}
 	for _, option := range options {

@@ -278,13 +278,28 @@ has_user_session() {
 }
 
 print_next_steps() {
+	# First, since people copy the first command they see, and none of them work without it.
+	case "$path_state" in
+	written)
+		say ""
+		say "To use deepcove in this terminal, first run:"
+		say "  source $(tilde "$rc")"
+		;;
+	missing)
+		say ""
+		say "To use deepcove, first run:"
+		say "  export PATH=\"$(home_relative "$install_dir"):\$PATH\""
+		;;
+	esac
+
 	say ""
 	if [ -z "$running" ]; then
 		say "Next, start it:"
 		say "  deepcove start"
 	elif [ -n "${SSH_CONNECTION:-}" ]; then
-		say "Next, sign in to Tailscale so your other machines can reach this one:"
+		say "Next, sign in to Tailscale (or sign up, it's free) so your other machines can reach this one:"
 		say "  deepcove network login"
+		say "Then open https://app.deepcove.dev from any browser."
 	else
 		say "Next, open http://127.0.0.1:9000 in your browser."
 	fi
@@ -296,20 +311,6 @@ print_next_steps() {
 	say "  deepcove service status    is it running, and where its logs are"
 	say "  deepcove service restart   restart it"
 	say "  deepcove help              everything else"
-
-	case "$path_state" in
-	ready) ;;
-	written)
-		say ""
-		say "These work in a new terminal. To use them in this one, run:"
-		say "  export PATH=\"$(home_relative "$install_dir"):\$PATH\""
-		;;
-	*)
-		say ""
-		say "To use them, first run:"
-		say "  export PATH=\"$(home_relative "$install_dir"):\$PATH\""
-		;;
-	esac
 }
 
 main "$@"

@@ -6,9 +6,10 @@ package main
 import (
 	"fmt"
 	"html/template"
-	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/waltzofpearls/deepcove/internal/files"
 )
 
 // logosFromApp come from the app, so the site never carries a second copy that drifts.
@@ -46,7 +47,7 @@ func build(repoRoot, dist string) error {
 		copies[filepath.Join(repoRoot, name)] = filepath.Join(dist, name)
 	}
 	for from, to := range copies {
-		if err := copyFile(from, to); err != nil {
+		if err := files.Copy(from, to); err != nil {
 			return err
 		}
 	}
@@ -85,21 +86,4 @@ func renderPages(site, dist string) error {
 		}
 	}
 	return nil
-}
-
-func copyFile(from, to string) error {
-	in, err := os.Open(from)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.Create(to)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }

@@ -144,7 +144,13 @@ function Add-ToUserPath([string] $installDir) {
         return 'missing'
     }
     $newPath = if ($userPath) { "$installDir;$userPath" } else { $installDir }
-    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    # A PATH it cannot change, such as one locked by policy, is left alone rather than ending the install.
+    try {
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    } catch {
+        Write-Host 'Could not change your PATH, so it was left as it was.'
+        return 'missing'
+    }
     $env:Path = "$installDir;$env:Path"
     return 'written'
 }
@@ -175,13 +181,22 @@ function Start-DeepcoveService([string] $installDir) {
 
 function Write-NextSteps([string] $installDir, [string] $pathState, [bool] $running) {
     $overSsh = [bool] $env:SSH_CONNECTION
+    # First, since people copy the first command they see, and none of them work without it. Once on
+    # PATH, this terminal has it too, so only a no leaves anything to do.
+    if ($pathState -eq 'missing') {
+        Write-Host ''
+        Write-Host 'To use deepcove, first run:'
+        Write-Host "  `$env:Path = `"$installDir;`$env:Path`""
+    }
+
     Write-Host ''
     if (-not $running) {
         Write-Host 'Next, start it:'
         Write-Host '  deepcove start'
     } elseif ($overSsh) {
-        Write-Host 'Next, sign in to Tailscale so your other machines can reach this one:'
+        Write-Host "Next, sign in to Tailscale (or sign up, it's free) so your other machines can reach this one:"
         Write-Host '  deepcove network login'
+        Write-Host 'Then open https://app.deepcove.dev from any browser.'
     } else {
         Write-Host 'Next, open http://127.0.0.1:9000 in your browser.'
     }
@@ -193,12 +208,6 @@ function Write-NextSteps([string] $installDir, [string] $pathState, [bool] $runn
     Write-Host '  deepcove service status    is it running, and where its logs are'
     Write-Host '  deepcove service restart   restart it'
     Write-Host '  deepcove help              everything else'
-    # Once on PATH, this terminal has it too, so only a no leaves anything to do.
-    if ($pathState -eq 'missing') {
-        Write-Host ''
-        Write-Host 'To use them, first run:'
-        Write-Host "  `$env:Path = `"$installDir;`$env:Path`""
-    }
 }
 
 Main
