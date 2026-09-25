@@ -262,7 +262,11 @@ test-js: ## Run frontend (vitest) unit tests
 	cd ui && npm run test
 
 .PHONY: lint
-lint: lint-go lint-js ## Run all linters (Go + JS)
+lint: lint-go lint-js lint-sh ## Run all linters (Go + JS + shell)
+
+.PHONY: lint-sh
+lint-sh: ## Check the install script
+	shellcheck -s sh install.sh
 
 .PHONY: lint-go
 lint-go: ui/build/index.html $(GUEST_INIT_EMBED) $(VERSIONS_JSON) ## Run Go linters (go vet + golangci-lint; UI stub for the //go:embed)
@@ -350,6 +354,18 @@ applevf-smoke: ## Build + codesign the VF boot smoke harness (needs an Apple sig
 	codesign -f --entitlements build/virtualization.entitlements -s "$${CODE_SIGN_IDENTITY:--}" \
 		dist/darwin-$(shell go env GOARCH)/applevf-smoke
 	@echo "Signed dist/darwin-$(shell go env GOARCH)/applevf-smoke (identity: $${CODE_SIGN_IDENTITY:-none})"
+
+.PHONY: build-website
+build-website: ## Build the website into website/dist
+	go run ./cmd/website
+
+.PHONY: run-website
+run-website: build-website ## Build the website and serve it on http://localhost:8787
+	npx wrangler dev --config website/wrangler.jsonc
+
+.PHONY: deploy-website
+deploy-website: build-website ## Build and deploy the website to Cloudflare (needs `npx wrangler login` once)
+	npx wrangler deploy --config website/wrangler.jsonc
 
 .PHONY: clean
 clean: ## Remove built binaries
