@@ -1,0 +1,13 @@
+{
+  "name": "deepcove-web-node",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-25",
+  "assets": {
+    "directory": "./dist",
+    // The app routes in the browser, so any path that is not a file gets index.html.
+    "not_found_handling": "single-page-application",
+    // Only the WASM file goes through worker.js: it is too big to be a static asset and lives in R2.
+    "run_worker_first": ["/_app/immutable/assets/*.wasm"]
+  },
+  "r2_buckets": [{ "binding": "WASM", "bucket_name": "deepcove-web-node" }]
+}

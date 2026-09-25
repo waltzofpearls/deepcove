@@ -1,0 +1,6 @@
+# This page keeps a Tailscale node's keys in the browser, so no other site may put it in a frame.
+/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer

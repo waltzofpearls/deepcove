@@ -59,8 +59,7 @@ func cmdDashboard(ctx context.Context, args []string) error {
 	if err := ui.New(
 		ui.WithConfig(cfg),
 		ui.WithMux(mux),
-		ui.WithTransport("wasm"),
-		ui.WithDiscover(),
+		ui.DashboardMode(),
 	).AttachRoutes(); err != nil {
 		return fmt.Errorf("ui: %w", err)
 	}

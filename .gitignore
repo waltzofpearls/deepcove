@@ -59,4 +59,5 @@ go.work.sum
 
 # Website build output, and the cache wrangler leaves wherever it runs
 /website/dist/
+/web-node/dist/
 .wrangler/

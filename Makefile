@@ -367,6 +367,26 @@ run-website: build-website ## Build the website and serve it on http://localhost
 deploy-website: build-website ## Build and deploy the website to Cloudflare (needs `npx wrangler login` once)
 	npx wrangler deploy --config website/wrangler.jsonc
 
+.PHONY: build-web-node
+build-web-node: ui-build ## Build the hosted web node into web-node/dist (its WASM file ships to R2 on deploy)
+	go run ./cmd/webnode
+
+.PHONY: run-web-node
+run-web-node: ui-build ## Build the web node and serve it on http://localhost:8788, with its WASM in a local R2
+	@wasm=$$(go run ./cmd/webnode) && \
+		npx wrangler r2 object put "deepcove-web-node/$$wasm" --file "ui/build/$$wasm" \
+			--content-type application/wasm --local --config web-node/wrangler.jsonc
+	npx wrangler dev --config web-node/wrangler.jsonc --port 8788
+
+# The WASM file goes up before the page that asks for it, so no visitor ever gets a page whose WASM is
+# not there yet. Run it from the commit you released, so the hosted UI matches your nodes.
+.PHONY: deploy-web-node
+deploy-web-node: ui-build ## Build and deploy the web node to Cloudflare (needs `npx wrangler login` once)
+	@wasm=$$(go run ./cmd/webnode) && \
+		npx wrangler r2 object put "deepcove-web-node/$$wasm" --file "ui/build/$$wasm" \
+			--content-type application/wasm --remote --config web-node/wrangler.jsonc
+	npx wrangler deploy --config web-node/wrangler.jsonc
+
 .PHONY: clean
 clean: ## Remove built binaries
 	rm -f deepcove
