@@ -13,6 +13,9 @@ const (
 	SandboxedSetupLogPath    = "/var/log/deepcove-bootstrap.log"
 	SandboxedAgentLaunchPath = "/usr/local/bin/deepcove-agent-launch"
 	SandboxedWorkDir         = "/workspace"
+	// SandboxedAgentHome is the agent's home, where guest init mounts the home disk. Agent images run
+	// as root today. Nothing may be shared at or under it.
+	SandboxedAgentHome = "/root"
 )
 
 // Words the entrypoint writes into the status file at SandboxedSetupStatusPath. The guest's own

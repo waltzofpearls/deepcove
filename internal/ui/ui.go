@@ -1,6 +1,4 @@
-// Package ui serves the SvelteKit SPA. In development (IS_DEV=true) it
-// reverse-proxies to a Vite dev server for HMR. Otherwise it serves
-// the embedded build output from //go:embed at the module root.
+// Package ui serves the SvelteKit SPA embedded from //go:embed at the module root.
 package ui
 
 import (
@@ -9,13 +7,10 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"path"
 	"strings"
 
 	deepcove "github.com/waltzofpearls/deepcove"
-	"github.com/waltzofpearls/deepcove/internal/config"
 )
 
 // transportDirect is the default runtime transport: the browser reaches the API
@@ -24,8 +19,7 @@ import (
 const transportDirect = "direct"
 
 type UI struct {
-	config *config.Config
-	mux    *http.ServeMux
+	mux *http.ServeMux
 	// transport is stamped into the served SPA shell so the client knows how to
 	// reach the API before it makes a single request. Each listener can serve a
 	// different value; localhost/start-node listeners use the direct default.
@@ -39,12 +33,6 @@ type UI struct {
 }
 
 type Option func(*UI)
-
-func WithConfig(conf *config.Config) Option {
-	return func(ui *UI) {
-		ui.config = conf
-	}
-}
 
 func WithMux(mux *http.ServeMux) Option {
 	return func(ui *UI) {
@@ -103,35 +91,7 @@ func New(options ...Option) *UI {
 }
 
 func (ui *UI) AttachRoutes() error {
-	if ui.config.IsDev {
-		// In development, a separate Vite dev server (npm run dev in
-		// ./ui) runs on port 5173. Proxy all non-API requests to it
-		// so HMR works end-to-end through deepcove's listener.
-		//
-		// Routing shape is taken from tradecopia-server's working
-		// setup: an explicit /ws route plus a catch-all, both
-		// pointing at the same proxy. The explicit /ws is
-		// belt-and-suspenders for the WebSocket Upgrade handshake;
-		// the catch-all serves everything else (HTML, /_app/* JS
-		// chunks, etc).
-		//
-		// httputil.ReverseProxy handles WebSocket Upgrade natively
-		// since Go 1.12. FlushInterval = -1 makes sure streamed
-		// payloads (HMR notifications, SSE) reach the browser
-		// immediately rather than being buffered.
-		viteURL, err := url.Parse(ui.config.ViteURL)
-		if err != nil {
-			return fmt.Errorf("failed to parse vite url: %w", err)
-		}
-		proxy := httputil.NewSingleHostReverseProxy(viteURL)
-		proxy.FlushInterval = -1
-		ui.mux.Handle("/ws", proxy)
-		ui.mux.Handle("/", proxy)
-		return nil
-	}
-
-	// Production: serve the embedded SvelteKit build with SPA
-	// fallback for client-side routes.
+	// Serve the embedded SvelteKit build with SPA fallback for client-side routes.
 	sub, err := fs.Sub(deepcove.Assets(), "ui/build")
 	if err != nil {
 		return fmt.Errorf("embedded build dir not found: %w", err)

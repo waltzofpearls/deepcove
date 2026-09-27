@@ -28,11 +28,15 @@ func newTestService(t *testing.T) (*Service, *fakeSandbox, string, *sql.DB) {
 	return svc, fake, dataDir, database
 }
 
+// runtimeFake names the runtime most tests register: a stand-in, not a real runtime, so no production
+// rule about a particular one (such as never defaulting to No sandbox) applies to it.
+const runtimeFake = "fake"
+
 // newServiceWithRuntime wires a service with one registered runtime, standing in for what the CLI does
 // at startup now that the service no longer assumes a runtime of its own.
 func newServiceWithRuntime(t *testing.T, database *sql.DB, sb sandbox.Sandbox) *Service {
 	t.Helper()
-	return newServiceWithNamedRuntime(t, database, sb, RuntimeDocker)
+	return newServiceWithNamedRuntime(t, database, sb, runtimeFake)
 }
 
 // newServiceWithNamedRuntime registers the fake under a chosen runtime name. Workspace VM tests need a
@@ -45,11 +49,9 @@ func newServiceWithNamedRuntime(t *testing.T, database *sql.DB, sb sandbox.Sandb
 	// making its own exec calls. Tests that want it call the function directly.
 	svc.background = func(func()) {}
 	svc.RegisterRuntime(name, sb)
-	// SetDefaultRuntime, not SelectDefaultRuntime: the latter probes for a reachable runtime, and a test
+	// Set directly, not through SelectDefaultRuntime: that probes for a reachable runtime, and a test
 	// asserting an exact driver call sequence should not carry that probe.
-	if err := svc.SetDefaultRuntime(name); err != nil {
-		t.Fatalf("SetDefaultRuntime: %v", err)
-	}
+	svc.setDefaultRuntime(name)
 	return svc
 }
 
@@ -202,7 +204,7 @@ func TestService_Create(t *testing.T) {
 
 			// On success the session should be running and named (auto or explicit).
 			// There's no host-side scratch dir anymore; /workspace lives inside the
-			// container (or is a user mount), so there's nothing on disk to assert.
+			// guest (or is a user mount), so there's nothing on disk to assert.
 			if tc.wantRows > 0 && sess != nil {
 				if sess.Status != tc.wantStatus {
 					t.Errorf("status: want %q, got %q", tc.wantStatus, sess.Status)
@@ -620,13 +622,7 @@ func TestService_Create_PersistsMounts(t *testing.T) {
 	}
 }
 
-func TestService_Destroy_DoesNotRemoveSharedAgentVolume(t *testing.T) {
-	// The agent-home volume is shared across all sessions of the same agent; it holds the user's login
-	// and the installed agent binary. Destroying one claude session must not clobber it, because another
-	// claude session created later expects to still be logged in.
-	//
-	// Per SESSION storage is a different thing and does go: the VM runtime keeps a home disk named after
-	// the session, and nothing else will ever claim it.
+func TestService_Destroy_RemovesTheSessionsStorage(t *testing.T) {
 	svc, fake, _, _ := newTestService(t)
 	sess := mustCreate(t, svc, "claude")
 
@@ -634,44 +630,14 @@ func TestService_Destroy_DoesNotRemoveSharedAgentVolume(t *testing.T) {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	if slices.Contains(fake.removedStorage, agentHomeVolumeName("claude")) {
-		t.Errorf("the shared agent volume was removed: %v", fake.removedStorage)
-	}
 	if !slices.Contains(fake.removedStorage, sess.ID) {
 		t.Errorf("per session storage was not removed; got %v, want it to contain %q", fake.removedStorage, sess.ID)
 	}
 }
 
-func TestService_Create_UsesPerAgentSharedVolume(t *testing.T) {
-	// Pin the shared-volume behavior: two sessions of the same agent must reference the
-	// same volume name, so Docker mounts the same persistent storage and both see the
-	// same /root/.claude and /root/.local/bin/claude.
-	svc, fake, _, _ := newTestService(t)
-	a, _ := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "share-a"})
-	b, _ := svc.Create(context.Background(), CreateRequest{Agent: "claude", Name: "share-b"})
-
-	if len(fake.specs) < 2 {
-		t.Fatalf("expected 2 Create specs, got %d", len(fake.specs))
-	}
-	homeName := agentHomeVolumeName("claude")
-	for i, spec := range fake.specs[:2] {
-		found := false
-		for _, m := range spec.Mounts {
-			if m.Target == agentHomeMountTarget && m.Source == homeName {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("session %d (%s/%s): expected agent-home mount Source=%q Target=%q in spec.Mounts=%v",
-				i, []string{a.ID, b.ID}[i], []string{a.Name, b.Name}[i], homeName, agentHomeMountTarget, spec.Mounts)
-		}
-	}
-}
-
 func TestService_Create_WorkdirAndNoScratch(t *testing.T) {
 	// No deepcove-managed scratch mount anymore: a no-mount session's spec carries
-	// only the agent-home volume (no bind targeting /workspace), and DEEPCOVE_WORKDIR
+	// no bind targeting /workspace, and DEEPCOVE_WORKDIR
 	// defaults to /workspace. A session with a user mount points DEEPCOVE_WORKDIR at
 	// the first mount's target.
 	tests := []struct {
@@ -894,12 +860,20 @@ func TestValidateMountRequests(t *testing.T) {
 			wantErrContains: "reserved for the agent home",
 		},
 		{
+			name: "container_path under /root rejected, where the guest writes the login",
+			reqs: []MountRequest{
+				{HostPath: "/a", ContainerPath: "/root/.claude"},
+			},
+			wantErrIs:       ErrMountInvalid,
+			wantErrContains: "reserved for the agent home",
+		},
+		{
 			name: "container_path = / rejected",
 			reqs: []MountRequest{
 				{HostPath: "/a", ContainerPath: "/"},
 			},
 			wantErrIs:       ErrMountInvalid,
-			wantErrContains: "container root",
+			wantErrContains: "cannot be /",
 		},
 		{
 			name: "duplicate container_path rejected",
@@ -1131,14 +1105,14 @@ func TestEnsureSharedFolder(t *testing.T) {
 			setup: func(t *testing.T, _ string) string {
 				return filepath.Join(t.TempDir(), "elsewhere")
 			},
-			wantErrContains: "outside the allowed roots",
+			wantErrContains: "only folders inside",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			svc := &Service{allowedMountRoots: []string{root}}
+			svc := &Service{shareRoots: sandbox.ShareRoots{Allowed: []string{root}}}
 			path := tc.setup(t, root)
 
 			err := svc.ensureSharedFolder(path)
@@ -1179,7 +1153,7 @@ func TestEnsureSharedFolderMakesNothingWithoutAllowedRoots(t *testing.T) {
 // empty one in its place is worse than a clear failure.
 func TestSharedFolderCreatedOnlyWhenNamed(t *testing.T) {
 	root := t.TempDir()
-	svc := &Service{allowedMountRoots: []string{root}}
+	svc := &Service{shareRoots: sandbox.ShareRoots{Allowed: []string{root}}}
 	missing := filepath.Join(root, "project")
 	rows := []MountRequest{{HostPath: missing, ContainerPath: "/workspace"}}
 
@@ -1200,5 +1174,47 @@ func TestSharedFolderCreatedOnlyWhenNamed(t *testing.T) {
 	// And once it is there, starting is happy.
 	if _, err := svc.prepareMountsRequiringFolders(rows); err != nil {
 		t.Errorf("starting with the folder there: %v", err)
+	}
+}
+
+func TestEnsureWorkFolder(t *testing.T) {
+	home := t.TempDir()
+	dataDir := filepath.Join(home, "data")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{shareRoots: sandbox.ShareRoots{Allowed: []string{home}, Refused: []string{dataDir}}}
+	cases := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{name: "home, which holds the data dir", path: home},
+		{name: "a folder in home", path: filepath.Join(home, "code")},
+		{name: "outside home", path: "/etc", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := svc.ensureWorkFolder(tc.path); (err != nil) != tc.wantErr {
+				t.Errorf("error = %v, want error %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestService_Create_CleansTheWorkDir(t *testing.T) {
+	svc := newBareService(t)
+	home := t.TempDir()
+	svc.shareRoots = sandbox.ShareRoots{Allowed: []string{home}}
+	svc.RegisterRuntime(RuntimeSandboxless, &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: home})
+
+	sess, err := svc.Create(context.Background(), CreateRequest{
+		Agent: "claude", Runtime: RuntimeSandboxless, WorkDir: home + "/",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sess.WorkDir != home {
+		t.Errorf("WorkDir = %q, want %q", sess.WorkDir, home)
 	}
 }

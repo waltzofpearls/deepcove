@@ -9,15 +9,14 @@ export interface Session {
   id: string;
   name: string;
   agent: string;
-  // Which sandbox runtime hosts this session ("docker", "applevf", "cloudhv", "sandboxless").
+  // Which sandbox runtime hosts this session ("applevf", "cloudhv", "sandboxless").
   runtime: string;
   image: string;
   owner_email: string;
   status: SessionStatus;
   env: Record<string, string> | null;
-  // User mounts currently attached to the container. The scratch
-  // /workspace mount and the agent-home /root volume are NOT
-  // included, because those are managed by deepcove, not the user.
+  // User mounts currently attached to the sandbox. The agent's /root
+  // home is NOT included, because deepcove manages it, not the user.
   mounts: MountRequest[] | null;
   // Empty means "use the agent registry's default".
   setup_script: string;
@@ -44,10 +43,10 @@ export interface Session {
 // runtime picks. Memory and disk are MiB, because a byte count is neither readable in a payload nor
 // something anyone wants to type.
 export interface SessionResources {
-  // cpu is a core count. Docker honours fractions; a VM rounds up to whole vCPUs.
+  // cpu is a core count. A VM rounds up to whole vCPUs.
   cpu?: number;
   memory_mb?: number;
-  // disk_mb caps the writable layer. Only the VM runtime applies it; Docker ignores it.
+  // disk_mb caps the writable layer. Only the VM runtime applies it.
   disk_mb?: number;
 }
 
@@ -77,8 +76,8 @@ export interface CreateSessionRequest {
   // Which node hosts the session (a node's stable_node_id). Empty/this node = create here; another
   // node's id proxies the create there. Only meaningful with multiple nodes.
   node_id?: string;
-  // Which sandbox runtime hosts the session ("docker", "applevf", "cloudhv"). Empty uses the node's
-  // default.
+  // Which sandbox runtime hosts the session ("applevf", "cloudhv", "sandboxless"). Empty uses the node's
+  // default, and is refused on a node that has none.
   runtime?: string;
   // Omitted, or with any field zero, leaves that cap to the runtime.
   resources?: SessionResources;
@@ -224,7 +223,7 @@ export interface CreateTmuxWindowRequest {
 }
 
 // Wire shape of an API error body. `code` is a stable machine-readable
-// tag (e.g. "runtime_unavailable", "image_not_found") the client maps to
+// tag (e.g. "runtime_unavailable", "conflict") the client maps to
 // friendly copy + actions; absent on older/generic errors.
 export interface ApiError {
   error: string;
@@ -233,30 +232,29 @@ export interface ApiError {
 
 // Stable error codes mirrored from internal/session/handlers.go. Keep
 // in sync, because renames here without a server change break the mapping.
-export type ApiErrorCode =
-  'invalid_input' | 'runtime_unavailable' | 'image_not_found' | 'not_found' | 'conflict';
+export type ApiErrorCode = 'invalid_input' | 'runtime_unavailable' | 'not_found' | 'conflict';
 
 // GET /api/preflight returns environment readiness the dashboard reads on load
 // and the New Session form reads before allowing create. Mirrors
 // internal/session.PreflightResponse.
 export interface Preflight {
-  docker: DockerStatus;
-  // Which runtimes this node can actually host a session on. A node offers Docker everywhere and a VM
-  // runtime only where the platform supports it, so the form has to ask rather than assume.
+  // Which runtimes this node can actually host a session on. A VM runtime is offered only where the
+  // platform supports it and it is set up, so the form has to ask rather than assume.
   runtimes: RuntimesInfo;
 }
 
 // RuntimesInfo is one node's runtime menu, as reported by its preflight.
 export interface RuntimesInfo {
   available: string[];
-  // default is what a create request gets when it does not name a runtime.
+  // default is what a create request gets when it does not name a runtime. Empty when the node has no
+  // runtime it will pick for you: No sandbox is all it has, or it has nothing.
   default: string;
   // defaults maps a runtime name to what a session gets when it asks for no particular size, so the
   // form can show real numbers instead of the word "default". A runtime is ABSENT when it imposes no
-  // limit of its own (Docker lets a container use the whole host), which is not the same as zero.
+  // limit of its own (sandboxless lets a session use the whole host), which is not the same as zero.
   defaults?: Record<string, SessionResources>;
   // unavailable maps a runtime this node has a driver for to why it cannot host a session right now,
-  // e.g. Docker installed but not running. Absent from the map means usable. Being registered says the
+  // e.g. a hypervisor that stopped answering. Absent from the map means usable. Being registered says the
   // driver exists, not that the backend is up, and the backend can come up without restarting the node.
   unavailable?: Record<string, string>;
   // missing maps a runtime this node knows about but cannot provide to a reason code. Unlike
@@ -270,13 +268,6 @@ export interface RuntimesInfo {
   workspace_roots?: Record<string, string>;
   // agents_to_install maps a runtime to the agents that machine does not have yet.
   agents_to_install?: Record<string, string[]>;
-}
-
-export interface DockerStatus {
-  reachable: boolean;
-  version: string;
-  // Human-facing guidance shown when reachable is false.
-  message: string;
 }
 
 export type BootstrapStatus = 'installing' | 'ready' | 'errored';

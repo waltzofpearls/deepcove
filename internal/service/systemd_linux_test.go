@@ -144,3 +144,28 @@ func TestStatusOnAMachineWithNothingInstalled(t *testing.T) {
 		t.Errorf("reported something installed: %+v", status)
 	}
 }
+
+func TestProtectedFolders(t *testing.T) {
+	defaults := []string{"/home/me/.config/systemd", "/home/me/.config/environment.d", "/home/me/.local/share/systemd"}
+	cases := []struct {
+		name       string
+		configHome string
+		dataHome   string
+		want       []string
+	}{
+		{name: "defaults only", want: defaults},
+		{
+			name: "custom XDG folders are added, defaults stay", configHome: "/home/me/cfg", dataHome: "/home/me/data",
+			want: append(slices.Clone(defaults), "/home/me/cfg/systemd", "/home/me/cfg/environment.d", "/home/me/data/systemd"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", tc.configHome)
+			t.Setenv("XDG_DATA_HOME", tc.dataHome)
+			if got := ProtectedFolders("/home/me"); !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

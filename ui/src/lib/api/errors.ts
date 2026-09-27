@@ -11,8 +11,7 @@ export interface FriendlyError {
   // raw is the underlying server/exception message, shown as muted
   // secondary detail for the curious / for bug reports.
   raw: string;
-  // code passes through so callers can branch on specific cases (e.g.
-  // offering a "Download image" action for image_not_found).
+  // code passes through so callers can branch on specific cases.
   code?: string;
 }
 
@@ -22,16 +21,8 @@ export function friendlyError(e: unknown): FriendlyError {
       case 'runtime_unavailable':
         return {
           title: "That runtime isn't available",
-          // The server names which runtime and what to do ("Docker isn't running. Start it to use this
-          // runtime."), which beats anything generic written here: the answer differs per runtime.
+          // The server says which runtime is down, which beats anything generic written here.
           guidance: e.message,
-          raw: e.message,
-          code: e.code,
-        };
-      case 'image_not_found':
-        return {
-          title: 'Agent image needs downloading',
-          guidance: 'This image is downloaded once, then reused for every session.',
           raw: e.message,
           code: e.code,
         };

@@ -2,9 +2,13 @@ package session
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path"
 	"strings"
 	"testing"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 func TestSanitizeExt(t *testing.T) {
@@ -25,7 +29,7 @@ func TestSanitizeExt(t *testing.T) {
 func TestService_UploadFile(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("execs into container and returns in-container path", func(t *testing.T) {
+	t.Run("execs into the sandbox and returns the in-sandbox path", func(t *testing.T) {
 		svc, fake, _, _ := newTestService(t)
 		sess, err := svc.Create(ctx, CreateRequest{Agent: "claude"})
 		if err != nil {
@@ -66,4 +70,60 @@ func TestService_UploadFile(t *testing.T) {
 			t.Error("want error uploading to a stopped session, got nil")
 		}
 	})
+}
+
+func TestUploadsDirFor(t *testing.T) {
+	t.Setenv("HOME", "/home/me")
+	t.Setenv("XDG_CACHE_HOME", "")
+	cases := []struct {
+		name    string
+		runtime sandbox.Sandbox
+		want    func(string) bool
+	}{
+		{
+			name: "a VM keeps them in the guest", runtime: newFakeSandbox(),
+			want: func(got string) bool { return got == uploadsDir },
+		},
+		{
+			name:    "no sandbox keeps them in the user's cache, with no space",
+			runtime: &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: "/home/me/workspaces"},
+			want: func(got string) bool {
+				return strings.HasPrefix(got, "/home/me/") && strings.HasSuffix(got, "/deepcove/uploads/s1") &&
+					!strings.Contains(got, " ")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &Service{dataDir: "/home/me/Library/Application Support/deepcove"}
+			if got := svc.uploadsDirFor(tc.runtime, "s1"); !tc.want(got) {
+				t.Errorf("got %q", got)
+			}
+		})
+	}
+}
+
+func TestService_Destroy_RemovesNoSandboxUploads(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", "")
+	svc := newBareService(t)
+	home := t.TempDir()
+	svc.shareRoots = sandbox.ShareRoots{Allowed: []string{home}}
+	provisioner := &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: home}
+	svc.RegisterRuntime(RuntimeSandboxless, provisioner)
+	sess, err := svc.Create(context.Background(), CreateRequest{Agent: "claude", Runtime: RuntimeSandboxless})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	uploads := svc.uploadsDirFor(provisioner, sess.ID)
+	if err := os.MkdirAll(uploads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Destroy(context.Background(), sess.ID); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if _, err := os.Stat(uploads); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("uploads folder still there: %v", err)
+	}
 }

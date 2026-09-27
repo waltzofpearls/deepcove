@@ -28,8 +28,8 @@ const maxMessageSize = 1 << 20
 
 // Config is what a guest needs that its image cannot know.
 type Config struct {
-	// Entrypoint is the argv the guest runs to start the session, the same script the Docker runtime
-	// uses as its container entrypoint. It performs the agent setup and then launches tmux.
+	// Entrypoint is the argv the guest runs to start the session. It performs the agent setup and writes
+	// the agent's launch script.
 	Entrypoint []string `json:"entrypoint"`
 	// Agent names the credential bundle this session brokers with the host. Empty brokers nothing.
 	Agent string `json:"agent"`
@@ -48,8 +48,6 @@ type Config struct {
 	// than the guest init: formatting needs tools the base image does not ship, and the entrypoint is
 	// already installing packages at that point.
 	HomeDevice string `json:"home_device,omitempty"`
-	// HomeTarget is where HomeDevice is mounted, matching the agent's home in the container runtime.
-	HomeTarget string `json:"home_target,omitempty"`
 	// SwapDevice is a raw block device the guest turns into swap, so the writable layer can spill to
 	// disk instead of the kernel killing the agent. Empty means no swap, which is the older behaviour.
 	SwapDevice string `json:"swap_device,omitempty"`

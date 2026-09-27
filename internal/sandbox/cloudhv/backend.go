@@ -80,7 +80,7 @@ func (b Backend) Boot(spec vm.Spec) (vm.Machine, error) {
 	}
 	if b.Passt != "" {
 		socket := filepath.Join(ipcDir, "net.sock")
-		helper, err := startPasst(b.Passt, socket, passtRunAsArgs())
+		helper, err := startPasst(b.Passt, socket, passtRunAsArgs(), hostNameservers("/etc/resolv.conf"))
 		if err != nil {
 			return fail(err)
 		}

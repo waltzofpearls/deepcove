@@ -12,8 +12,8 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/guestinit"
 )
 
-// xattrPAXPrefix is the PAX record prefix GNU/BSD tar uses to carry extended attributes. Container
-// images ship file capabilities (e.g. security.capability on ping) this way.
+// xattrPAXPrefix is the PAX record prefix GNU/BSD tar uses to carry extended attributes. OCI images
+// ship file capabilities (e.g. security.capability on ping) this way.
 const xattrPAXPrefix = "SCHILY.xattr."
 
 // buildStats reports what a rootfs build contained, for logging and tests.

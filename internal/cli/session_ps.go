@@ -12,8 +12,8 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/config"
 )
 
-// cmdSessionPs handles `deepcove session ps`. Lists sessions on the local background service,
-// Docker-style. Output columns: ID, NAME, AGENT, STATUS, AGE.
+// cmdSessionPs handles `deepcove session ps`. Lists sessions on the local background service, running
+// ones only unless -a. Output columns: ID, NAME, AGENT, RUNTIME, STATUS, AGE.
 func cmdSessionPs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("session ps", flag.ContinueOnError)
 	var all bool
@@ -34,10 +34,10 @@ func cmdSessionPs(ctx context.Context, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	lines := []string{"ID\tNAME\tAGENT\tSTATUS\tAGE"}
+	lines := []string{"ID\tNAME\tAGENT\tRUNTIME\tSTATUS\tAGE"}
 	for _, s := range sessions {
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s",
-			short(s.ID), s.Name, s.Agent, s.Status, ageOf(s.CreatedAt)))
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s",
+			short(s.ID), s.Name, s.Agent, s.Runtime, s.Status, ageOf(s.CreatedAt)))
 	}
 	_, _ = fmt.Fprint(w, joinStringLines(lines))
 	_ = w.Flush()

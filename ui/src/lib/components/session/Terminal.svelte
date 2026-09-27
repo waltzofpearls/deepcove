@@ -6,9 +6,9 @@
   //   - binary frames in both directions for terminal I/O
   //   - text frames carry JSON control messages (resize today)
   //
-  // Reconnect behaviour: a socket that closes within a few seconds of opening means the container is
-  // still starting up (typical after a stop → start cycle where the entrypoint re-runs apk + tmux
-  // setup), so retry quickly a handful of times. A socket that worked and then dropped means the
+  // Reconnect behaviour: a socket that closes within a few seconds of opening means the sandbox is
+  // still starting up (typical after a stop → start cycle, where the guest runs its setup again), so
+  // retry quickly a handful of times. A socket that worked and then dropped means the
   // server went away, so wait for the session to be up again and attach from scratch. See
   // $lib/util/reconnect.
 
@@ -26,7 +26,7 @@
 
   // tmuxWindow optionally targets a specific tmux window in the
   // session. Omit/undefined → follow the session's current window
-  // (legacy behavior). Used by the upcoming Agent/SSH mode toggle
+  // (legacy behavior). Used by the Agent/Shell tabs
   // and Split mode to pin each attached terminal to its own
   // window without affecting other clients.
   //
@@ -37,7 +37,13 @@
     sessionId,
     tmuxWindow,
     host,
-  }: { sessionId: string; tmuxWindow?: string; host?: SessionHost } = $props();
+    onWorkspaceVM = false,
+  }: {
+    sessionId: string;
+    tmuxWindow?: string;
+    host?: SessionHost;
+    onWorkspaceVM?: boolean;
+  } = $props();
 
   // The host's MagicDNS name as a memoized derived. The attach effect depends on THIS, not on `host`
   // directly: in dashboard mode the sessions poll hands us a fresh `host` object every few seconds
@@ -292,7 +298,7 @@
       //
       // tmux always runs on the alternate screen, where xterm.js keeps no scrollback of its own; its
       // fallback there is to translate a wheel notch into an arrow key, which is why scrolling up replayed
-      // past prompts (and past shell commands in the SSH tab).
+      // past prompts (and past shell commands in the Shell tab).
       //
       // So hand the wheel to tmux as an SGR mouse report and let ITS defaults decide: forward to a TUI
       // that grabbed the mouse (the agent scrolls its own transcript), or scroll tmux's scrollback for a
@@ -326,9 +332,9 @@
       });
 
       // Terminal-focused paste/drop of files & images. Upload each into the
-      // container and inject its in-container path into the prompt (the
+      // sandbox and inject its in-sandbox path into the prompt (the
       // native-Claude path-paste UX; the chip isn't reproducible in a Linux
-      // container). Plain-text paste falls through to xterm untouched.
+      // guest). Plain-text paste falls through to xterm untouched.
       async function uploadAndInject(files: File[]) {
         for (const file of files) {
           uploading += 1;
@@ -488,8 +494,10 @@
           Setup failed
         </div>
         <p class="max-w-md text-center text-xs text-muted-foreground">
-          The container's entrypoint setup script exited non-zero. Use SSH mode to inspect, or
-          destroy and recreate the session.
+          Setting up the session failed.{bootstrapLog ? ' See the log below.' : ''}
+          {onWorkspaceVM
+            ? "Restart the workspace VM from its node's page to try again."
+            : 'Stop and start the session to try again.'}
         </p>
       </div>
       {#if bootstrapLog}

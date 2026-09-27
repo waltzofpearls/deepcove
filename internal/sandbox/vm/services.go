@@ -15,9 +15,9 @@ import (
 // its stored login and again at shutdown to hand back whatever the agent refreshed.
 //
 // Unlike exec and control, the host listens here, because the guest is the side that needs something.
-func (g *Guest) ServeCredentials(store credbroker.Store) error {
+func (g *Guest) ServeCredentials(store credbroker.Store, agent string) error {
 	return g.serve("credential broker", credbroker.Port, func(conn net.Conn) {
-		_ = credbroker.Serve(conn, store)
+		_ = credbroker.Serve(conn, store, agent)
 	})
 }
 

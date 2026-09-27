@@ -613,9 +613,19 @@
              (per-client window state is a tmux native). Desktop
              only, since currentMode handles the mobile fallback. -->
         <div class="grid h-full grid-cols-2 divide-x divide-border">
-          <Terminal sessionId={session.id} tmuxWindow="main" {host} />
+          <Terminal
+            sessionId={session.id}
+            tmuxWindow="main"
+            {host}
+            onWorkspaceVM={session.on_workspace_vm}
+          />
           {#if shellReady}
-            <Terminal sessionId={session.id} tmuxWindow="shell" {host} />
+            <Terminal
+              sessionId={session.id}
+              tmuxWindow="shell"
+              {host}
+              onWorkspaceVM={session.on_workspace_vm}
+            />
           {:else}
             <div class="flex h-full items-center justify-center text-sm text-muted-foreground">
               opening shell…
@@ -629,6 +639,7 @@
           sessionId={session.id}
           tmuxWindow={currentMode === 'shell' ? 'shell' : 'main'}
           {host}
+          onWorkspaceVM={session.on_workspace_vm}
         />
       {:else}
         <div class="flex h-full items-center justify-center text-sm text-muted-foreground">

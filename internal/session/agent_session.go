@@ -23,8 +23,7 @@ func tmuxSessionName(sessionID string) string { return "deepcove-" + sessionID }
 
 // startAgentSession starts the agent for one session, in its own tmux session and working directory.
 //
-// Idempotent: an existing tmux session is left alone. That makes Start safe to repeat, and it heals a
-// sandbox that predates this change, where the entrypoint had already created one.
+// Idempotent: an existing tmux session is left alone, which makes Start safe to repeat.
 func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir string) error {
 	// A stop before the agent exists kills nothing, so starting it now would undo the stop.
 	if current, err := s.Get(ctx, sess.ID); err == nil && current.Status == StatusStopped {

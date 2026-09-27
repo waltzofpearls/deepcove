@@ -8,8 +8,8 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// Sessions created before this slice landed have no status file in the container; they
-// fall through to BootstrapReady so the loading overlay doesn't get stuck on them.
+// BootstrapStatus is how far a session's agent setup has got, which the loading overlay shows. A
+// runtime that cannot say reads as installing, never ready (see bootstrapOf).
 type BootstrapStatus string
 
 const (

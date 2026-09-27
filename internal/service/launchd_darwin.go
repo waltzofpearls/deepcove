@@ -144,3 +144,8 @@ func commandFromPlist(text string) []string {
 	}
 	return doc.Strings
 }
+
+// ProtectedFolders is where launchd reads this user's agents.
+func ProtectedFolders(home string) []string {
+	return []string{filepath.Join(home, "Library", "LaunchAgents")}
+}

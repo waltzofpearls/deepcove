@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
+  import { opensInNewTab } from '$lib/util/links';
   import {
     Dialog,
     DialogContent,
@@ -12,7 +13,7 @@
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
   import { Switch } from '$lib/components/ui/switch';
-  import { api } from '$lib/api/client';
+  import { api, preflightTimeoutMs } from '$lib/api/client';
   import { discoveryRequired } from '$lib/api/transport';
   import { discovery } from '$lib/stores/discovery.svelte';
   import { friendlyError, type FriendlyError } from '$lib/api/errors';
@@ -35,6 +36,9 @@
     runtimeCapsDisk,
     runtimeHint,
     runtimeLabel,
+    missingReasons,
+    runtimeSetupOffered,
+    showsRuntimePicker,
     RUNTIME_SANDBOXLESS,
   } from '$lib/util/runtime';
   import { emptyResourceFields, fieldsFromDefaults, parseResources } from '$lib/util/resources';
@@ -105,7 +109,7 @@
   // downloaded on create), true = already present. Checked proactively
   // as the agent/image selection changes.
   let imagePresent = $state<boolean | null>(null);
-  // Download state while pulling: percent is -1 until the daemon reports
+  // Download state while pulling: percent is -1 until the registry reports
   // layer sizes (rendered as an indeterminate bar).
   let pulling = $state(false);
   let pullPercent = $state(-1);
@@ -151,21 +155,34 @@
   let nodeRuntimes = $state<RuntimesInfo | null>(null);
   // True while the picked node has not answered yet.
   let waitingForNodeRuntimes = $state(false);
+  // Set when the picked node never answered. Its runtimes are then unknown, and this node's are not a
+  // stand-in: offering them would send a runtime that node may not have.
+  let nodeRuntimesError = $state<string | null>(null);
+  // Bumped by Retry. A cold tailnet dial can outlast the timeout once and answer the next time.
+  let nodeRuntimesAttempt = $state(0);
   $effect(() => {
     const key = selectedHostKey;
+    void nodeRuntimesAttempt;
     const host = untrack(() => selectedHost);
     nodeRuntimes = null;
+    nodeRuntimesError = null;
+    // A pick belongs to the node it was made for, and to this visit: reopening or switching nodes
+    // starts from that node's own default, so No sandbox is never carried over unseen.
+    runtimeChoice = '';
     waitingForNodeRuntimes = Boolean(open && key);
     if (!open || !key) return;
     let cancelled = false;
     const ac = new AbortController();
     api
-      .preflight(host, ac.signal)
+      .preflight(host, ac.signal, preflightTimeoutMs)
       .then((p) => {
         if (cancelled) return;
         nodeRuntimes = p.runtimes;
       })
-      .catch(() => {})
+      .catch(() => {
+        if (cancelled) return;
+        nodeRuntimesError = `Couldn't reach ${host?.hostname ?? 'that machine'} to see what it can run.`;
+      })
       .finally(() => {
         if (!cancelled) waitingForNodeRuntimes = false;
       });
@@ -179,30 +196,53 @@
     !waitingForNodeRuntimes && (nodeRuntimes !== null || preflight.loaded),
   );
 
-  // The runtimes the create target offers: the selected node's when known, else this node's. Older
-  // nodes predate the field, so treat a missing list as "docker only" rather than showing nothing.
+  // The runtimes the create target offers: the selected node's when known, else this node's.
   //
   // Nothing while the picked node is still answering. This page's own runtimes are not its runtimes, so
   // showing them would offer a choice that node may not have.
-  const runtimes = $derived(waitingForNodeRuntimes ? null : (nodeRuntimes ?? preflight.runtimes));
+  const runtimes = $derived(
+    waitingForNodeRuntimes || nodeRuntimesError ? null : (nodeRuntimes ?? preflight.runtimes),
+  );
   const runtimeOptions = $derived(runtimes?.available ?? []);
-  // Only worth showing a picker when there is an actual choice to make.
-  const showRuntimePicker = $derived(runtimeOptions.length > 1);
+  // No sandbox is still offered when it can't run yet, greyed out with what it needs.
+  const sandboxlessNeedsTmux = $derived(runtimes?.missing?.[RUNTIME_SANDBOXLESS] === 'no_tmux');
+  const showRuntimePicker = $derived(showsRuntimePicker(runtimeOptions) || sandboxlessNeedsTmux);
   // Only the user's explicit pick is stored. Resolving it against the node happens in a $derived
   // below, NOT in an $effect: an effect that both reads and writes the same state re-triggers itself,
   // which in Svelte 5 runs until effect_update_depth_exceeded and hangs the page.
   let runtimeChoice = $state('');
   // What the create will actually use. A pick the target node does not offer falls back to that node's
-  // default, so switching nodes can never leave an unavailable runtime selected. Image checks and pulls
-  // target this too, since each runtime keeps its own image store.
+  // default, which can be empty ("Choose one"), so switching nodes can never leave an unavailable runtime
+  // selected. Image checks and pulls target this too, since each runtime keeps its own image store.
   const effectiveRuntime = $derived.by(() => {
     if (runtimeChoice && runtimeOptions.includes(runtimeChoice)) return runtimeChoice;
     return runtimes?.default ?? '';
   });
 
-  // Workspace and session VMs are VM concepts. On Docker there is no machine to choose: the session is
-  // just a container.
+  // Nothing to shape the form around yet: the node is still answering or never did, has nothing to run
+  // on, or is waiting for you to pick. Until then the runtime-specific sections stay hidden rather than
+  // guess.
+  const runtimeKnown = $derived(effectiveRuntime !== '');
+  // Workspace and session VMs are VM concepts. Anywhere else there is no machine to choose.
   const onVMRuntime = $derived(bootsVMs(effectiveRuntime));
+  // This machine offers no VM yet but deepcove can set one up. Without this line the picker offers only
+  // No sandbox, and nothing says that isolation is one download away.
+  const vmSetupOffered = $derived(
+    !(selectedHost ?? soleRemoteNode) &&
+      runtimeSetupOffered(runtimes) &&
+      !runtimeOptions.some(bootsVMs),
+  );
+  // A plain click goes to the page, so the dialog closes. A cmd or ctrl click opens a new tab and keeps the form.
+  function closeUnlessNewTab(e: MouseEvent) {
+    if (opensInNewTab(e)) return;
+    open = false;
+  }
+  // The same, for a remote node: its own page under Nodes has the Set up button.
+  const remoteVMSetupOffered = $derived(
+    runtimeSetupOffered(runtimes) && !runtimeOptions.some(bootsVMs)
+      ? (selectedHost ?? soleRemoteNode)
+      : null,
+  );
 
   // No sandbox means no image and no size caps, and the folder is a real folder on that machine rather
   // than something mounted into a guest.
@@ -222,13 +262,36 @@
   // node said goes in a line under it, once it has said anything.
   const installsTheAgent = $derived(runtimes !== null && agentsToInstall.includes(agent));
 
-  // Why the SELECTED runtime cannot host a session, or null when it can. Docker being down says nothing
-  // about the VM runtime, so this is asked per runtime rather than treating Docker as a prerequisite.
-  const runtimeBlocked = $derived(runtimes?.unavailable?.[effectiveRuntime] ?? null);
-  // Every runtime this node has is down, so nothing can be created here at all.
-  const noRuntimeUsable = $derived(
-    runtimeOptions.length > 0 &&
-      runtimeOptions.every((name) => Boolean(runtimes?.unavailable?.[name])),
+  // Why the SELECTED runtime cannot host a session, or null when it can. Asked per runtime, because one
+  // being down says nothing about another. A node with no runtime at all has nothing to select.
+  const runtimeBlocked = $derived.by(() => {
+    if (nodeRuntimesError) return nodeRuntimesError;
+    if (!runtimes) return null;
+    if (runtimeOptions.length > 0) return runtimes.unavailable?.[effectiveRuntime] ?? null;
+    const where = (selectedHost ?? soleRemoteNode)?.hostname ?? 'This machine';
+    const reasons = runtimeSetupOffered(runtimes) ? [] : missingReasons(runtimes);
+    return [`${where} has nothing to run sessions on yet.`, ...reasons].join(' ');
+  });
+  // The remote node behind that message, whose own page can set it up from here.
+  const remoteNodeWithNothing = $derived(
+    runtimes && runtimeOptions.length === 0 && runtimeSetupOffered(runtimes)
+      ? (selectedHost ?? soleRemoteNode)
+      : null,
+  );
+  // Back from setting the node up in another tab: ask it again. Only while nothing is picked, since a
+  // fresh answer resets the pick.
+  $effect(() => {
+    const waitingOnSetup =
+      remoteNodeWithNothing || ((vmSetupOffered || remoteVMSetupOffered) && !runtimeChoice);
+    if (!open || !waitingOnSetup) return;
+    // A single node is read from the shared preflight rather than asked directly.
+    const recheck = () => (selectedHostKey ? nodeRuntimesAttempt++ : void preflight.refresh());
+    window.addEventListener('focus', recheck);
+    return () => window.removeEventListener('focus', recheck);
+  });
+  // Another option could host the session right now.
+  const otherIsolationUsable = $derived(
+    runtimeOptions.some((name) => name !== effectiveRuntime && !runtimes?.unavailable?.[name]),
   );
 
   // Where the session runs: this node's workspace VM, or one of its own. The workspace VM is the default
@@ -248,8 +311,10 @@
   const creatingWorkspaceVM = $derived(onWorkspace && workspaceVM === null);
   // Which controls this session shows. If a control is hidden, it cannot stop you from creating the
   // session, so the Create button checks these too.
-  const showsImageControls = $derived((!onWorkspace || creatingWorkspaceVM) && !onSandboxless);
-  const showsSizeControls = $derived(!onWorkspace && !onSandboxless);
+  const showsImageControls = $derived(
+    runtimeKnown && (!onWorkspace || creatingWorkspaceVM) && !onSandboxless,
+  );
+  const showsSizeControls = $derived(runtimeKnown && !onWorkspace && !onSandboxless);
   const parsedWorkspaceResources = $derived(parseResources(workspaceFields, true));
 
   // Reads the workspace VM when the dialog opens. Null is normal rather than an error: this node
@@ -272,7 +337,7 @@
   // Size of the machine the session runs on. Blank fields mean "whatever the runtime defaults to",
   // which is what every session got before these inputs existed.
   let resourceFields = $state({ ...emptyResourceFields });
-  // Docker ignores a disk cap, so only offer the field where it does something.
+  // Only offer the disk field where it does something.
   const showDiskField = $derived(runtimeCapsDisk(effectiveRuntime));
   const parsedResources = $derived(parseResources(resourceFields, showDiskField));
   // What this runtime gives a session that asks for nothing. Keyed as a string, not held as the object
@@ -283,15 +348,15 @@
   let sizeEdited = $state(false);
 
   // Seed the size fields with this runtime's real defaults, so the numbers are visible AND editable
-  // rather than hidden behind a placeholder. Re-seeds when the runtime changes, because a VM's defaults
-  // are not a container's. Reads only defaultsKey and sizeEdited, never resourceFields, so it cannot
+  // rather than hidden behind a placeholder. Re-seeds when the runtime changes, because each runtime
+  // has its own defaults. Reads only defaultsKey and sizeEdited, never resourceFields, so it cannot
   // retrigger itself into effect_update_depth_exceeded.
   $effect(() => {
     const key = defaultsKey;
     if (sizeEdited) return;
     resourceFields = fieldsFromDefaults(JSON.parse(key));
   });
-  // Naming the runtime makes "default" mean something: a VM's defaults are not a container's.
+  // Naming the runtime makes "default" mean something: each runtime has its own defaults.
   const sizeHint = $derived(
     showDiskField
       ? "Greyed values are what you get if you leave a field blank. Disk caps the writable layer, which lives in the VM's memory."
@@ -371,7 +436,7 @@
       if (workDir.trim()) parts.push('--work-dir', shellQuote(workDir.trim()));
       return parts.join(' ');
     }
-    // Matches buildPayload, which sends a runtime only when you had a choice.
+    // Matches buildPayload, which sends a runtime only while the picker is on screen.
     if (showRuntimePicker && effectiveRuntime) parts.push('--runtime', effectiveRuntime);
     if (onSandboxless) {
       // No image, no setup script and no mounts on this runtime, so the folder is all that is left.
@@ -420,7 +485,7 @@
   }
 
   // The "Use a folder" header toggle: off clears the rows (the session runs with an
-  // empty in-container /workspace), on restores one pre-filled row.
+  // empty /workspace in the guest), on restores one pre-filled row.
   const useFolder = $derived(mounts.length > 0);
   function toggleFolder() {
     mounts = useFolder ? [] : [newMountRow()];
@@ -518,7 +583,8 @@
       use_llm_proxy?: boolean;
     } = {
       agent,
-      // Only send a runtime when the user had a real choice; otherwise let the node pick its default.
+      // Send a runtime only while the picker is on screen, which includes a lone No sandbox; otherwise
+      // let the node pick its default.
       runtime: showRuntimePicker ? effectiveRuntime || undefined : undefined,
       resources: parsedResources.resources,
       name: name.trim() || undefined,
@@ -571,16 +637,16 @@
     // switching the runtime would leave the previous one's answer standing.
     const runtime = effectiveRuntime;
     imagePresent = null;
-    // A runtime with no guest has no image to download, and nothing to ask about one.
-    if (!img || blocked || onSandboxless) return;
+    // Nothing to ask before a runtime is picked, and a runtime with no guest has no image to download.
+    if (!img || blocked || !runtime || onSandboxless) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
         const present = await api.imageExists(img, selectedHost, undefined, runtime);
         if (!cancelled) imagePresent = present;
       } catch {
-        // Don't block create on a flaky check; leave it unknown. The
-        // create path still pulls on demand via the 422 fallback.
+        // Don't block create on a flaky check; leave it unknown. The VM builds a missing image itself
+        // at create.
         if (!cancelled) imagePresent = null;
       }
     }, 400);
@@ -668,9 +734,6 @@
     } catch (e) {
       const fe = friendlyError(e);
       submitError = fe;
-      // Race fallback: the image vanished or wasn't detected up front.
-      // Flag it absent so the hint + next create retry will download it.
-      if (fe.code === 'image_not_found') imagePresent = false;
     } finally {
       submitting = false;
       pulling = false;
@@ -688,6 +751,21 @@
   }
 </script>
 
+{#snippet vmSetupLink()}
+  <a
+    href="/setup?step=vm"
+    onclick={(e) => {
+      if (opensInNewTab(e)) return;
+      e.preventDefault();
+      open = false;
+      goto('/setup?step=vm', { state: { autostartSetup: true } });
+    }}
+    class="cursor-pointer underline underline-offset-4 hover:text-foreground"
+  >
+    Set up
+  </a>
+{/snippet}
+
 <Dialog bind:open>
   <DialogContent
     class="flex max-h-[90vh] w-[calc(100%-2rem)] max-w-4xl flex-col gap-0 p-0 sm:max-w-4xl"
@@ -695,7 +773,7 @@
     <DialogHeader class="border-b border-border px-6 py-4">
       <DialogTitle>New session</DialogTitle>
       <DialogDescription>
-        Spin up a coding-agent sandbox on this node. Pick the folder the agent should work in, or
+        Spin up a coding-agent session on this node. Pick the folder the agent should work in, or
         run without one.
       </DialogDescription>
     </DialogHeader>
@@ -716,9 +794,7 @@
                 </option>
               {/each}
             </select>
-            <p class="text-xs text-muted-foreground">
-              The session and its container live on the machine you pick.
-            </p>
+            <p class="text-xs text-muted-foreground">The session lives on the machine you pick.</p>
           </div>
         {:else if soleRemoteNode}
           <div class="space-y-2">
@@ -732,15 +808,49 @@
             <Label for="runtime">Isolation</Label>
             <select
               id="runtime"
+              aria-describedby="runtime-hint"
               value={effectiveRuntime}
               onchange={(e) => (runtimeChoice = e.currentTarget.value)}
               class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
             >
+              <!-- The node picks no default when No sandbox is all it has: that has to be your choice. -->
+              {#if !effectiveRuntime}
+                <option value="" disabled>Choose one</option>
+              {/if}
               {#each runtimeOptions as runtimeName (runtimeName)}
                 <option value={runtimeName}>{runtimeLabel(runtimeName)}</option>
               {/each}
+              {#if sandboxlessNeedsTmux}
+                <option value={RUNTIME_SANDBOXLESS} disabled>
+                  {runtimeLabel(RUNTIME_SANDBOXLESS)} (needs tmux)
+                </option>
+              {/if}
             </select>
-            <p class="text-xs text-muted-foreground">{runtimeHint(effectiveRuntime)}</p>
+            <p id="runtime-hint" class="text-xs text-muted-foreground">
+              {effectiveRuntime ? runtimeHint(effectiveRuntime) : 'Pick how this session runs.'}
+            </p>
+            {#if sandboxlessNeedsTmux}
+              <p class="text-xs text-muted-foreground">
+                No sandbox needs tmux. Install it, then restart deepcove.
+              </p>
+            {/if}
+            {#if vmSetupOffered}
+              <p class="text-xs text-muted-foreground">
+                Virtual machines aren't set up yet.
+                {@render vmSetupLink()}
+              </p>
+            {:else if remoteVMSetupOffered}
+              <p class="text-xs text-muted-foreground">
+                Virtual machines aren't set up on {remoteVMSetupOffered.hostname} yet.
+                <a
+                  href={`/nodes/${remoteVMSetupOffered.stable_node_id}`}
+                  onclick={closeUnlessNewTab}
+                  class="underline underline-offset-4 hover:text-foreground"
+                >
+                  Set up
+                </a>
+              </p>
+            {/if}
           </div>
         {/if}
       </div>
@@ -788,6 +898,10 @@
       {#if waitingForNodeRuntimes}
         <p class="text-xs text-muted-foreground">
           Checking what {selectedHost?.hostname ?? 'that machine'} can run…
+        </p>
+      {:else if runtimes === null && !nodeRuntimesError}
+        <p class="text-xs text-muted-foreground">
+          Checking what {soleRemoteNode?.hostname ?? 'this machine'} can run…
         </p>
       {/if}
 
@@ -979,7 +1093,7 @@
                   rows="10"
                   class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"></textarea>
                 <p class="text-xs text-muted-foreground">
-                  Runs once on container start. Make it idempotent. Checking
+                  Runs each time the session starts, so make it idempotent. Checking
                   <code>command -v &lt;bin&gt;</code>
                   before installing is the convention.
                 </p>
@@ -1053,7 +1167,7 @@
             <p class="text-xs text-muted-foreground">It is deleted with the session.</p>
           {/if}
         </div>
-      {:else if !onWorkspace}
+      {:else if runtimeKnown && !onWorkspace}
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <Label>Folder</Label>
@@ -1145,17 +1259,39 @@
         </div>
       {/if}
 
-      {#if preflightLoaded && runtimeBlocked}
+      {#if (preflightLoaded || nodeRuntimesError) && runtimeBlocked}
         <div
           class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
         >
           {runtimeBlocked}
-          {#if !noRuntimeUsable}
-            Pick another runtime above to create a session now.
+          {#if otherIsolationUsable}
+            Pick another option under Isolation to create a session now.
+          {/if}
+          <!-- With the picker on screen, its own "Virtual machines aren't set up yet" link is enough. -->
+          {#if vmSetupOffered && runtimeOptions.length === 0 && !showRuntimePicker}
+            {@render vmSetupLink()}
+          {/if}
+          {#if remoteNodeWithNothing}
+            <a
+              href={`/nodes/${remoteNodeWithNothing.stable_node_id}`}
+              onclick={closeUnlessNewTab}
+              class="underline underline-offset-4"
+            >
+              Set one up on its page under Nodes.
+            </a>
+          {/if}
+          {#if nodeRuntimesError}
+            <button
+              type="button"
+              onclick={() => nodeRuntimesAttempt++}
+              class="ml-1 cursor-pointer underline underline-offset-4"
+            >
+              Retry
+            </button>
           {/if}
         </div>
       {:else if pulling}
-        <!-- Live download progress. Determinate once the daemon reports
+        <!-- Live download progress. Determinate once the registry reports
              layer sizes; indeterminate (pulsing) before that. -->
         <div class="space-y-1.5 rounded-md border border-border bg-secondary/40 px-3 py-2.5">
           <div class="flex items-center justify-between text-xs">
@@ -1223,6 +1359,8 @@
             waitingForNodeRuntimes ||
             !name.trim() ||
             !!runtimeBlocked ||
+            // Nothing is sent until the runtime is known: the sections that depend on it are hidden.
+            !runtimeKnown ||
             (onSandboxless && ownFolder && !workDir.trim()) ||
             (showsImageControls &&
               imageStrategy === 'official' &&
@@ -1242,33 +1380,35 @@
         </Button>
       </div>
 
-      <details class="group rounded-md border border-border">
-        <summary
-          class="flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm font-medium hover:bg-secondary/50"
-        >
-          <span>Or run from CLI</span>
-          <span class="text-xs text-muted-foreground group-open:hidden">show</span>
-          <span class="hidden text-xs text-muted-foreground group-open:inline">hide</span>
-        </summary>
-        <div class="border-t border-border p-3">
-          <div
-            class="flex items-start gap-2 rounded-md border border-border bg-secondary p-2.5 font-mono text-xs"
+      {#if runtimeKnown}
+        <details class="group rounded-md border border-border">
+          <summary
+            class="flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm font-medium hover:bg-secondary/50"
           >
-            <code class="flex-1 overflow-x-auto whitespace-pre">{command}</code>
-            <Button size="icon" variant="ghost" onclick={copyCommand} aria-label="Copy command">
-              {#if copied}
-                <Check class="size-4 text-[var(--color-success)]" />
-              {:else}
-                <Copy class="size-4" />
-              {/if}
-            </Button>
+            <span>Or run from CLI</span>
+            <span class="text-xs text-muted-foreground group-open:hidden">show</span>
+            <span class="hidden text-xs text-muted-foreground group-open:inline">hide</span>
+          </summary>
+          <div class="border-t border-border p-3">
+            <div
+              class="flex items-start gap-2 rounded-md border border-border bg-secondary p-2.5 font-mono text-xs"
+            >
+              <code class="flex-1 overflow-x-auto whitespace-pre">{command}</code>
+              <Button size="icon" variant="ghost" onclick={copyCommand} aria-label="Copy command">
+                {#if copied}
+                  <Check class="size-4 text-[var(--color-success)]" />
+                {:else}
+                  <Copy class="size-4" />
+                {/if}
+              </Button>
+            </div>
+            <p class="mt-2 text-xs text-muted-foreground">
+              Run on the machine you want to host the session. The new session appears in the
+              dashboard once it's running.
+            </p>
           </div>
-          <p class="mt-2 text-xs text-muted-foreground">
-            Run on the machine you want to host the session. The new session appears in the
-            dashboard once it's running.
-          </p>
-        </div>
-      </details>
+        </details>
+      {/if}
     </div>
   </DialogContent>
 </Dialog>

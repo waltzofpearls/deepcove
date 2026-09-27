@@ -167,7 +167,7 @@ func TestRestartSandboxRefusesARuntimeThatCannot(t *testing.T) {
 	svc := newServiceWithRuntime(t, db.OpenForTest(t), newFakeSandbox())
 	sess := mustCreate(t, svc, "claude")
 
-	err := svc.RestartSandbox(context.Background(), RuntimeDocker, sess.SandboxID)
+	err := svc.RestartSandbox(context.Background(), runtimeFake, sess.SandboxID)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("got %v, want errors.Is(err, ErrInvalidInput)", err)
 	}

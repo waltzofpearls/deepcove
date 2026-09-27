@@ -44,8 +44,8 @@ type fakeSandbox struct {
 	execCalls     [][]string
 
 	// removedStorage records every RemoveStorage call argument in
-	// order. Used by destroy + edit-mounts tests to assert the
-	// agent-home volume cleanup actually fires.
+	// order. Used by destroy tests to assert the session's storage
+	// cleanup actually fires.
 	removedStorage   []string
 	removeStorageErr error
 
@@ -55,7 +55,7 @@ type fakeSandbox struct {
 	specs []sandbox.SandboxSpec
 
 	// Optional Pinger capability: preflight tests set pingErr to
-	// simulate a down daemon; pingVersion is returned when reachable.
+	// simulate a down backend; pingVersion is returned when reachable.
 	pingErr     error
 	pingVersion string
 }
@@ -176,7 +176,7 @@ func (f *fakeSandbox) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSp
 }
 
 // scriptedProcess is a sandbox.Process driven by canned stdout / stderr / exit code; used by
-// windows_test.go to drive the tmux exec helpers without a real container.
+// windows_test.go to drive the tmux exec helpers without a real sandbox.
 type scriptedProcess struct {
 	stdout *strings.Reader
 	stderr *strings.Reader
@@ -226,16 +226,14 @@ func (f *fakeSandbox) Restore(ctx context.Context, h sandbox.ID, id sandbox.Snap
 	return sandbox.ErrNotSupported
 }
 
-// removedStorage records volume names passed to RemoveStorage so
-// EditMounts and Destroy tests can verify the agent-home cleanup
-// path actually fires. Driver-level mock concerns (the call
-// happened) belong here; whether Docker actually deleted the volume
-// is the driver's contract, not session.Service's.
-func (f *fakeSandbox) RemoveStorage(ctx context.Context, name string) error {
+// removedStorage records the names passed to RemoveStorage so Destroy tests can verify the cleanup
+// path actually fires. Whether the driver actually deleted anything is the driver's contract, not
+// session.Service's.
+func (f *fakeSandbox) RemoveStorage(ctx context.Context, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "RemoveStorage")
-	f.removedStorage = append(f.removedStorage, name)
+	f.removedStorage = append(f.removedStorage, sessionID)
 	if f.removeStorageErr != nil {
 		return f.removeStorageErr
 	}

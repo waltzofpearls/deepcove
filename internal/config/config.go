@@ -10,13 +10,10 @@ import (
 )
 
 type Config struct {
-	IsDev    bool   `env:"IS_DEV, default=false"`
 	Addr     string `env:"ADDR, default=127.0.0.1:9000"`
 	DataDir  string `env:"DATA_DIR"`
 	NodeName string `env:"NODE_NAME"`
 	LogLevel string `env:"LOG_LEVEL"`
-
-	ViteURL string `env:"VITE_URL, default=http://localhost:5173"`
 
 	// Transport forces the SPA's runtime transport ("direct" or "wasm"), and
 	// WasmTarget is the deepcove node's tailnet URL the in-browser node dials in
@@ -36,8 +33,8 @@ type Config struct {
 	LocalVMAssets bool `env:"DEEPCOVE_LOCAL_VM_ASSETS"`
 
 	// DefaultRuntime overrides which runtime a session gets when the create request does not choose
-	// one ("docker", "applevf", "cloudhv"). Empty prefers the VM runtime wherever it is available,
-	// falling back to Docker on nodes that cannot provide VMs.
+	// one ("applevf", "cloudhv", "sandboxless"). Empty prefers the VM runtime wherever it is available;
+	// a node without one then has no default, and sandboxless has to be named on each create.
 	DefaultRuntime string `env:"DEEPCOVE_DEFAULT_RUNTIME"`
 
 	// AllowSandboxHosts are private addresses a sandbox may still reach, which are otherwise blocked.

@@ -454,6 +454,7 @@ func TestValidateGuestRoot(t *testing.T) {
 		{name: "a trailing slash is cleaned", root: "/repos/", want: "/repos"},
 		{name: "a relative path is refused", root: "repos", wantErr: true},
 		{name: "the agent's home is refused", root: "/root", wantErr: true},
+		{name: "a folder inside the agent's home is refused", root: "/root/.claude", wantErr: true},
 		{name: "the filesystem root is refused", root: "/", wantErr: true},
 		{name: "a system directory is refused", root: "/etc", wantErr: true},
 	}
@@ -575,14 +576,14 @@ func TestWorkspaceVMNeedsARuntimeThatCanList(t *testing.T) {
 func TestWorkspaceVMRefusesAFolderOutsideTheAllowedRoots(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := workspaceService(t)
-	svc.SetAllowedMountRoots([]string{t.TempDir()})
+	svc.SetShareRoots(sandbox.ShareRoots{Allowed: []string{t.TempDir()}})
 
 	_, err := svc.SaveWorkspaceVM(ctx, WorkspaceVMRequest{HostRoot: t.TempDir()})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("got %v, want ErrInvalidInput", err)
 	}
-	if !strings.Contains(fmt.Sprint(err), "allowed roots") {
-		t.Errorf("error %v, want it to name the allowed roots", err)
+	if !strings.Contains(fmt.Sprint(err), "only folders inside") {
+		t.Errorf("error %v, want it to say which folders can be shared", err)
 	}
 }
 
@@ -612,16 +613,29 @@ func TestWorkspaceVMSetupScriptReachesTheSpec(t *testing.T) {
 }
 
 func TestSaveWorkspaceVMNeedsAVMRuntime(t *testing.T) {
-	// Docker has no VM to share, so recording one would hand the user a container labelled VM.
-	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), newFakeSandbox(), RuntimeDocker)
+	// A runtime that boots no VM has none to share, so recording one would hand the user something
+	// labelled VM that is not.
+	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), newFakeSandbox(), RuntimeSandboxless)
 	_, err := svc.SaveWorkspaceVM(context.Background(), WorkspaceVMRequest{HostRoot: t.TempDir()})
 	if err == nil {
-		t.Fatal("wanted a refusal on a Docker node")
+		t.Fatal("wanted a refusal on a node with no VM runtime")
 	}
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("err = %v, want ErrInvalidInput", err)
 	}
 	if !strings.Contains(err.Error(), "VM runtime") {
 		t.Errorf("err = %v, want it to say why", err)
+	}
+}
+
+func TestWorkspaceVMSpec_RefusesAGuestRootInsideTheAgentHome(t *testing.T) {
+	agent, err := resolveAgent("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := &WorkspaceVM{HostRoot: "/Users/me/code", GuestRoot: "/root/code", Image: "img"}
+
+	if _, err := workspaceVMSpec(saved, agent); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("error = %v, want the saved guest root refused", err)
 	}
 }

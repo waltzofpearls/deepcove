@@ -108,7 +108,7 @@ func TestStartRebuildsAVanishedSandbox(t *testing.T) {
 		t.Errorf("status = %q, want running", got.Status)
 	}
 	if got.SandboxID == "" || got.SandboxID == oldHandle {
-		t.Errorf("container id = %q; want a NEW handle, not the dead %q", got.SandboxID, oldHandle)
+		t.Errorf("sandbox id = %q; want a NEW handle, not the dead %q", got.SandboxID, oldHandle)
 	}
 	// The row itself has to survive: losing the id or name would make this a delete-and-recreate, which is
 	// exactly the manual step being removed.
@@ -139,7 +139,7 @@ func TestStartDoesNotRebuildOnARealStartFailure(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	if got.SandboxID != sess.SandboxID {
-		t.Errorf("container id changed to %q; a real start failure must not rebuild", got.SandboxID)
+		t.Errorf("sandbox id changed to %q; a real start failure must not rebuild", got.SandboxID)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestRestartSessionsBringsBackWhatWasRunning(t *testing.T) {
 		t.Errorf("status = %q, want running", got.Status)
 	}
 	if got.SandboxID == oldHandle {
-		t.Errorf("container id is still the dead %q, want a rebuilt one", oldHandle)
+		t.Errorf("sandbox id is still the dead %q, want a rebuilt one", oldHandle)
 	}
 }
 
@@ -293,10 +293,10 @@ func TestRunningSessionsByRuntime(t *testing.T) {
 		{
 			name: "a stopped session is not asked for",
 			sessions: []*Session{
-				{ID: "a", Status: StatusRunning, SandboxID: "sb-a", Runtime: RuntimeDocker},
-				{ID: "b", Status: StatusStopped, SandboxID: "sb-b", Runtime: RuntimeDocker},
+				{ID: "a", Status: StatusRunning, SandboxID: "sb-a", Runtime: RuntimeSandboxless},
+				{ID: "b", Status: StatusStopped, SandboxID: "sb-b", Runtime: RuntimeSandboxless},
 			},
-			want: map[string][]string{RuntimeDocker: {"a"}},
+			want: map[string][]string{RuntimeSandboxless: {"a"}},
 		},
 		{
 			name: "two sessions on one sandbox ask for it once",
@@ -309,14 +309,14 @@ func TestRunningSessionsByRuntime(t *testing.T) {
 		{
 			name: "one id used by two runtimes is asked of both",
 			sessions: []*Session{
-				{ID: "a", Status: StatusRunning, SandboxID: "sb", Runtime: RuntimeDocker},
+				{ID: "a", Status: StatusRunning, SandboxID: "sb", Runtime: RuntimeCloudHV},
 				{ID: "b", Status: StatusRunning, SandboxID: "sb", Runtime: RuntimeSandboxless},
 			},
-			want: map[string][]string{RuntimeDocker: {"a"}, RuntimeSandboxless: {"b"}},
+			want: map[string][]string{RuntimeCloudHV: {"a"}, RuntimeSandboxless: {"b"}},
 		},
 		{
 			name:     "a session with no sandbox yet",
-			sessions: []*Session{{ID: "a", Status: StatusRunning, Runtime: RuntimeDocker}},
+			sessions: []*Session{{ID: "a", Status: StatusRunning, Runtime: RuntimeSandboxless}},
 			want:     map[string][]string{},
 		},
 	}

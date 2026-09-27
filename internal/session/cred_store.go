@@ -10,8 +10,8 @@ import (
 // credentialSettingPrefix namespaces credential bundles in the settings table.
 const credentialSettingPrefix = "agent-credentials/"
 
-// CredentialStore keeps agent logins for the VM runtimes, which cannot share the named volume the
-// Docker runtime uses (two running VMs cannot mount one disk image read write without corrupting it).
+// CredentialStore keeps agent logins for the VM runtimes, which cannot share one login disk (two running
+// VMs cannot mount one disk image read write without corrupting it).
 // A guest fetches its bundle at boot and hands back a refreshed one at shutdown.
 //
 // Credentials live as an opaque JSON value inside deepcove's own DuckDB file, never as a file at a

@@ -4,6 +4,7 @@ package guestinit
 
 import (
 	"os/exec"
+	"os/signal"
 	"sync"
 	"testing"
 	"time"
@@ -104,5 +105,36 @@ func TestProcessTableSurvivesReapBeforeWait(t *testing.T) {
 	}
 	if code != 3 {
 		t.Errorf("exit code = %d, want 3", code)
+	}
+}
+
+// A child can exit before the reaper starts listening, as the session entrypoint does when setup is
+// quick. Its exit must still be collected once the reaper runs, not left waiting for some other child.
+func TestProcessTable_ReapsAChildThatExitedBeforeTheReaperStarted(t *testing.T) {
+	table := newProcessTable()
+	cmd := exec.Command("true")
+	if err := table.Start(cmd, cmd.Start); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond) // long gone by now
+	go table.reapForever()
+	// Stopped with the test, or it would keep collecting children that other tests are waiting on.
+	t.Cleanup(func() {
+		signal.Stop(table.exited)
+		close(table.exited)
+	})
+
+	done := make(chan int, 1)
+	go func() {
+		code, _ := table.Wait(cmd)
+		done <- code
+	}()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the exit was never collected: its SIGCHLD arrived before anyone listened")
 	}
 }

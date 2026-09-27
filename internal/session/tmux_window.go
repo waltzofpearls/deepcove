@@ -14,9 +14,9 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// AgentTmuxWindowName is the tmux window where the coding agent runs. It's created by the sandbox
-// entrypoint Cmd (see service.go) and is **not deletable via the tmux-windows API**: killing the
-// agent's window would end the tmux session and tear down the container.
+// AgentTmuxWindowName is the tmux window where the coding agent runs. startAgentSession creates it (see
+// agent_session.go), and it is **not deletable via the tmux-windows API**: killing the agent's window
+// would end the agent.
 const AgentTmuxWindowName = "main"
 
 // Window-name validation:
@@ -185,7 +185,7 @@ func (s *Service) SelectTmuxWindow(ctx context.Context, id, name string) error {
 
 // DeleteTmuxWindow kills the named tmux window. Refuses to kill the
 // agent's window (AgentTmuxWindowName) because that would end the
-// tmux session and tear down the container.
+// agent.
 func (s *Service) DeleteTmuxWindow(ctx context.Context, id, name string) error {
 	if name == AgentTmuxWindowName {
 		return ErrTmuxWindowNameReserved
@@ -207,7 +207,7 @@ func (s *Service) DeleteTmuxWindow(ctx context.Context, id, name string) error {
 	return nil
 }
 
-// execTmux runs `tmux <args...>` inside the session's container and
+// execTmux runs `tmux <args...>` inside the session's sandbox and
 // returns stdout. Non-zero exit codes surface as errors with stderr
 // content included for diagnostic context; callers can match on the
 // error message via isTmuxWindowNotFound for the common "no such
@@ -272,9 +272,9 @@ func (s *Service) execTmux(ctx context.Context, sess *Session, args ...string) (
 	return stdoutBuf, nil
 }
 
-// tmuxFailure explains a failed tmux call. Until the entrypoint has installed tmux and created the
-// session there is nothing to talk to, and the raw exec failure ("exit -1") tells the user nothing.
-// A VM makes this easy to hit: its setup takes far longer than a container's.
+// tmuxFailure explains a failed tmux call. Until setup has installed tmux and the host has started the
+// agent's session there is nothing to talk to, and the raw failure ("exit -1") tells the user nothing. A
+// VM's first boot hits this often, since it installs packages before tmux exists.
 //
 // Only on failure, and only on the paths a user drives (listing windows, and creating one through it),
 // so the normal path and the attach path do not pay for the extra round trip.

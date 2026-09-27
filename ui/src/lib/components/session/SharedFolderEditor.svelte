@@ -120,7 +120,7 @@
 </script>
 
 <div class="flex flex-col gap-5">
-  <!-- Saving destroys the machine and creates a new one. The shared /root volume (agent state, shell
+  <!-- Saving destroys the machine and creates a new one. The agent's /root home (agent state, shell
        history) survives; the writable layer does not, including an unmounted /workspace's contents. A
        mounted folder is host-owned and unaffected. -->
   <div

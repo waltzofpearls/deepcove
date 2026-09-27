@@ -13,7 +13,7 @@ import (
 // A VM's registry lives in this process's memory, so restarting deepcove destroys every VM while every
 // session row survives saying "running". Nothing then squares the two: the session page waits forever
 // on a bootstrap probe that can never answer, and Start fails because the driver has never heard of the
-// sandbox. Container sessions do not have this problem, because Docker outlives us.
+// sandbox. Sandboxless sessions do not have this problem, because they outlive us.
 //
 // The pair of operations here closes that gap. MarkLostSessions tells the truth at startup, and
 // rebuilding a vanished sandbox on Start makes the session usable again instead of only diagnosable.

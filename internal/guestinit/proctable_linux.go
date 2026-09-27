@@ -24,10 +24,15 @@ import (
 type processTable struct {
 	mu      sync.Mutex
 	waiting map[int]chan unix.WaitStatus
+	// exited carries SIGCHLD. Notify is registered when the table is built, before any child exists, so
+	// a SIGCHLD that arrives before reapForever runs waits in the buffer instead of being lost.
+	exited chan os.Signal
 }
 
 func newProcessTable() *processTable {
-	return &processTable{waiting: map[int]chan unix.WaitStatus{}}
+	exited := make(chan os.Signal, 1)
+	signal.Notify(exited, unix.SIGCHLD)
+	return &processTable{waiting: map[int]chan unix.WaitStatus{}, exited: exited}
 }
 
 // Start launches a process and tracks it. The lock spans both, so the reaper cannot collect a short
@@ -78,9 +83,7 @@ func (t *processTable) Wait(cmd *exec.Cmd) (int, error) {
 // reapForever is the PID 1 duty: collect every child that exits, so the guest never accumulates zombies,
 // and hand the status to a waiter when one is registered. It blocks for the life of the VM.
 func (t *processTable) reapForever() {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, unix.SIGCHLD)
-	for range sigs {
+	for range t.exited {
 		t.reap()
 	}
 }

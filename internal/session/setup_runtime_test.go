@@ -92,9 +92,41 @@ func TestHandleSetupRuntime(t *testing.T) {
 		mux := http.NewServeMux()
 		svc.AttachRoutes(mux)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/runtimes/docker/setup", nil))
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/runtimes/sandboxless/setup", nil))
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status: got %d, want 409", rec.Code)
+		}
+	})
+
+	t.Run("a second setup while one is running is a conflict", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		svc.MarkRuntimeMissing(RuntimeAppleVF, MissingKernel)
+		started, release := make(chan struct{}), make(chan struct{})
+		svc.SetRuntimeInstaller(RuntimeAppleVF, func(context.Context, func(sandbox.PullProgress)) error {
+			close(started)
+			<-release
+			return nil
+		})
+		mux := http.NewServeMux()
+		svc.AttachRoutes(mux)
+
+		firstDone := make(chan struct{})
+		go func() {
+			defer close(firstDone)
+			mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/runtimes/applevf/setup", nil))
+		}()
+		<-started
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/runtimes/applevf/setup", nil))
+		close(release)
+		<-firstDone
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status: got %d, want 409", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "already being set up") {
+			t.Errorf("body: got %q", rec.Body.String())
 		}
 	})
 
@@ -109,4 +141,53 @@ func TestHandleSetupRuntime(t *testing.T) {
 			t.Errorf("status: got %d, want 501", rec.Code)
 		}
 	})
+}
+
+func TestStartRuntimeSetup(t *testing.T) {
+	cases := []struct {
+		name    string
+		before  func(t *testing.T, svc *Service)
+		wantErr error
+	}{
+		{name: "a missing runtime nobody is setting up", before: func(*testing.T, *Service) {}},
+		{
+			name: "a setup is already running", wantErr: errRuntimeBeingSetUp,
+			before: func(t *testing.T, svc *Service) { startAppleVFSetupForTest(t, svc) },
+		},
+		{
+			name:   "a setup that failed lets the next one in",
+			before: func(t *testing.T, svc *Service) { startAppleVFSetupForTest(t, svc)() },
+		},
+		{
+			name: "a setup that worked leaves nothing to do", wantErr: errRuntimeNotMissing,
+			before: func(t *testing.T, svc *Service) {
+				finish := startAppleVFSetupForTest(t, svc)
+				svc.MarkRuntimeReady(RuntimeAppleVF)
+				finish()
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, _ := newTestService(t)
+			svc.MarkRuntimeMissing(RuntimeAppleVF, MissingKernel)
+			tc.before(t, svc)
+			finish, err := svc.startRuntimeSetup(RuntimeAppleVF)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			}
+			if finish != nil {
+				finish()
+			}
+		})
+	}
+}
+
+func startAppleVFSetupForTest(t *testing.T, svc *Service) func() {
+	t.Helper()
+	finish, err := svc.startRuntimeSetup(RuntimeAppleVF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return finish
 }

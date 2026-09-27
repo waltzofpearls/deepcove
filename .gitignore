@@ -52,9 +52,6 @@ go.work.sum
 /ui/node_modules/
 /ui/.svelte-kit/
 
-# Air hot-reload build-errors log + tmp dir
-/build-errors.log
-/tmp/
 /internal/guestasset/deepcove-guest-init-*
 
 # Website build output, and the cache wrangler leaves wherever it runs

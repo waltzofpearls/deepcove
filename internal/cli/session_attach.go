@@ -16,7 +16,7 @@ import (
 
 // cmdSessionAttach handles `deepcove session attach <id-or-name>`. It dials the local service's
 // WebSocket attach endpoint (preferring the Unix socket), puts the terminal into raw mode, and
-// bridges stdin/stdout with the tmux session inside the container. Terminal-size changes propagate
+// bridges stdin/stdout with the tmux session inside the sandbox. Terminal-size changes propagate
 // as JSON resize control frames via resizeNotify: SIGWINCH on Unix, polling on Windows (no SIGWINCH).
 func cmdSessionAttach(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("session attach", flag.ContinueOnError)

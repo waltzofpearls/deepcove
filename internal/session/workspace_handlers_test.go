@@ -120,7 +120,7 @@ func TestWorkspaceVMIsNotALeak(t *testing.T) {
 		t.Error("a workspace vm with no sessions reads as leaked")
 	}
 
-	if err := svc.DestroyLeakedSandbox(ctx, RuntimeDocker, vm.SandboxID); !errors.Is(err, ErrSandboxIsWorkspaceVM) {
+	if err := svc.DestroyLeakedSandbox(ctx, runtimeFake, vm.SandboxID); !errors.Is(err, ErrSandboxIsWorkspaceVM) {
 		t.Errorf("leak cleanup returned %v, want ErrSandboxIsWorkspaceVM", err)
 	}
 }

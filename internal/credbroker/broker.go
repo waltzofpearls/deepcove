@@ -1,9 +1,9 @@
 // Package credbroker moves agent credentials between the host and a session VM without ever writing them
 // to a credential shaped path on the host filesystem.
 //
-// The Docker runtime shares one login across sessions with a named volume, which cannot port to VMs: two
-// running VMs cannot mount one disk image read write without corrupting it. So the host brokers instead.
-// At boot the guest fetches the stored credentials into a tmpfs, and at shutdown it hands back whatever
+// Sessions cannot share one login through a shared disk: two running VMs cannot mount one disk image read
+// write without corrupting it. So the host brokers instead.
+// At boot the guest fetches the stored credentials into the agent's home, and at shutdown it hands back whatever
 // the agent refreshed, which the host folds into its own opaque store.
 //
 // The direction is the opposite of the exec and control services: here the HOST listens on vsock and the
@@ -64,23 +64,32 @@ type Store interface {
 // "the agent has not logged in yet" and carries on.
 var ErrNoCredentials = errors.New("credbroker: no credentials stored for this agent")
 
-// Serve handles one guest request against the store.
-func Serve(conn net.Conn, store Store) error {
+// Serve handles one guest request against the store, for agent only. Each VM gets its own listener, so
+// a guest can never read, replace or wipe another agent's login, or the saved backup copy.
+func Serve(conn net.Conn, store Store, agent string) error {
 	defer func() { _ = conn.Close() }()
 
 	req, err := readMessage[Request](conn)
 	if err != nil {
 		return err
 	}
+	if req.Agent != agent || len(AgentFiles(agent)) == 0 {
+		return writeMessage(conn, Response{Error: fmt.Sprintf("this machine brokers %q only", agent)})
+	}
 	switch req.Op {
 	case OpFetch:
-		files, err := store.Load(req.Agent)
+		files, err := store.Load(agent)
 		if err != nil {
 			return writeMessage(conn, Response{Error: err.Error()})
 		}
 		return writeMessage(conn, Response{Files: files})
 	case OpStore:
-		if err := store.Save(req.Agent, req.Files); err != nil {
+		files := KeepAgentFiles(agent, req.Files)
+		// A logged out bundle would replace the good login every later session gets.
+		if !HasLogin(agent, files) {
+			return writeMessage(conn, Response{Error: "this bundle has no login, so the stored one is kept"})
+		}
+		if err := store.Save(agent, files); err != nil {
 			return writeMessage(conn, Response{Error: err.Error()})
 		}
 		return writeMessage(conn, Response{})

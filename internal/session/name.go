@@ -7,8 +7,8 @@ import (
 	"fmt"
 )
 
-// generateName returns a Docker-style auto-name in the shape
-// "<agent>-<adjective>_<scientist>", e.g. "claude-witty_curie".
+// generateName returns an auto-name in the shape "<agent>-<adjective>_<scientist>", e.g.
+// "claude-witty_curie".
 func generateName(agent string) string {
 	return fmt.Sprintf("%s-%s_%s", agent, pickFrom(adjectives), pickFrom(scientists))
 }

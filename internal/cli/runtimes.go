@@ -3,18 +3,18 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 
 	"github.com/waltzofpearls/deepcove/internal/config"
 	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
-	dockerdrv "github.com/waltzofpearls/deepcove/internal/sandbox/docker"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
+	"github.com/waltzofpearls/deepcove/internal/service"
 	"github.com/waltzofpearls/deepcove/internal/session"
 	"github.com/waltzofpearls/deepcove/internal/vmassets"
 )
@@ -79,23 +79,19 @@ func (rs *runtimeSet) snapshot() []runtimeEntry {
 // Each runtime is BUILT by its own constructor and REGISTERED here, so the list of what a node provides
 // reads in one place and every runtime joins it the same way. Which one becomes the default is decided
 // afterwards by the caller, from the session package's preference order.
-func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker.Store, logger *slog.Logger, tailnetClient func() *http.Client) (*runtimeSet, error) {
-	roots := allowedMountRoots()
+func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker.Store, logger *slog.Logger, tailnetClient func() *http.Client) *runtimeSet {
+	roots := shareRoots(cfg)
 	// The service checks a workspace VM's folder against the same list, so a folder it may not share is
 	// refused when you pick it rather than when the machine is built.
-	svc.SetAllowedMountRoots(roots)
-	container, err := newContainerRuntime(cfg, roots)
-	if err != nil {
-		return nil, err
-	}
-	entries := []runtimeEntry{container}
+	svc.SetShareRoots(roots)
+	var entries []runtimeEntry
 	// The VM runtime is platform specific and depends on artifacts being present, so it declines rather
 	// than failing the node. When it declines on a machine that could host VMs it still names itself, so
 	// the gap is something the user can see and fix instead of a runtime that appears not to exist.
 	deps := runtimeDeps{
 		svc:           svc,
 		cfg:           cfg,
-		allowedRoots:  roots,
+		shareRoots:    roots,
 		creds:         store,
 		logger:        logger,
 		tailnetClient: tailnetClient,
@@ -122,8 +118,18 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 	}
 	// How to close the gap, if this machine could host VMs but is missing a piece. Registered even when
 	// the runtime is already available, since it costs nothing and keeps the wiring in one place.
-	registerVMInstaller(deps, set)
-	return set, nil
+	if vmInstallerOffered(vmRuntime.missing) {
+		registerVMInstaller(deps, set)
+	}
+	return set
+}
+
+// vmInstallerOffered reports whether a download can close the gap a VM runtime reports. None can give a
+// host KVM, and the guest init ships inside deepcove itself. The UI's runtimeSetUpByDeepcove has these
+// codes plus no_tmux.
+func vmInstallerOffered(missing string) bool {
+	return missing != session.MissingKVM && missing != session.MissingGuestInit &&
+		missing != session.MissingStartFailed
 }
 
 // runtimeDeps are what a runtime constructor is handed: the service it joins, this node's settings, and
@@ -132,7 +138,7 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 type runtimeDeps struct {
 	svc           *session.Service
 	cfg           *config.Config
-	allowedRoots  []string
+	shareRoots    sandbox.ShareRoots
 	creds         credbroker.Store
 	logger        *slog.Logger
 	tailnetClient func() *http.Client
@@ -144,7 +150,7 @@ func (deps runtimeDeps) vmDriver(backend vm.Backend, kernel, guestInit vmAsset) 
 	return vm.NewDriver(backend, kernel.path, guestInit.path, deps.cfg.DataDir,
 		vm.WithCredentialStore(deps.creds),
 		vm.WithLogger(deps.logger),
-		vm.WithAllowedMountRoots(deps.allowedRoots...),
+		vm.WithShareRoots(deps.shareRoots),
 		vm.WithNetworkAllow(deps.cfg.AllowSandboxHosts...),
 		vm.WithTailnetClient(deps.tailnetClient),
 		vm.WithLLMProxyURL(deps.svc.LLMProxyURL))
@@ -185,46 +191,64 @@ func registerInstalledRuntime(
 	entry runtimeEntry,
 ) error {
 	if entry.driver == nil {
-		return fmt.Errorf("the runtime still needs setup after downloading: %s", entry.missing)
+		// The reason may have changed, and the UI should stop offering a setup that just ran.
+		if entry.missing != "" {
+			svc.MarkRuntimeMissing(entry.name, entry.missing)
+		}
+		return errors.New(`the download finished, but the runtime still cannot start; see deepcove's output in its terminal, or run "deepcove service status" if it runs as a service`)
 	}
 	svc.RegisterRuntime(entry.name, entry.driver)
 	set.add(entry)
 	svc.MarkRuntimeReady(entry.name)
-	// The node picked its default before this runtime existed. Pick again, or it keeps using Docker
-	// until the next restart.
+	// The node picked its default before this runtime existed, and may have had none at all. Pick again,
+	// or it stays that way until the next restart.
 	if err := svc.SelectDefaultRuntime(ctx, cfg.DefaultRuntime); err != nil {
-		logger.Warn("keeping the current default runtime after setup",
+		logger.Warn("requested default runtime is not provided on this node; picking the best default it has, which may be none",
 			"requested", cfg.DefaultRuntime, "err", err)
 	}
 	return nil
 }
 
-// allowedMountRoots are the host directories a session may mount from, applied to every runtime.
+// shareRoots are the host folders a session may share, applied to every runtime.
 //
 // $HOME covers the common case of a project under the home dir (~/projects/foo, ~/code). System dirs
 // (/etc, /usr, /var, ...) stay blocked because they are not under it. Power users who need to mount
 // outside $HOME will get a config flag override as a follow-up. The sandbox layer's mount-source
 // validator enforces this.
-func allowedMountRoots() []string {
+//
+// Refused: the data dir (tailnet key, logins), and the files deepcove runs from (its program, its service
+// file, a custom kernel). A guest that could change them could run code on this machine.
+func shareRoots(cfg *config.Config) sandbox.ShareRoots {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return nil
+		return sandbox.ShareRoots{}
 	}
-	return []string{home}
-}
-
-// newContainerRuntime builds the Docker runtime. It is not privileged, just the one runtime available
-// wherever a daemon is, so it is always offered and its reachability is judged at use time.
-func newContainerRuntime(cfg *config.Config, allowedRoots []string) (runtimeEntry, error) {
-	// Scoping containers to this instance's data directory is what keeps "leaked" meaningful: a sandbox
-	// with no session row owning it, answerable only against the database this node actually uses.
-	driver, err := dockerdrv.New(dockerdrv.NodeScope(cfg.DataDir), dockerdrv.WithAllowedMountRoots(allowedRoots...))
-	if err != nil {
-		return runtimeEntry{}, fmt.Errorf("docker runtime: %w", err)
+	refused := []string{cfg.DataDir}
+	// No sandbox pastes land here, for an agent that runs on this machine.
+	if cache, err := os.UserCacheDir(); err == nil {
+		refused = append(refused, filepath.Join(cache, "deepcove"))
 	}
-	return runtimeEntry{
-		name:    session.RuntimeDocker,
-		driver:  driver,
-		cleanup: func() { _ = driver.Close() },
-	}, nil
+	if exe, err := os.Executable(); err == nil {
+		refused = append(refused, exe)
+		// Started through a link (Homebrew does this), the real program is somewhere else. Refuse both.
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			refused = append(refused, real)
+		}
+	}
+	refused = append(refused, service.ProtectedFolders(home)...)
+	for _, file := range []string{cfg.VMKernel, cfg.VMGuestInit} {
+		if file != "" {
+			refused = append(refused, file)
+		}
+	}
+	// A kernel built in this checkout boots every VM too.
+	if cfg.LocalVMAssets {
+		refused = append(refused, localKernelPaths()...)
+	}
+	for i, path := range refused {
+		if abs, err := filepath.Abs(path); err == nil {
+			refused[i] = abs
+		}
+	}
+	return sandbox.ShareRoots{Allowed: []string{home}, Refused: refused}
 }

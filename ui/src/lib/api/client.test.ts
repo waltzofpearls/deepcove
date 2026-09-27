@@ -40,14 +40,14 @@ describe('request error handling', () => {
   it('throws an ApiError carrying status, message, and code from the {error,code} envelope', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => errResponse(422, { error: 'no image', code: 'image_not_found' })),
+      vi.fn(async () => errResponse(409, { error: 'already running', code: 'conflict' })),
     );
 
     const err = await api.suggestName('x').catch((e) => e);
 
     expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(422);
-    expect(err.message).toBe('no image');
-    expect(err.code).toBe('image_not_found');
+    expect(err.status).toBe(409);
+    expect(err.message).toBe('already running');
+    expect(err.code).toBe('conflict');
   });
 });

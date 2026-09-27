@@ -8,9 +8,12 @@
     RUNTIME_SANDBOXLESS,
     runtimeLabel,
     runtimeMissingReason,
+    runtimeMissingShort,
+    runtimeSetUpByDeepcove,
     sharesHostFolders,
   } from '$lib/util/runtime';
   import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
+  import { preflight } from '$lib/stores/preflight.svelte';
   import { ageOf, shortId } from '$lib/format';
   import { Button } from '$lib/components/ui/button';
   import {
@@ -35,6 +38,7 @@
     WorkspaceVM,
   } from '$lib/api/types';
   import Box from '@lucide/svelte/icons/box';
+  import ShieldOff from '@lucide/svelte/icons/shield-off';
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
@@ -309,6 +313,9 @@
   </div>
 {:else}
   <div class="space-y-4">
+    {#if runtimes.length === 0 && !error}
+      <p class="text-sm text-muted-foreground">Nothing on this machine can run sessions.</p>
+    {/if}
     {#each runtimes as view (view.name)}
       <section class="overflow-hidden rounded-xl border border-border bg-card">
         <header class="flex items-center gap-2 border-b border-border px-4 py-3">
@@ -328,23 +335,30 @@
               aria-hidden="true"
             ></span>
             {#if view.missing}
-              not set up
+              {runtimeMissingShort(view.missing)}
             {:else}
-              {view.reachable ? (view.version ? view.version : 'reachable') : 'unreachable'}
+              {view.reachable ? (view.version ? view.version : 'reachable') : 'not responding'}
             {/if}
           </div>
         </header>
 
         {#if view.missing}
-          <p class="px-4 pt-3 text-sm text-muted-foreground">
+          <p class="px-4 py-3 text-sm text-muted-foreground">
             {runtimeMissingReason(view.missing)}
           </p>
-          <div class="px-4 pb-3 pt-2">
-            <RuntimeSetupButton runtime={view.name} {host} ondone={() => load()} />
-          </div>
+          {#if runtimeSetUpByDeepcove(view.missing)}
+            <div class="px-4 pb-3">
+              <!-- The banner and the New Session dialog read the shared preflight, so it is refreshed too. -->
+              <RuntimeSetupButton
+                runtime={view.name}
+                {host}
+                ondone={() => Promise.all([load(), preflight.refresh()])}
+              />
+            </div>
+          {/if}
         {:else if !view.reachable}
           <p class="px-4 py-3 text-sm text-muted-foreground">
-            {view.message || "This runtime's backend isn't reachable."}
+            {view.message || "This runtime isn't responding."}
           </p>
         {:else if !view.list_supported}
           <p class="px-4 py-3 text-sm text-muted-foreground">
@@ -392,8 +406,10 @@
               <li class="flex items-start gap-3 px-4 py-3">
                 {#if leaked(sandbox)}
                   <TriangleAlert class="mt-0.5 size-4 shrink-0 text-amber-500" />
-                {:else}
+                {:else if bootsVMs(view.name)}
                   <Box class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                {:else if view.name === RUNTIME_SANDBOXLESS}
+                  <ShieldOff class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 {/if}
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-x-2 gap-y-1">

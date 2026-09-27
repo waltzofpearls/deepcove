@@ -5,7 +5,10 @@ declare global {
     // interface Error {}
     // interface Locals {}
     // interface PageData {}
-    // interface PageState {}
+    interface PageState {
+      // Set by deepcove's own links into setup, never by an outside one, so only those start a download.
+      autostartSetup?: boolean;
+    }
     // interface Platform {}
   }
 }

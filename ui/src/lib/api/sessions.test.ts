@@ -16,7 +16,7 @@ function sess(host?: SessionHost): Session {
     id: 's1',
     name: 's1',
     agent: 'claude',
-    runtime: 'docker',
+    runtime: 'applevf',
     resources: {},
     image: '',
     owner_email: '',

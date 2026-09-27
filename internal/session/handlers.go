@@ -88,10 +88,8 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		// Sandbox sentinels get precise status + a stable code the SPA
-		// can act on (Docker down → 503, image absent → 422). Mount and
-		// other user-input failures fall through to 400. See
-		// writeSandboxError.
+		// Sandbox sentinels get a precise status and a stable code the SPA can act on (runtime down →
+		// 503). Mount and other user input failures fall through to 400. See writeSandboxError.
 		writeSandboxError(w, err)
 		return
 	}
@@ -358,10 +356,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 const (
 	codeInvalidInput = "invalid_input"
 	// codeRuntimeUnavailable covers any runtime whose backend cannot host a session, whichever one it
-	// is. It replaced a Docker specific code: naming one runtime in the protocol made every other one
-	// look like a special case, and told a VM user to go start Docker.
+	// is.
 	codeRuntimeUnavailable = "runtime_unavailable"
-	codeImageNotFound      = "image_not_found"
 	codeNotFound           = "not_found"
 	codeConflict           = "conflict"
 	codeInternal           = "internal"
@@ -382,8 +378,8 @@ func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
 }
 
 // writeSandboxError maps sandbox sentinels to an HTTP status + stable code so the SPA never sees a
-// raw daemon string for the cases it can act on. Non-sentinel errors (validation, unknown agent,
-// and, today, internal failures) default to 400, matching the prior create-handler behavior.
+// raw backend error for the cases it can act on. Non-sentinel errors (validation, unknown agent,
+// and, today, internal failures) default to 400.
 func writeSandboxError(w http.ResponseWriter, err error) {
 	var unavailable ErrRuntimeUnavailable
 	switch {
@@ -395,10 +391,7 @@ func writeSandboxError(w http.ResponseWriter, err error) {
 	// longer in hand: this is the backend dying between the check and the call. Generic wording beats
 	// naming the wrong runtime.
 	case errors.Is(err, sandbox.ErrUnavailable):
-		writeErrorCode(w, http.StatusServiceUnavailable, codeRuntimeUnavailable,
-			"This runtime's backend isn't reachable. Check that it's running, then try again.")
-	case errors.Is(err, sandbox.ErrImageNotFound):
-		writeErrorCode(w, http.StatusUnprocessableEntity, codeImageNotFound, err.Error())
+		writeErrorCode(w, http.StatusServiceUnavailable, codeRuntimeUnavailable, "This runtime isn't responding.")
 	case errors.Is(err, ErrNotFound) || errors.Is(err, sandbox.ErrNotFound):
 		writeErrorCode(w, http.StatusNotFound, codeNotFound, "not found")
 	case errors.Is(err, sandbox.ErrConflict):

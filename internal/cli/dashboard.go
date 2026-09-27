@@ -23,7 +23,7 @@ import (
 //   - If a local service is already running on cfg.Addr (probed via /api/health), just open that
 //     URL in the default browser and exit.
 //   - Otherwise spin up a minimal HTTP server on cfg.Addr that serves only the SPA bundle, then
-//     open the browser. No tsnet, no Unix socket, no DuckDB, no Docker.
+//     open the browser. No tsnet, no Unix socket, no DuckDB.
 func cmdDashboard(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -57,7 +57,6 @@ func cmdDashboard(ctx context.Context, args []string) error {
 	// tailnet, and talks to those nodes directly over WASM (no target injected here).
 	mux := http.NewServeMux()
 	if err := ui.New(
-		ui.WithConfig(cfg),
 		ui.WithMux(mux),
 		ui.DashboardMode(),
 	).AttachRoutes(); err != nil {
@@ -84,7 +83,7 @@ func cmdDashboard(ctx context.Context, args []string) error {
 	fmt.Printf("  deepcove dashboard:  %s\n", url)
 	fmt.Println()
 
-	logger.Info("dashboard listening (thin-client mode)", "url", url, "is_dev", cfg.IsDev)
+	logger.Info("dashboard listening (thin-client mode)", "url", url)
 
 	errCh := make(chan error, 1)
 	go func() {
