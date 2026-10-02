@@ -132,3 +132,20 @@ func commandFromUnit(text string) []string {
 	}
 	return nil
 }
+
+// ProtectedFolders are where the user's systemd reads units, drop-ins and environment. Defaults always
+// count: systemd's XDG settings may differ from deepcove's.
+func ProtectedFolders(home string) []string {
+	folders := []string{
+		filepath.Join(home, ".config", "systemd"),
+		filepath.Join(home, ".config", "environment.d"),
+		filepath.Join(home, ".local", "share", "systemd"),
+	}
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		folders = append(folders, filepath.Join(dir, "systemd"), filepath.Join(dir, "environment.d"))
+	}
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+		folders = append(folders, filepath.Join(dir, "systemd"))
+	}
+	return folders
+}

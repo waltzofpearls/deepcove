@@ -88,7 +88,7 @@ func TestMountAlreadyDone(t *testing.T) {
 
 // Init must never exit: the kernel panics with "Attempted to kill init" if PID 1 dies, which buries the
 // real error. So there must always be a shell to fall back to, and /bin/sh must be first because every
-// container image has one.
+// OCI image has one.
 func TestShellCandidates(t *testing.T) {
 	got := shellCandidates()
 	if len(got) == 0 {
@@ -146,28 +146,6 @@ func TestDHCPCandidates(t *testing.T) {
 	}
 }
 
-// Credential paths are relative to the agent home and are brokered verbatim, so an absolute path here
-// would escape the home directory when joined.
-func TestCredentialPathsAreRelative(t *testing.T) {
-	got := credentialPaths()
-	if len(got) == 0 {
-		t.Fatal("at least one credential path must be brokered")
-	}
-	for _, p := range got {
-		if strings.HasPrefix(p, "/") {
-			t.Errorf("credential path %q must be relative to the agent home, not absolute", p)
-		}
-		if strings.Contains(p, "..") {
-			t.Errorf("credential path %q must not escape the agent home", p)
-		}
-	}
-	// The agent home has to match the /root volume the Docker runtime mounts, or a session would look
-	// for its login in a different place depending on the runtime.
-	if agentHome != "/root" {
-		t.Errorf("agentHome = %q, want /root to match the Docker runtime", agentHome)
-	}
-}
-
 func TestTmpfsSizeOption(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -200,51 +178,6 @@ func TestOverlayCapLabel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := overlayCapLabel(tc.bytes); got != tc.want {
 				t.Errorf("overlayCapLabel(%d) = %q, want %q", tc.bytes, got, tc.want)
-			}
-		})
-	}
-}
-
-// A bundle is only worth pushing when it carries a login. A logged out Claude leaves the credentials
-// file in place with empty tokens, and pushing that wiped every session's login on the host.
-func TestBundleHasLogin(t *testing.T) {
-	const settings = `{"onboarding":true}`
-	cases := []struct {
-		name  string
-		files map[string][]byte
-		want  bool
-	}{
-		{
-			name:  "a real login",
-			files: map[string][]byte{credentialFile: []byte(`{"claudeAiOauth":{"accessToken":"sk-x","refreshToken":"rt-x"}}`)},
-			want:  true,
-		},
-		{
-			name:  "only a refresh token still logs in",
-			files: map[string][]byte{credentialFile: []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"rt-x"}}`)},
-			want:  true,
-		},
-		{
-			name:  "empty tokens are a logged out shell",
-			files: map[string][]byte{credentialFile: []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`)},
-			want:  false,
-		},
-		{
-			name:  "settings without the credentials file",
-			files: map[string][]byte{".claude.json": []byte(settings)},
-			want:  false,
-		},
-		{
-			name:  "unreadable json",
-			files: map[string][]byte{credentialFile: []byte(`not json`)},
-			want:  false,
-		},
-		{name: "nothing at all", files: nil, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := bundleHasLogin(tc.files); got != tc.want {
-				t.Errorf("bundleHasLogin = %v, want %v", got, tc.want)
 			}
 		})
 	}

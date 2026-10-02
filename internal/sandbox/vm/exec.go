@@ -19,8 +19,8 @@ const execDialTimeout = 15 * time.Second
 // execDialRetry is how long to wait between connection attempts while the guest is still coming up.
 const execDialRetry = 200 * time.Millisecond
 
-// Exec runs a command inside the VM and returns it as a sandbox.Process, the same interface the Docker
-// driver returns, so the session layer does not care which runtime is underneath.
+// Exec runs a command inside the VM and returns it as a sandbox.Process, so the session layer does not
+// care which runtime is underneath.
 func (g *Guest) Exec(ctx context.Context, spec guestexec.ExecRequest) (sandbox.Process, error) {
 	conn, err := g.dialExec(ctx)
 	if err != nil {

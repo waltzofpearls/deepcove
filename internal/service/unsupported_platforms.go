@@ -11,3 +11,6 @@ import (
 func New(_, _ string) (Manager, error) {
 	return nil, fmt.Errorf("service: deepcove cannot install itself as a service on %s yet", runtime.GOOS)
 }
+
+// ProtectedFolders is empty: no user service here.
+func ProtectedFolders(string) []string { return nil }

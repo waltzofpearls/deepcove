@@ -114,7 +114,7 @@ func TestRuntimeViewsJoinsSandboxesToSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	view := viewFor(t, views, RuntimeDocker)
+	view := viewFor(t, views, runtimeFake)
 
 	if !view.ListSupported {
 		t.Error("ListSupported = false, want true for a driver implementing Lister")
@@ -152,7 +152,7 @@ func TestRuntimeViewsFlagsSandboxWithNoSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	view := viewFor(t, views, RuntimeDocker)
+	view := viewFor(t, views, runtimeFake)
 
 	if len(view.Sandboxes) != 1 {
 		t.Fatalf("got %d sandboxes, want 1", len(view.Sandboxes))
@@ -173,7 +173,7 @@ func TestRuntimeViewsFlagsSessionWithNoSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	view := viewFor(t, views, RuntimeDocker)
+	view := viewFor(t, views, runtimeFake)
 
 	if len(view.Sandboxes) != 0 {
 		t.Errorf("got %d sandboxes, want 0", len(view.Sandboxes))
@@ -201,7 +201,7 @@ func TestRuntimeViewsCountsStoppedSessionsAsOwners(t *testing.T) {
 		State: sandbox.InstanceStopped,
 	}}
 
-	view := viewFor(t, mustViews(t, svc), RuntimeDocker)
+	view := viewFor(t, mustViews(t, svc), runtimeFake)
 	if len(view.Sandboxes) != 1 {
 		t.Fatalf("got %d sandboxes, want 1", len(view.Sandboxes))
 	}
@@ -215,7 +215,7 @@ func TestRuntimeViewsCountsStoppedSessionsAsOwners(t *testing.T) {
 func TestRuntimeViewsReportsListingUnsupported(t *testing.T) {
 	svc, _, _, _ := newTestService(t) // plain fakeSandbox, no Lister
 
-	view := viewFor(t, mustViews(t, svc), RuntimeDocker)
+	view := viewFor(t, mustViews(t, svc), runtimeFake)
 	if view.ListSupported {
 		t.Error("ListSupported = true for a driver that does not implement Lister")
 	}
@@ -227,9 +227,9 @@ func TestRuntimeViewsReportsListingUnsupported(t *testing.T) {
 // A listing that fails must say so, or an empty list is misread as "nothing is running".
 func TestRuntimeViewsReportsListingError(t *testing.T) {
 	svc, lister := newListerService(t)
-	lister.listErr = errors.New("daemon went away")
+	lister.listErr = errors.New("the runtime went away")
 
-	view := viewFor(t, mustViews(t, svc), RuntimeDocker)
+	view := viewFor(t, mustViews(t, svc), runtimeFake)
 	if !view.ListSupported {
 		t.Error("ListSupported = false, want true: the driver implements Lister, the call just failed")
 	}
@@ -245,7 +245,7 @@ func TestDestroyLeakedSandbox(t *testing.T) {
 		svc, lister := newListerService(t)
 		lister.hosts("left-behind")
 
-		if err := svc.DestroyLeakedSandbox(ctx, RuntimeDocker, "left-behind"); err != nil {
+		if err := svc.DestroyLeakedSandbox(ctx, runtimeFake, "left-behind"); err != nil {
 			t.Fatalf("DestroyLeakedSandbox: %v", err)
 		}
 		if !lister.destroyed["left-behind"] {
@@ -258,7 +258,7 @@ func TestDestroyLeakedSandbox(t *testing.T) {
 		sess := mustCreate(t, svc, "claude")
 		lister.instances = []sandbox.Instance{{ID: sandbox.ID(sess.SandboxID)}}
 
-		err := svc.DestroyLeakedSandbox(ctx, RuntimeDocker, sess.SandboxID)
+		err := svc.DestroyLeakedSandbox(ctx, runtimeFake, sess.SandboxID)
 		if !errors.Is(err, ErrSandboxHasSession) {
 			t.Fatalf("error = %v, want ErrSandboxHasSession", err)
 		}
@@ -271,7 +271,7 @@ func TestDestroyLeakedSandbox(t *testing.T) {
 		svc, lister := newListerService(t)
 		lister.instances = nil
 
-		if err := svc.DestroyLeakedSandbox(ctx, RuntimeDocker, "ghost"); !errors.Is(err, ErrSandboxNotFound) {
+		if err := svc.DestroyLeakedSandbox(ctx, runtimeFake, "ghost"); !errors.Is(err, ErrSandboxNotFound) {
 			t.Fatalf("error = %v, want ErrSandboxNotFound", err)
 		}
 	})
@@ -367,7 +367,7 @@ func TestRuntimeViewReportsMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	got := viewFor(t, views, RuntimeDocker).Sandboxes[0].Mounts
+	got := viewFor(t, views, runtimeFake).Sandboxes[0].Mounts
 	if len(got) != 2 {
 		t.Fatalf("got %d mounts, want 2: %+v", len(got), got)
 	}
@@ -398,7 +398,7 @@ func TestOrphanedIsOnlyForRunningSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	orphaned := viewFor(t, views, RuntimeDocker).Orphaned
+	orphaned := viewFor(t, views, runtimeFake).Orphaned
 	if len(orphaned) != 1 {
 		t.Fatalf("orphaned %+v, want only the running session", orphaned)
 	}
@@ -422,7 +422,7 @@ func TestOrphanedSkipsSessionsWithNoSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	if got := viewFor(t, views, RuntimeDocker).Orphaned; len(got) != 0 {
+	if got := viewFor(t, views, runtimeFake).Orphaned; len(got) != 0 {
 		t.Errorf("orphaned %+v, want none", got)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
@@ -13,8 +14,6 @@ import (
 // Runtime names. These are persisted on the session row and sent over the wire, so treat them as a
 // stable vocabulary rather than internal identifiers.
 const (
-	// RuntimeDocker runs each session in a container sharing the host kernel. The default everywhere.
-	RuntimeDocker = "docker"
 	// RuntimeAppleVF runs each session in its own Linux VM via Apple Virtualization.framework. macOS
 	// only, and only when the guest kernel and init are present.
 	RuntimeAppleVF = "applevf"
@@ -27,37 +26,38 @@ const (
 )
 
 // SandboxesOutliveDeepcove reports whether this runtime's sandboxes are still there once deepcove
-// exits. A VM runs inside deepcove, as threads of this process, so its sandboxes go when it does.
+// exits. A VM does not: Apple VF runs inside this process, and Cloud Hypervisor VMs a crashed deepcove
+// left behind are stopped at its next start.
 func SandboxesOutliveDeepcove(runtime string) bool {
-	switch runtime {
-	case RuntimeSandboxless, RuntimeDocker:
-		return true
-	}
-	return false
+	return runtime == RuntimeSandboxless
 }
 
 // vmRuntimes are the runtime names that boot a VM, one per hypervisor. A node offers at most one of
 // them, because a host has one hypervisor worth using.
 var vmRuntimes = []string{RuntimeAppleVF, RuntimeCloudHV}
 
-// runtimeBootsVMs reports whether a runtime gives each machine its own kernel. Docker never does.
+// runtimeBootsVMs reports whether a runtime gives each machine its own kernel.
 func runtimeBootsVMs(name string) bool {
 	return slices.Contains(vmRuntimes, name)
 }
 
-// ErrUnknownRuntime means a session names a runtime this node does not offer. That is a real situation
-// rather than a bug: a session created on a Mac with the VM runtime is unusable on a node without it, and
-// the user needs to be told that rather than shown a confusing driver error.
+// ErrUnknownRuntime means a session names a runtime this node does not offer, or, with Runtime empty, that
+// the node has none at all. Both are real situations rather than bugs: a session created on a Mac with
+// the VM runtime is unusable on a node without it, and the user needs to be told that rather than shown
+// a confusing driver error.
 type ErrUnknownRuntime struct {
 	Runtime string
 }
 
 func (e ErrUnknownRuntime) Error() string {
+	if e.Runtime == "" {
+		return "session: this node has nothing to run sessions on yet"
+	}
 	return fmt.Sprintf("session: this node does not provide the %q runtime", e.Runtime)
 }
 
-// RegisterRuntime adds a runtime under name. The runtime passed to NewService is already registered as
-// the default, so this is for the additional ones a node happens to support.
+// RegisterRuntime adds a runtime under name. NewService starts with none, so this is how every runtime a
+// node supports joins, including ones installed after startup.
 func (s *Service) RegisterRuntime(name string, sb sandbox.Sandbox) {
 	if sb == nil {
 		return
@@ -86,64 +86,60 @@ func (s *Service) registeredRuntimes() map[string]sandbox.Sandbox {
 // SelectDefaultRuntime decides which runtime a create request gets when it names none.
 //
 // An empty preference takes the first runtime this node actually provides, in runtimeOrder, which puts
-// the strongest isolation first. That is the whole policy: no runtime is named here, so adding one only
-// means placing it in that order. A non-empty preference (DEEPCOVE_DEFAULT_RUNTIME) must be a runtime
-// this node provides, and is reported as an error rather than silently ignored.
+// the strongest isolation first, and prefers one that answers today. It never picks sandboxless: running
+// with no isolation has to be asked for by name, by DEEPCOVE_DEFAULT_RUNTIME or on the create request. A
+// VM that misses a health check still wins over it, since a create that fails with the reason beats one
+// that quietly runs unisolated.
+//
+// A non-empty preference (DEEPCOVE_DEFAULT_RUNTIME) this node does not provide is returned as an error
+// for the caller to log, but the node still gets the best default it has.
 func (s *Service) SelectDefaultRuntime(ctx context.Context, preferred string) error {
+	var err error
 	if preferred != "" {
-		if _, ok := s.lookupRuntime(preferred); !ok {
-			return ErrUnknownRuntime{Runtime: preferred}
+		if _, ok := s.lookupRuntime(preferred); ok {
+			s.setDefaultRuntime(preferred)
+			return nil
 		}
-		s.setDefaultRuntime(preferred)
-		return nil
+		err = ErrUnknownRuntime{Runtime: preferred}
 	}
-	available := s.Runtimes()
-	if len(available) == 0 {
-		return fmt.Errorf("session: this node provides no runtimes")
+	candidates := slices.DeleteFunc(s.Runtimes(), func(name string) bool { return name == RuntimeSandboxless })
+	// Nothing to pick on its own, such as a Mac that has not downloaded its VM pieces. The node still
+	// starts, so its UI can set a runtime up, and a create asks for one or says what is missing.
+	if len(candidates) == 0 {
+		s.setDefaultRuntime("")
+		return err
 	}
 
 	// Prefer one that can actually host a session today. Registering a driver only says this node knows
-	// how to talk to that backend; Docker in particular can be installed but not running, and defaulting
-	// to it would greet the user with a failure they did not choose.
+	// how to talk to that backend, and defaulting to one that cannot answer would greet the user with a
+	// failure they did not choose.
 	unavailable := s.unavailableRuntimes(ctx)
-	for _, name := range available {
+	for _, name := range candidates {
 		if _, dead := unavailable[name]; !dead {
-			s.defaultRuntime = name
-			return nil
+			s.setDefaultRuntime(name)
+			return err
 		}
 	}
 	// Nothing is reachable. Still pick one so the node has a coherent default to report; creating a
 	// session is refused separately, with the reason, rather than silently attempted.
-	s.defaultRuntime = available[0]
-	return nil
-}
-
-// SetDefaultRuntime changes which runtime a create request gets when it does not ask for one. It
-// refuses a runtime this node does not provide, so a misconfigured default degrades to the existing one
-// rather than failing every create.
-func (s *Service) SetDefaultRuntime(name string) error {
-	if _, ok := s.runtimes[name]; !ok {
-		return ErrUnknownRuntime{Runtime: name}
-	}
-	s.defaultRuntime = name
-	return nil
+	s.setDefaultRuntime(candidates[0])
+	return err
 }
 
 // pickVMRuntime is the runtime a workspace VM runs on: the one asked for, else the node default when it
 // boots VMs, else this node's VM runtime.
 //
 // No caller sends a runtime today, so reading the default alone refuses every request on a node whose
-// default is a container runtime, even when it has a VM runtime registered.
+// default is empty or sandboxless, even when it has a VM runtime registered.
 func (s *Service) pickVMRuntime(requested string) (string, error) {
 	if requested != "" {
 		if !runtimeBootsVMs(requested) {
-			return "", fmt.Errorf("%w: a workspace VM needs a VM runtime, and %s is not one",
-				ErrInvalidInput, requested)
+			return "", fmt.Errorf("%w: a workspace VM can only run on a virtual machine", ErrInvalidInput)
 		}
 		return requested, nil
 	}
-	if runtimeBootsVMs(s.defaultRuntime) {
-		return s.defaultRuntime, nil
+	if defaultRuntime := s.DefaultRuntime(); runtimeBootsVMs(defaultRuntime) {
+		return defaultRuntime, nil
 	}
 	for _, name := range s.Runtimes() {
 		if runtimeBootsVMs(name) {
@@ -156,7 +152,7 @@ func (s *Service) pickVMRuntime(requested string) (string, error) {
 // runtimeOrder is the order runtimes are offered in, strongest isolation first. Map iteration is random,
 // so without this the picker reshuffles between restarts and there is no stable "first" option to land
 // on. A runtime not named here sorts last, alphabetically, rather than disappearing.
-var runtimeOrder = []string{RuntimeAppleVF, RuntimeCloudHV, RuntimeDocker, RuntimeSandboxless}
+var runtimeOrder = []string{RuntimeAppleVF, RuntimeCloudHV, RuntimeSandboxless}
 
 // Runtimes lists the runtimes this node provides, so the UI can offer them and the create path can
 // validate a requested one. The order is deliberate and stable; see runtimeOrder.
@@ -195,12 +191,61 @@ func (s *Service) setDefaultRuntime(name string) {
 	s.defaultRuntime = name
 }
 
-// runtimeByName resolves a runtime by name, falling back to the default when name is empty. An empty name
-// covers both a create request that did not choose one and a session row written before the runtime
-// column existed.
+// resolveRuntimeName turns an empty name, which is a request that did not choose one, into the default.
+// It never returns an empty name without an error, so a caller can save what it returns.
+func (s *Service) resolveRuntimeName(name string) (string, error) {
+	if name != "" {
+		return name, nil
+	}
+	name = s.DefaultRuntime()
+	switch {
+	case name != "":
+		return name, nil
+	// Runtimes but no default means only No sandbox is on offer, and that is never chosen for you.
+	case len(s.Runtimes()) > 0:
+		return "", fmt.Errorf("%w: this node has no VM runtime; %s", ErrInvalidInput, s.vmSetupAdvice())
+	default:
+		return "", fmt.Errorf("%w; %s", ErrUnknownRuntime{}, s.vmSetupAdvice())
+	}
+}
+
+// vmSetupAdvice says what would give this node a VM runtime. "Set up" only when there is an installer.
+func (s *Service) vmSetupAdvice() string {
+	missing := s.MissingRuntimes()
+	sawMissing := false
+	for _, name := range vmRuntimes {
+		code, ok := missing[name]
+		if !ok {
+			continue
+		}
+		sawMissing = true
+		switch code {
+		case MissingKVM:
+			return "KVM is missing on this machine, or this user can't use it (if /dev/kvm exists, add this user to the kvm group, then reboot)"
+		case MissingGuestInit:
+			return "part of deepcove is missing, so reinstall deepcove"
+		case MissingStartFailed:
+			return "the VM runtime failed to start; " + logHint
+		}
+		if _, installable := s.runtimeInstaller(name); installable {
+			return `pick "Set up deepcove" from the dashboard's profile menu to add one`
+		}
+	}
+	if sawMissing {
+		return "virtual machines can't run on this machine; " + logHint
+	}
+	return "this operating system has no virtual machine runtime yet"
+}
+
+// logHint says where deepcove's log is. Started by hand, it is the terminal; as a service, a file that
+// "deepcove service status" names.
+const logHint = `see deepcove's output in its terminal, or run "deepcove service status" if it runs as a service`
+
+// runtimeByName resolves a runtime by name, falling back to the default when name is empty.
 func (s *Service) runtimeByName(name string) (sandbox.Sandbox, error) {
-	if name == "" {
-		name = s.DefaultRuntime()
+	name, err := s.resolveRuntimeName(name)
+	if err != nil {
+		return nil, err
 	}
 	sb, ok := s.lookupRuntime(name)
 	if !ok {
@@ -232,13 +277,17 @@ func (s *Service) agentProvisionerFor(sess *Session) (sandbox.AgentProvisioner, 
 
 // ErrRuntimeUnavailable means the runtime exists on this node but cannot host a session right now, which
 // is a different situation from a runtime this node has never heard of: the user does not need to pick
-// something else, they need to start the backend.
+// something else, they need this one to answer again.
 type ErrRuntimeUnavailable struct {
 	Runtime string
 	Reason  string
 }
 
 func (e ErrRuntimeUnavailable) Error() string { return e.Reason }
+
+// runtimePingTimeout bounds asking a runtime whether it can host a session, for preflight and for every
+// create, so a hung backend is reported instead of holding either up.
+const runtimePingTimeout = 3 * time.Second
 
 // runtimeUnavailable reports why one runtime cannot host a session, or "" when it can.
 //
@@ -256,7 +305,7 @@ func (s *Service) runtimeUnavailable(ctx context.Context, name string) string {
 	if !ok {
 		return "" // cannot report liveness, so assume usable rather than block on a signal we lack
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, preflightPingTimeout)
+	pingCtx, cancel := context.WithTimeout(ctx, runtimePingTimeout)
 	defer cancel()
 	if _, err := pinger.Ping(pingCtx); err != nil {
 		return unavailableReason(name)

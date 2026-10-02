@@ -23,8 +23,8 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// Driver implements sandbox.Sandbox by running each session in its own virtual machine, the isolation
-// counterpart to the Docker driver's shared kernel containers. The hypervisor is a Backend.
+// Driver implements sandbox.Sandbox by running each session in its own virtual machine. The hypervisor
+// is a Backend.
 //
 // Session lifecycle maps onto the VM lifecycle: Create resolves and builds the read only base image
 // (cached per digest, so only the first session for an image pays for it), Start boots the VM, Stop asks
@@ -40,9 +40,8 @@ type Driver struct {
 	guestInit string
 	creds     credbroker.Store
 	logger    *slog.Logger
-	// allowedRoots bounds which host directories may be shared into a VM, the same gate the container
-	// runtime applies. Empty means no host path may be mounted.
-	allowedRoots []string
+	// shareRoots bounds which host folders may be shared into a VM. Empty Allowed means none may be.
+	shareRoots sandbox.ShareRoots
 
 	// networkAllow are private addresses a sandbox may still reach. Empty is the default and the only
 	// value a public build can have: it comes from a command line flag and nothing else.
@@ -74,18 +73,16 @@ type sandboxState struct {
 // Option configures a Driver.
 type Option func(*Driver)
 
-// WithLogger records VM lifecycle transitions. Worth having because these VMs run IN PROCESS, as threads
-// inside deepcove rather than as OS processes, so nothing external (ps, Activity Monitor, a docker ps
-// equivalent) can ever show them. The log is the only way to watch a VM come and go until the VM
-// management view lands.
+// WithLogger records VM lifecycle transitions. On a Mac the VMs are threads inside deepcove, so ps and
+// Activity Monitor never show them; outside the Nodes page, the log is the only way to watch them.
 func WithLogger(logger *slog.Logger) Option {
 	return func(d *Driver) { d.logger = logger }
 }
 
-// WithAllowedMountRoots sets the host directories whose contents may be shared into a VM. Mount sources
-// outside these roots are rejected at Create.
-func WithAllowedMountRoots(roots ...string) Option {
-	return func(d *Driver) { d.allowedRoots = roots }
+// WithShareRoots sets which host folders may be shared into a VM. Any other share is refused at Create,
+// Start and Restart.
+func WithShareRoots(roots sandbox.ShareRoots) Option {
+	return func(d *Driver) { d.shareRoots = roots }
 }
 
 // WithNetworkAllow lets sandboxes reach the given private addresses, which are otherwise blocked. Each
@@ -182,13 +179,10 @@ var (
 )
 
 // Create resolves the session's image into a cached read only ext4 base and records the spec. The VM is
-// not booted until Start, mirroring the Docker driver's create then start split.
+// not booted until Start.
 func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.ID, error) {
-	if err := sandbox.ValidateSpec(spec, d.allowedRoots); err != nil {
+	if err := d.validateSpec(spec); err != nil {
 		return "", err
-	}
-	if len(spec.Cmd) == 0 {
-		return "", fmt.Errorf("vm: spec.Cmd is required; it is the session entrypoint the guest runs")
 	}
 	base, err := d.images.baseImage(ctx, spec.Image)
 	if err != nil {
@@ -209,6 +203,12 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 	if err != nil {
 		return err
 	}
+	// Check again: a guest may have swapped a shared folder for a link since Create. Links are resolved
+	// once, and the folder that passes the check is the one the VM gets.
+	spec := withResolvedShares(state.spec)
+	if err := d.validateSpec(spec); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	started := state.machine != nil
 	state.starting = !started
@@ -222,7 +222,7 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		d.mu.Unlock()
 	}()
 
-	shares, guestMounts := hostShares(state.spec.Mounts)
+	shares, guestMounts := hostShares(spec.Mounts)
 	home, err := d.homeDisk(state.spec)
 	if err != nil {
 		return err
@@ -264,7 +264,6 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		OverlayBytes:   state.spec.Resources.Disk,
 		Mounts:         guestMounts,
 		HomeDevice:     homeDevice,
-		HomeTarget:     homeMountTarget(state.spec.Mounts),
 		SwapDevice:     swapDevice,
 		NetworkAllow:   d.networkAllow,
 		LLMRequestPort: llmproxy.LLMRequestPort,
@@ -272,7 +271,7 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		return d.abandon(state, m, err)
 	}
 	if d.creds != nil {
-		if err := m.ServeCredentials(d.creds); err != nil {
+		if err := m.ServeCredentials(d.creds, state.spec.Agent.Name); err != nil {
 			return d.abandon(state, m, err)
 		}
 	}
@@ -364,7 +363,7 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 			State:        instanceState,
 			Unresponsive: state.machine != nil && state.machine.Unresponsive(),
 			Image:        state.spec.Image,
-			Mounts:       hostMounts(state.spec.Mounts),
+			Mounts:       slices.Clone(state.spec.Mounts),
 			Resources:    actualResources(state.spec.Resources),
 			CreatedAt:    state.createdAt,
 		})
@@ -383,34 +382,28 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 // DefaultResources implements sandbox.ResourceDefaulter: what a session gets when it names no size.
 func (d *Driver) DefaultResources() sandbox.Resources { return actualResources(sandbox.Resources{}) }
 
-// hostMounts keeps the shares that name a real host folder. A volume mount's source is a driver managed
-// name, which a VM has no equivalent for and a reader cannot act on.
-func hostMounts(mounts []sandbox.Mount) []sandbox.Mount {
-	out := make([]sandbox.Mount, 0, len(mounts))
-	for _, m := range mounts {
-		if m.Type != sandbox.MountVolume {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
 // hostShares turns the spec's mounts into virtio-fs shares and the matching guest side mount list.
-//
-// Volume mounts are skipped. Their Source names a driver managed volume rather than a host path, and a VM
-// has no equivalent: the agent's home comes from the credential broker instead.
 func hostShares(mounts []sandbox.Mount) ([]Share, []guestcfg.Mount) {
 	var shares []Share
 	var guest []guestcfg.Mount
 	for _, m := range mounts {
-		if !filepath.IsAbs(m.Source) {
-			continue
-		}
 		tag := shareTag(len(shares))
 		shares = append(shares, Share{Tag: tag, HostPath: m.Source, ReadOnly: m.ReadOnly})
 		guest = append(guest, guestcfg.Mount{Tag: tag, Target: m.Target, ReadOnly: m.ReadOnly})
 	}
 	return shares, guest
+}
+
+// withResolvedShares is spec with every shared folder's links followed, so the path that is checked and
+// the path the VM opens are the same string.
+func withResolvedShares(spec sandbox.SandboxSpec) sandbox.SandboxSpec {
+	mounts := make([]sandbox.Mount, len(spec.Mounts))
+	for i, m := range spec.Mounts {
+		m.Source = sandbox.ResolveSymlinks(m.Source)
+		mounts[i] = m
+	}
+	spec.Mounts = mounts
+	return spec
 }
 
 // shareTag names the nth share. Short and positional: virtio-fs tags are length limited, and the guest
@@ -571,7 +564,7 @@ func (d *Driver) ImagePull(ctx context.Context, ref string, onProgress func(sand
 }
 
 // CopyIn and CopyOut are not implemented yet. The session layer does not use them, and moving files into
-// a VM needs a guest side helper rather than a daemon API call.
+// a VM needs a guest side helper that does not exist yet.
 func (d *Driver) CopyIn(context.Context, sandbox.ID, string, string) error {
 	return fmt.Errorf("vm: copy into a VM is not implemented: %w", sandbox.ErrNotSupported)
 }
@@ -589,6 +582,25 @@ func (d *Driver) Restore(context.Context, sandbox.ID, sandbox.SnapshotID) error 
 	return sandbox.ErrNotSupported
 }
 
+// validateSpec is the check Create, Start and Restart share. A folder shared at or under the guest home
+// would hide the home disk or a piece of it, so it is refused here as well as in the session layer.
+func (d *Driver) validateSpec(spec sandbox.SandboxSpec) error {
+	if err := sandbox.ValidateSpec(spec, d.shareRoots); err != nil {
+		return err
+	}
+	if len(spec.Cmd) == 0 {
+		return fmt.Errorf("vm: spec.Cmd is required; it is the session entrypoint the guest runs")
+	}
+	for _, m := range spec.Mounts {
+		target := filepath.Clean(m.Target)
+		if target == sandbox.SandboxedAgentHome || strings.HasPrefix(target, sandbox.SandboxedAgentHome+"/") {
+			return fmt.Errorf("vm: %s is the agent's home, so no folder can be shared at %s",
+				sandbox.SandboxedAgentHome, m.Target)
+		}
+	}
+	return nil
+}
+
 // homeDiskBytes is how big a session's home disk is. Sparse, so the file only occupies what the agent
 // actually writes; this is the ceiling, not an allocation.
 const homeDiskBytes = 16 << 30
@@ -599,7 +611,7 @@ const homeDiskBytes = 16 << 30
 //
 // Named by session rather than by sandbox, so recreating the sandbox keeps the agent's home.
 func (d *Driver) homeDisk(spec sandbox.SandboxSpec) (string, error) {
-	if spec.SessionID == "" || homeMountTarget(spec.Mounts) == "" {
+	if spec.SessionID == "" {
 		return "", nil
 	}
 	if err := os.MkdirAll(d.disks, 0o700); err != nil {
@@ -682,24 +694,13 @@ func guestDevices(home, swap string) (homeDevice, swapDevice string) {
 	return name(home), name(swap)
 }
 
-// homeMountTarget is where the agent's home belongs, taken from the volume mount the session layer adds
-// for exactly that purpose. A spec without one gets no persistent home.
-func homeMountTarget(mounts []sandbox.Mount) string {
-	for _, m := range mounts {
-		if m.Type == sandbox.MountVolume {
-			return m.Target
-		}
-	}
-	return ""
-}
-
 // RemoveStorage deletes a session's home disk. Called when the session itself goes, never when its
 // sandbox is merely recreated, which is the whole reason the disk is named by session.
-func (d *Driver) RemoveStorage(_ context.Context, name string) error {
-	if name == "" {
+func (d *Driver) RemoveStorage(_ context.Context, sessionID string) error {
+	if sessionID == "" {
 		return nil
 	}
-	if err := os.Remove(filepath.Join(d.disks, name+".img")); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(d.disks, sessionID+".img")); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("vm: remove home disk: %w", err)
 	}
 	return nil
@@ -775,11 +776,8 @@ func (d *Driver) Restart(ctx context.Context, sandboxID sandbox.ID, spec sandbox
 	if err != nil {
 		return err
 	}
-	if err := sandbox.ValidateSpec(spec, d.allowedRoots); err != nil {
+	if err := d.validateSpec(spec); err != nil {
 		return err
-	}
-	if len(spec.Cmd) == 0 {
-		return fmt.Errorf("vm: spec.Cmd is required; it is the session entrypoint the guest runs")
 	}
 	base, err := d.images.baseImage(ctx, spec.Image)
 	if err != nil {
@@ -818,8 +816,8 @@ func (d *Driver) runningMachine(sandboxID sandbox.ID) (*Guest, error) {
 	return state.machine, nil
 }
 
-// Resource defaults. A VM must be given concrete values, unlike a container that can inherit the host's,
-// so an unset limit becomes a sensible default rather than zero.
+// Resource defaults. A VM must be given concrete values, so an unset limit becomes a sensible default
+// rather than zero.
 const (
 	defaultCPUCount uint = 2
 	// 4 GiB rather than 2. A coding agent is a big JavaScript runtime, and the writable layer it installs

@@ -68,13 +68,21 @@ func TestNewVMRuntime(t *testing.T) {
 	cases := []struct {
 		name        string
 		noKVM       bool
+		noGuestInit bool
 		kernel      bool
 		binaries    bool
 		wantName    string
 		wantMissing string
 		wantDriver  bool
 	}{
-		{name: "a host without kvm offers nothing at all", noKVM: true},
+		{
+			name: "a host without kvm says so", noKVM: true,
+			wantName: session.RuntimeCloudHV, wantMissing: session.MissingKVM,
+		},
+		{
+			name: "no guest init wins over nothing downloaded", noGuestInit: true,
+			wantName: session.RuntimeCloudHV, wantMissing: session.MissingGuestInit,
+		},
 		{
 			name: "kvm but nothing downloaded", kernel: false,
 			wantName: session.RuntimeCloudHV, wantMissing: session.MissingKernel,
@@ -92,6 +100,9 @@ func TestNewVMRuntime(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfg := &config.Config{DataDir: dir, VMGuestInit: writeStubFile(t, dir, "init")}
+			if tc.noGuestInit {
+				cfg.VMGuestInit = filepath.Join(dir, "no-such-init")
+			}
 			if tc.kernel {
 				cfg.VMKernel = writeStubFile(t, dir, "vmlinux")
 			}

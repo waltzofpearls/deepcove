@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/waltzofpearls/deepcove/internal/config"
 )
 
 // TestServeShellInjectsTransportOverHTTP drives the real serving path end to end: a live httptest
@@ -29,7 +27,7 @@ func TestServeShellInjectsTransportOverHTTP(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mux := http.NewServeMux()
-			opts := []Option{WithConfig(&config.Config{IsDev: false}), WithMux(mux)}
+			opts := []Option{WithMux(mux)}
 			if tc.transport != "" {
 				opts = append(opts, WithTransport(tc.transport))
 			}

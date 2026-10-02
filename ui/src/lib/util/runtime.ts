@@ -5,7 +5,6 @@ import type { RuntimesInfo } from '$lib/api/types';
 // the UI. An unknown name falls through to itself rather than being hidden, so a node offering a runtime
 // this build has never heard of still renders sensibly.
 
-export const RUNTIME_DOCKER = 'docker';
 export const RUNTIME_APPLEVF = 'applevf';
 export const RUNTIME_CLOUDHV = 'cloudhv';
 export const RUNTIME_SANDBOXLESS = 'sandboxless';
@@ -30,18 +29,59 @@ export function runtimeMissingReason(code: string): string {
     case 'no_kernel':
       return 'The Linux kernel it boots sessions with is not downloaded yet.';
     case 'no_guest_init':
-      return 'Part of its setup is missing.';
+      return 'Part of deepcove is missing. Reinstall deepcove to fix it.';
     case 'no_host_binaries':
       return 'The programs it runs virtual machines with are not downloaded yet.';
+    case 'no_kvm':
+      return "KVM is missing, or this user can't use it. If /dev/kvm exists, add this user to the kvm group, then reboot.";
+    case 'start_failed':
+      return 'It could not start. The reason is in deepcove\'s output, or run "deepcove service status" if it runs as a service.';
     case 'no_tmux':
-      return 'tmux is not installed on that machine, and deepcove cannot install it for you.';
+      return 'tmux is not installed, and deepcove cannot install it for you. Install it, then restart deepcove.';
     default:
       return 'It needs to be set up before it can run sessions.';
   }
 }
 
+// missingReasons says why each missing runtime is missing, leaving No sandbox out so it is never pitched.
+export function missingReasons(info: RuntimesInfo): string[] {
+  return Object.entries(info.missing ?? {})
+    .filter(([name]) => name !== RUNTIME_SANDBOXLESS)
+    .map(([, code]) => runtimeMissingReason(code));
+}
+
+// runtimeSetUpByDeepcove reports whether deepcove can install what a runtime is missing, so a Set up
+// button only appears where pressing it can work. The VM codes here must match vmInstallerOffered on the
+// server; no_tmux is the extra one.
+export function runtimeSetUpByDeepcove(code: string): boolean {
+  return !['no_tmux', 'no_kvm', 'no_guest_init', 'start_failed'].includes(code);
+}
+
+// runtimeMissingShort is a missing reason sized for a one line summary: what to do when deepcove can do
+// it, or the blocker when it cannot.
+export function runtimeMissingShort(code: string): string {
+  switch (code) {
+    case 'no_guest_init':
+      return 'reinstall deepcove';
+    case 'no_kvm':
+      return 'no KVM';
+    case 'start_failed':
+      return 'failed to start';
+    case 'no_tmux':
+      return 'no tmux';
+    default:
+      return 'needs setup';
+  }
+}
+
+// runtimeSetupOffered reports whether something this machine is missing can be set up from deepcove, so
+// a Set up pointer only appears where it leads to a button.
+export function runtimeSetupOffered(info: RuntimesInfo | null | undefined): boolean {
+  return Object.values(info?.missing ?? {}).some(runtimeSetUpByDeepcove);
+}
+
 // bootsVMs reports whether a runtime gives each machine its own kernel. Mirrors runtimeBootsVMs on the
-// server. Workspace and session VMs exist only on these; Docker has no such concept.
+// server. Workspace and session VMs exist only on these.
 export function bootsVMs(name: string): boolean {
   return VM_RUNTIMES.includes(name);
 }
@@ -52,12 +92,17 @@ export function sharesHostFolders(name: string): boolean {
   return name !== RUNTIME_SANDBOXLESS;
 }
 
+// showsRuntimePicker reports whether the create form asks which runtime to use. It asks whenever there
+// is a choice, and always when No sandbox is on offer, so a session never ends up with no isolation
+// without the user seeing it.
+export function showsRuntimePicker(options: string[]): boolean {
+  return options.length > 1 || options.includes(RUNTIME_SANDBOXLESS);
+}
+
 // runtimeLabel names the runtime the way it is talked about. "Virtual machine" describes the isolation
-// boundary; Docker is known by its name, so "Container (Docker)" only added a word.
+// boundary.
 export function runtimeLabel(name: string): string {
   switch (name) {
-    case RUNTIME_DOCKER:
-      return 'Docker';
     case RUNTIME_APPLEVF:
     case RUNTIME_CLOUDHV:
       return 'Virtual machine';
@@ -71,22 +116,19 @@ export function runtimeLabel(name: string): string {
 // runtimeHint explains the tradeoff, since the choice is not obvious from the name alone.
 export function runtimeHint(name: string): string {
   switch (name) {
-    case RUNTIME_DOCKER:
-      return 'Shares the host kernel. Starts fastest, and keeps your agent login between sessions.';
     case RUNTIME_APPLEVF:
     case RUNTIME_CLOUDHV:
       return 'Its own Linux kernel, so the session is fully isolated from your machine. Slower to start.';
     case RUNTIME_SANDBOXLESS:
-      return 'Runs on this machine with your files, network and logins. Nothing is isolated.';
+      return "Runs directly on the host machine, with that machine's files, network and logins. Nothing is isolated.";
     default:
       return '';
   }
 }
 
 // runtimeCapsDisk reports whether a runtime actually applies a disk cap. Only the VM runtime does: its
-// writable layer is a tmpfs that would otherwise be free to eat the guest's RAM. Docker's own
-// storage driver quotas need backing-filesystem support we do not require, so it ignores the field, and
-// offering the input there would promise something we do not deliver.
+// writable layer is a tmpfs that would otherwise be free to eat the guest's RAM. Anywhere else the
+// input would promise something we do not deliver.
 export function runtimeCapsDisk(name: string): boolean {
   return bootsVMs(name);
 }
@@ -95,29 +137,11 @@ export function runtimeCapsDisk(name: string): boolean {
 export function runtimeSummary(info: RuntimesInfo | null | undefined): string {
   if (!info) return '';
   const parts = (info.available ?? []).map((name) =>
-    info.unavailable?.[name] ? `${runtimeLabel(name)} unreachable` : runtimeLabel(name),
+    info.unavailable?.[name] ? `${runtimeLabel(name)} (not responding)` : runtimeLabel(name),
   );
-  for (const name of Object.keys(info.missing ?? {})) {
-    parts.push(`${runtimeLabel(name)} needs setup`);
+  for (const [name, code] of Object.entries(info.missing ?? {})) {
+    parts.push(`${runtimeLabel(name)} (${runtimeMissingShort(code)})`);
   }
-  return parts.join(' \u00b7 ');
-}
-
-// runtimeNeedsSetup reports whether this machine is waiting for something to be installed.
-export function runtimeNeedsSetup(info: RuntimesInfo | null | undefined): boolean {
-  return Object.keys(info?.missing ?? {}).length > 0;
-}
-
-// runtimeShortLabel is the tag-sized name, where the full label would not fit next to the agent tag.
-// "VM" over "Virtual machine" because a tag is scanned, not read.
-export function runtimeShortLabel(name: string): string {
-  switch (name) {
-    case RUNTIME_DOCKER:
-      return 'Docker';
-    case RUNTIME_APPLEVF:
-    case RUNTIME_CLOUDHV:
-      return 'VM';
-    default:
-      return name;
-  }
+  // Said out loud, or the row reads as a healthy machine that simply has no sessions.
+  return parts.length > 0 ? parts.join(' \u00b7 ') : 'Nothing to run sessions on';
 }

@@ -147,9 +147,9 @@ func (s *duckdbWorkspaceVMStore) Delete(ctx context.Context) error {
 // against.
 func (s *Service) SetDataDir(dir string) { s.dataDir = dir }
 
-// SetAllowedMountRoots records which host folders may be shared into a sandbox, so a workspace VM can
-// be refused when you pick it rather than when it is built. Same list the drivers enforce.
-func (s *Service) SetAllowedMountRoots(roots []string) { s.allowedMountRoots = roots }
+// SetShareRoots records which host folders may be shared into a sandbox, so a workspace VM can be
+// refused when you pick it rather than when it is built. Same roots the drivers enforce.
+func (s *Service) SetShareRoots(roots sandbox.ShareRoots) { s.shareRoots = roots }
 
 // SetWorkspaceVMStore wires persistence for the shared machine.
 func (s *Service) SetWorkspaceVMStore(store WorkspaceVMStore) { s.workspaceVM = store }
@@ -268,7 +268,11 @@ func (s *Service) EnsureWorkspaceVM(ctx context.Context) (*WorkspaceVM, error) {
 		return nil, fmt.Errorf("session: %w", err)
 	}
 
-	sandboxID, err := runtime.Create(ctx, workspaceVMSpec(vm, agent))
+	spec, err := workspaceVMSpec(vm, agent)
+	if err != nil {
+		return nil, err
+	}
+	sandboxID, err := runtime.Create(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("session: create workspace vm: %w", err)
 	}
@@ -389,9 +393,13 @@ func (s *Service) startOnWorkspaceVM(ctx context.Context, sess *Session) error {
 	return nil
 }
 
-// workspaceVMSpec describes the shared machine to the driver: the host root shared at /workspace, and
-// storage keyed to the machine rather than to a session.
-func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec) sandbox.SandboxSpec {
+// workspaceVMSpec describes the shared machine to the driver: the host root shared at its guest root, and
+// storage keyed to the machine rather than to a session. The guest root is checked again here, not just
+// when it was saved, since every build and restart comes through this.
+func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec) (sandbox.SandboxSpec, error) {
+	if _, err := validateGuestRoot(vm.GuestRoot); err != nil {
+		return sandbox.SandboxSpec{}, err
+	}
 	return newSandboxSpec(sandboxRequest{
 		ID:        workspaceVMHomeDiskID,
 		Name:      "workspace",
@@ -399,9 +407,9 @@ func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec) sandbox.SandboxSpec {
 		Image:     vm.Image,
 		Setup:     vm.SetupScript,
 		Resources: vm.Resources,
-		Mounts:    []sandbox.Mount{{Source: vm.HostRoot, Target: vm.GuestRoot, Type: sandbox.MountBind}},
+		Mounts:    []sandbox.Mount{{Source: vm.HostRoot, Target: vm.GuestRoot}},
 		WorkDir:   vm.GuestRoot,
-	})
+	}), nil
 }
 
 // ensureHostRoot rejects a workspace root deepcove may not share, and creates one that is not there.
@@ -435,10 +443,11 @@ func workspaceWorkDir(root, workDir, sessionName string) (string, error) {
 	return full, nil
 }
 
-// reservedGuestRoots are the directories a VM needs for itself. /root is the agent's home, restored by
-// the credential broker; mounting the shared folder over any of these breaks the machine.
+// reservedGuestRoots are the directories a VM needs for itself; mounting the shared folder over any of
+// these breaks the machine. The agent's home is checked separately, subfolders included, by
+// underAgentHome: the home disk mounts there and the guest writes the agent's login into it.
 var reservedGuestRoots = []string{
-	"/", "/root", "/etc", "/usr", "/bin", "/sbin", "/lib", "/proc", "/sys", "/dev", "/var", "/tmp",
+	"/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/proc", "/sys", "/dev", "/var", "/tmp",
 }
 
 // validateGuestRoot resolves where the shared folder appears inside the VM. Empty means /workspace.
@@ -451,7 +460,7 @@ func validateGuestRoot(root string) (string, error) {
 	if !path.IsAbs(clean) {
 		return "", fmt.Errorf("%w: %s is not an absolute path inside the VM", ErrInvalidInput, root)
 	}
-	if slices.Contains(reservedGuestRoots, clean) {
+	if slices.Contains(reservedGuestRoots, clean) || underAgentHome(clean) {
 		return "", fmt.Errorf("%w: %s is reserved inside the VM", ErrInvalidInput, clean)
 	}
 	return clean, nil

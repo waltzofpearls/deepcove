@@ -30,8 +30,8 @@ const (
 	StatusErrored  Status = "errored"
 )
 
-// Mounts only holds USER-supplied mounts; the scratch workspace and agent-home volume
-// are implementation details and stay out of the API.
+// Mounts only holds USER-supplied mounts; the agent's home is an implementation detail and stays out of
+// the API.
 type Session struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
@@ -42,7 +42,7 @@ type Session struct {
 	Env         map[string]string `json:"env"`
 	Mounts      []MountRequest    `json:"mounts"`
 	SetupScript string            `json:"setup_script"`
-	// Runtime is the sandbox runtime hosting this session ("docker", "applevf", "cloudhv"). Persisted
+	// Runtime is the sandbox runtime hosting this session ("applevf", "cloudhv", "sandboxless"). Persisted
 	// because a node can offer several, so stop, destroy and exec route back to the driver that made it.
 	Runtime string `json:"runtime"`
 	// Resources caps this session's CPU, memory, and disk. Zero fields mean the runtime's defaults.
@@ -96,12 +96,12 @@ type CreateRequest struct {
 }
 
 // MountRequest is one entry in CreateRequest.Mounts: a host path mapped into the sandbox at a
-// container path. Wire format keeps snake_case field names for JSON-by-convention.
+// guest path. Wire format keeps snake_case field names for JSON-by-convention.
 //
 // Mounts are optional. The conventional target is /workspace (your
 // code), which the agent cd's into; mount nothing and the agent gets
-// an empty in-container /workspace instead. /root is reserved (the
-// shared agent home); duplicate container paths are rejected.
+// an empty /workspace in the guest instead. /root is reserved (the
+// agent's home); duplicate guest paths are rejected.
 type MountRequest struct {
 	HostPath      string `json:"host_path"`
 	ContainerPath string `json:"container_path"`
@@ -111,7 +111,7 @@ type MountRequest struct {
 }
 
 // ListFilter narrows GET /api/sessions. Today only the "all" toggle matters: by default we hide
-// stopped/errored sessions so `session ps` matches the Docker convention (only running unless -a).
+// stopped/errored sessions, so `session ps` lists only running ones unless -a.
 type ListFilter struct {
 	IncludeAll bool
 }
@@ -122,18 +122,18 @@ type ListFilter struct {
 // these come straight from a form field. Zero means "no explicit limit", which each runtime resolves to
 // its own default.
 type Resources struct {
-	// CPU is the number of cores. Fractional values suit containers; a VM rounds to whole vCPUs, since
-	// you cannot give a virtual machine half a processor.
+	// CPU is the number of cores. A VM rounds to whole vCPUs, since you cannot give a virtual machine
+	// half a processor.
 	CPU float64 `json:"cpu,omitempty"`
 	// MemoryMB is the memory cap. For a VM this is the RAM the guest is given, not a ceiling it may
 	// exceed, so it is worth setting deliberately.
 	MemoryMB int64 `json:"memory_mb,omitempty"`
 	// DiskMB caps the session's writable layer.
 	//
-	// Docker ignores it (disk quotas are not portable across its storage drivers). For a VM it sizes the
-	// writable overlay, which today is a tmpfs and therefore comes OUT OF the guest's memory: disk and
-	// memory share one budget, and setting disk close to memory will starve the agent. It still earns
-	// its place, because an uncapped overlay lets a runaway write consume all of the guest's RAM.
+	// For a VM it sizes the writable overlay, which today is a tmpfs and therefore comes OUT OF the
+	// guest's memory: disk and memory share one budget, and setting disk close to memory will starve
+	// the agent. It still earns its place, because an uncapped overlay lets a runaway write consume all
+	// of the guest's RAM.
 	DiskMB int64 `json:"disk_mb,omitempty"`
 }
 

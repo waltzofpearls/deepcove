@@ -27,8 +27,13 @@ $(GUEST_INIT_EMBED):
 	@mkdir -p $(dir $@)
 	@: > $@
 
+# npm writes node_modules/.package-lock.json on every install, so this reruns only when the lock file
+# changed, and never in CI, which installs first.
+ui/node_modules/.package-lock.json: ui/package-lock.json
+	cd ui && npm ci
+
 .PHONY: ui-build
-ui-build: ## Build the SvelteKit UI into ui/build/
+ui-build: ui/node_modules/.package-lock.json ## Build the SvelteKit UI into ui/build/
 	cd ui && npm run build
 
 # A placeholder so the //go:embed target exists. Only lint and test use it; every build target builds
@@ -50,6 +55,10 @@ $(VERSIONS_JSON): internal/vmruntime/versions.go internal/vmruntime/gen/main.go
 build: guest-init ui-build $(VERSIONS_JSON) ## Build the deepcove binary for the host (builds the guest init + UI first)
 	CGO_ENABLED=1 go build -ldflags '$(LDFLAGS_NATIVE)' -o deepcove ./cmd/deepcove
 	@$(MAKE) --no-print-directory sign-darwin BIN=deepcove
+
+.PHONY: run
+run: build ## Build everything, then run deepcove in the foreground
+	./deepcove start
 
 # Running a VM needs the com.apple.security.virtualization entitlement, so the binary that hosts
 # sessions has to be codesigned or the Apple VF runtime fails at session create time. A signature with
@@ -230,23 +239,13 @@ checksums: ## Write SHA256SUMS over everything in $(RELEASE_DIR)
 .PHONY: build-all
 build-all: build-darwin build-windows build-linux ## Build release binaries for every supported OS/arch into dist/
 
-.PHONY: bootstrap
-bootstrap: ## Install ui/node_modules from a Linux container (run before first `make dev`, or after package.json changes)
-	rm -rf ui/node_modules
-	docker run --rm -v "$$(pwd)/ui:/app" -w /app node:24.16-alpine3.23 npm install
-
-.PHONY: dev
-dev: ## Run the dev stack (Go server with air + Vite dev server) in docker compose
-	docker compose up --build
-
-# GHCR_NAMESPACE / IMAGE_TAG let CI (and curious humans) override the image ref. The
-# default tags as `:latest` for the local cache so the agent registry's
-# OfficialImage reference resolves without a registry pull.
+# GHCR_NAMESPACE / IMAGE_TAG let CI (and curious humans) override the image ref. The build is only good
+# for pushing: the VM runtime pulls the image from the registry and never sees a local one.
 GHCR_NAMESPACE ?= ghcr.io/waltzofpearls
 IMAGE_TAG      ?= latest
 
 .PHONY: image-claude
-image-claude: ## Build the deepcove-claude session image locally (tagged for the GHCR namespace so Docker resolves it from cache)
+image-claude: ## Build the deepcove-claude session image with docker, for pushing to GHCR (sessions pull from the registry)
 	docker build -f deepcove-claude.Dockerfile \
 		-t $(GHCR_NAMESPACE)/deepcove-claude:$(IMAGE_TAG) .
 
@@ -255,10 +254,10 @@ test: test-go test-js ## Run all unit tests (Go + JS)
 
 .PHONY: test-go
 test-go: ui/build/index.html $(GUEST_INIT_EMBED) $(VERSIONS_JSON) ## Run Go unit tests (CGO; uses a UI stub for the //go:embed)
-	CGO_ENABLED=1 go test ./... -v -cover -count=1
+	CGO_ENABLED=1 go test ./... -race -v -cover -count=1
 
 .PHONY: test-js
-test-js: ## Run frontend (vitest) unit tests
+test-js: ui/node_modules/.package-lock.json ## Run frontend (vitest) unit tests
 	cd ui && npm run test
 
 .PHONY: lint
@@ -274,12 +273,12 @@ lint-go: ui/build/index.html $(GUEST_INIT_EMBED) $(VERSIONS_JSON) ## Run Go lint
 	CGO_ENABLED=1 golangci-lint run ./...
 
 .PHONY: lint-js
-lint-js: ## Run the frontend linters (prettier + svelte-check, incl. .ts type-checking)
+lint-js: ui/node_modules/.package-lock.json ## Run the frontend linters (prettier + svelte-check, incl. .ts type-checking)
 	cd ui && npm run format:check
 	cd ui && npm run check
 
 .PHONY: format
-format: ## Reformat the frontend (gofmt covers Go, and golangci-lint already enforces it)
+format: ui/node_modules/.package-lock.json ## Reformat the frontend (gofmt covers Go, and golangci-lint already enforces it)
 	cd ui && npm run format
 
 # --- Apple VF runtime (macOS only) -----------------------------------------

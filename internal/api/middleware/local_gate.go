@@ -45,6 +45,8 @@ func LocalTokenCookieName(addr string) string {
 // /api/setup/*) are ungated and seed the cookie. The Unix socket (CLI) and the
 // owner-gated tailnet never use this gate.
 func LocalGate(next http.Handler, token, cookieName string, allowedHosts []string) http.Handler {
+	// SameSite ignores the port, so another page on 127.0.0.1 still sends the cookie. This refuses its writes.
+	next = http.NewCrossOriginProtection().Handler(next)
 	allow := make(map[string]struct{}, len(allowedHosts))
 	for _, host := range allowedHosts {
 		if host != "" {

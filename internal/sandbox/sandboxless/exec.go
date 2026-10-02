@@ -33,7 +33,7 @@ func (d *Driver) Exec(ctx context.Context, instanceID sandbox.ID, spec sandbox.E
 	running := inst.running
 	d.mu.Unlock()
 	if !running {
-		return nil, fmt.Errorf("sandboxless: %s is not running: %w", instanceID, sandbox.ErrConflict)
+		return nil, fmt.Errorf("the session is not running: %w", sandbox.ErrConflict)
 	}
 	if len(spec.Cmd) == 0 {
 		return nil, fmt.Errorf("sandboxless: a command is required")

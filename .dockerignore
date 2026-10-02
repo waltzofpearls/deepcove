@@ -6,8 +6,6 @@
 /deepcove
 /deepcove-linux-*
 /dist/
-/build-errors.log
-/tmp/
 
 # Dev dependencies — not consumed by build/linux.Dockerfile.
 /ui/node_modules/

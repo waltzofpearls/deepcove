@@ -1,7 +1,6 @@
 package session
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -37,18 +36,10 @@ func toSandboxResources(r Resources) sandbox.Resources {
 // landing dir. The agent cd's to DEEPCOVE_WORKDIR (the first user mount, else this).
 const workspaceDir = sandbox.SandboxedWorkDir
 
-// /root is hardcoded; agent images run as root today. Non-root images would need a
-// per-image override (out of scope).
-const agentHomeMountTarget = "/root"
-
-// Volume is shared across ALL sessions of the same agent so auth + installed binary
-// persist across sessions. Tradeoff: shell history, gitconfig, and Claude conversation
-// history (under `.claude/projects/<encoded-cwd>/`) are all shared. Different repos get
-// different project subdirs so concurrent sessions on different repos don't conflict.
-// Volume is never auto-removed; user runs `docker volume rm deepcove-agent-<name>-home`
-// to log out everywhere / reset agent state.
-func agentHomeVolumeName(agentName string) string {
-	return "deepcove-agent-" + agentName + "-home"
+// underAgentHome reports whether a guest path is the agent's home or inside it. Nothing may be shared
+// there: the home disk mounts over it, and the guest writes the agent's login into it.
+func underAgentHome(guestPath string) bool {
+	return guestPath == sandbox.SandboxedAgentHome || strings.HasPrefix(guestPath, sandbox.SandboxedAgentHome+"/")
 }
 
 // ErrMountInvalid is the sentinel for user mount validation failures.
@@ -73,8 +64,8 @@ const placeholderOwner = "local"
 var ErrNotFound = errors.New("session: not found")
 
 // Service is the session lifecycle layer. It composes a
-// SessionRepository (for persistence) and a sandbox.Sandbox driver
-// (for container runtime).
+// SessionRepository (for persistence) and the sandbox.Sandbox drivers
+// that host sessions.
 //
 // All SQL lives in SessionRepository implementations; Service methods are pure orchestration.
 // Owner_email is threaded through to the repo on every call; today every caller passes the
@@ -84,8 +75,7 @@ type Service struct {
 	logger *slog.Logger
 
 	// runtimes are the sandbox drivers this node provides, keyed by runtime name. A node can offer
-	// more than one (Docker everywhere, plus a VM runtime where the platform supports it), so each
-	// session records which one hosts it.
+	// more than one (a VM runtime and sandboxless), so each session records which one hosts it.
 	//
 	// Guarded: a runtime is installed from an HTTP request long after startup, and every request path
 	// reads this while that happens.
@@ -95,10 +85,12 @@ type Service struct {
 
 	// missingRuntimes are runtimes this node knows about but cannot provide, keyed by name and valued
 	// by a stable reason code, and runtimeInstallers is how to close that gap. Guarded because a runtime
-	// can be installed from an HTTP request long after startup. See missing.go.
+	// can be installed from an HTTP request long after startup. runtimesSettingUp holds the ones being
+	// installed right now. See missing.go.
 	missingMu         sync.Mutex
 	missingRuntimes   map[string]string
 	runtimeInstallers map[string]RuntimeInstaller
+	runtimesSettingUp map[string]bool
 
 	// federation supplies the cross-node view for ListAggregated (set via SetFederation). Nil means
 	// single-node: only this machine's sessions.
@@ -141,9 +133,9 @@ type Service struct {
 	workspaceVM WorkspaceVMStore
 	// workspaceMu serialises building the shared machine, so concurrent creates get one VM.
 	workspaceMu sync.Mutex
-	// allowedMountRoots bounds which host folders may be shared into a sandbox. Empty means the service
+	// shareRoots bounds which host folders may be shared into a sandbox. Empty Allowed means the service
 	// does not check, and the driver still does.
-	allowedMountRoots []string
+	shareRoots sandbox.ShareRoots
 	// dataDir is where this node keeps its state. Used to size a workspace VM against the volume its
 	// disks will land on; empty falls back to the home directory.
 	dataDir string
@@ -155,10 +147,9 @@ type Service struct {
 	}
 }
 
-// NewService constructs a Service.
 // NewService builds the service with NO runtimes. The caller registers each one it can provide and then
-// picks the default, because none of them is privileged: Docker, Apple VF, and whatever comes next are
-// peers. Baking one in made every other runtime look like an add-on to it.
+// picks the default, because none of them is privileged: Apple VF, Cloud Hypervisor, sandboxless, and
+// whatever comes next are peers. Baking one in made every other runtime look like an add-on to it.
 func NewService(repo SessionRepository, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -235,13 +226,18 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	// leaving a half built session behind.
 	// A session on the shared machine runs on the machine's runtime, so that is the one to check for
 	// availability below. Reading the record builds nothing; it just says which runtime that will be.
-	sess.Runtime = cmp.Or(req.Runtime, s.defaultRuntime)
+	sess.Runtime = req.Runtime
 	if req.OnWorkspaceVM {
 		vm, err := s.WorkspaceVM(ctx)
 		if err != nil {
 			return nil, err
 		}
 		sess.Runtime = vm.Runtime
+	}
+	// Resolved once and saved, so a setup that changes the default halfway through cannot leave the row
+	// empty while the sandbox lands on the new default.
+	if sess.Runtime, err = s.resolveRuntimeName(sess.Runtime); err != nil {
+		return nil, err
 	}
 	runtime, err := s.runtimeByName(sess.Runtime)
 	if err != nil {
@@ -256,8 +252,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	// A runtime with no guest boots nothing, so the row must not name an image the session never uses.
 	if workDirIsOnThisMachine(runtime) {
 		if unused := unusedOnThisMachine(req); unused != "" {
-			return nil, fmt.Errorf("%w: the %s runtime runs the agent on the machine itself, so it takes no %s",
-				ErrInvalidInput, sess.Runtime, unused)
+			return nil, fmt.Errorf("%w: a session with no sandbox runs the agent on the machine itself, so it takes no %s",
+				ErrInvalidInput, unused)
 		}
 		sess.Image = ""
 	}
@@ -270,10 +266,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 
 	// Used if it is there, created if not, and only under the folders this node shares.
 	if req.WorkDir != "" && !req.OnWorkspaceVM && workDirIsOnThisMachine(runtime) {
-		if err := s.ensureSharedFolder(req.WorkDir); err != nil {
+		workDir := filepath.Clean(req.WorkDir)
+		if err := s.ensureWorkFolder(workDir); err != nil {
 			return nil, fmt.Errorf("%w: work_dir: %s", ErrInvalidInput, err)
 		}
-		sess.WorkDir = filepath.Clean(req.WorkDir)
+		sess.WorkDir = workDir
 	}
 
 	if req.OnWorkspaceVM {
@@ -430,10 +427,10 @@ func (s *Service) RecordActivity(ctx context.Context, id string) error {
 	return s.repo.UpdateActivity(ctx, placeholderOwner, id, time.Now().UTC())
 }
 
-// Start brings a stopped session back to running. The underlying container is reused (Docker
-// preserves its filesystem on stop), so the agent's workspace and any in-container state survive,
-// but the original entrypoint Cmd runs again, which means tmux gets a fresh session named "main".
-// In-container ephemeral state (running processes, scrollback) does NOT survive a stop/start cycle.
+// Start brings a stopped session back to running, and its setup runs again (not for a session on the
+// workspace VM, which only rejoins the machine as it is). The agent's home and shared folders are kept.
+// On a VM everything else in the guest starts fresh; with no sandbox, the machine's files are untouched.
+// Running programs and scrollback start fresh either way.
 //
 // Idempotent on already-running sessions (no-op).
 func (s *Service) Start(ctx context.Context, id string) error {
@@ -472,9 +469,9 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	}
 
 	if err := runtime.Start(ctx, sandbox.ID(sess.SandboxID)); err != nil {
-		// The sandbox this row points at is gone: a container removed out of band with `docker rm`, or,
-		// far more routinely, a VM that died when deepcove restarted, since that runtime's registry only
-		// ever lived in memory. Build a new one rather than leaving the session permanently unstartable.
+		// The sandbox this row points at is gone, most routinely a VM that died when deepcove restarted,
+		// since that runtime's registry only ever lived in memory. Build a new one rather than leaving
+		// the session permanently unstartable.
 		if !sandboxVanished(err, sess.SandboxID) {
 			return fmt.Errorf("session: sandbox start: %w", err)
 		}
@@ -490,8 +487,8 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	return nil
 }
 
-// Stop transitions a running session to stopped: tells the sandbox
-// to stop the container, updates the row. Idempotent: stopping an
+// Stop transitions a running session to stopped: stops its sandbox
+// and updates the row. Idempotent: stopping an
 // already-stopped session is a no-op success.
 func (s *Service) Stop(ctx context.Context, id string) error {
 	sess, err := s.Get(ctx, id)
@@ -522,11 +519,8 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 	return nil
 }
 
-// Destroy stops the sandbox (if running), removes it, and removes the
-// row. The agent-home volume is shared, so it's left intact; the
-// container's own /workspace (and writable layer) goes with the
-// container. Any user-mounted folder is the user's own host dir and
-// is never touched.
+// Destroy stops the sandbox (if running), removes it and the session's own storage, and removes the
+// row. Any user-mounted folder is the user's own host dir and is never touched.
 func (s *Service) Destroy(ctx context.Context, id string) error {
 	sess, err := s.Get(ctx, id)
 	if err != nil {
@@ -541,13 +535,21 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 		// Others are using this machine, so take the session off it rather than deleting it.
 		_, _ = s.execTmux(ctx, sess, "kill-session", "-t", tmuxSessionName(sess.ID))
 	} else if err := runtime.Destroy(ctx, handle); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
-		// Best-effort teardown: if the daemon already lost the sandbox, we still want to clear our row.
+		// Best-effort teardown: if the runtime already lost the sandbox, we still want to clear our row.
 		return fmt.Errorf("session: sandbox destroy: %w", err)
 	}
 	// A session on the shared machine has no storage of its own; the machine owns it.
-	if err := runtime.RemoveStorage(ctx, sess.ID); !sess.OnWorkspaceVM && err != nil &&
-		!errors.Is(err, sandbox.ErrNotSupported) && !errors.Is(err, sandbox.ErrNotFound) {
-		s.logger.Warn("could not remove session storage", "id", id, "err", err)
+	if !sess.OnWorkspaceVM {
+		if err := runtime.RemoveStorage(ctx, sess.ID); err != nil &&
+			!errors.Is(err, sandbox.ErrNotSupported) && !errors.Is(err, sandbox.ErrNotFound) {
+			s.logger.Warn("could not remove session storage", "id", id, "err", err)
+		}
+	}
+	// A VM's uploads go with its guest. Without a sandbox they are on this machine, so remove them here.
+	if workDirIsOnThisMachine(runtime) {
+		if err := os.RemoveAll(s.uploadsDirFor(runtime, sess.ID)); err != nil {
+			s.logger.Warn("could not remove session uploads", "id", id, "err", err)
+		}
 	}
 	if err := s.repo.Delete(ctx, placeholderOwner, id); err != nil {
 		return fmt.Errorf("session: delete row: %w", err)
@@ -556,11 +558,9 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	return nil
 }
 
-// Docker can't change bind mounts on a live container; this destroys + recreates.
-// The session id and the shared /root agent-home volume survive. Everything in the
-// writable layer (apt-installed packages, /etc edits, and a no-mount /workspace's
-// scratch contents) does NOT survive the recreate. A user-mounted /workspace folder
-// is host-owned, so its contents are unaffected. Accepts 0..n mounts.
+// EditMounts recreates the sandbox with the new mounts. The session id and the agent's /root home
+// survive. Everything else in the guest (installed packages, /etc edits, an unshared /workspace) does
+// NOT survive. A shared folder lives on the host, so its contents are unaffected. Accepts 0..n mounts.
 func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRequest) (*Session, error) {
 	sess, err := s.Get(ctx, id)
 	if err != nil {
@@ -576,7 +576,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	}
 
 	// The recreate stays on the session's existing runtime: changing mounts must not silently move a
-	// session between a container and a VM.
+	// session between runtimes.
 	runtime, err := s.runtimeFor(sess)
 	if err != nil {
 		return nil, err
@@ -584,8 +584,8 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	// Refused here, before the old sandbox goes: this runtime takes no mounts, so the recreate below
 	// would fail and leave the session with nothing to run on.
 	if workDirIsOnThisMachine(runtime) {
-		return nil, fmt.Errorf("%w: the %s runtime runs the agent on the machine itself, which shares no folders",
-			ErrInvalidInput, sess.Runtime)
+		return nil, fmt.Errorf("%w: a session with no sandbox runs the agent on the machine itself, which shares no folders",
+			ErrInvalidInput)
 	}
 	// Made once the refusals are past, so a rejected edit leaves no folders behind.
 	userMounts, err := s.prepareMountsCreatingFolders(newMounts)
@@ -614,7 +614,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 
 	newHandle, err := runtime.Create(ctx, spec)
 	if err != nil {
-		// Half-state: row exists but no container. User's recovery is destroy.
+		// Half-state: row exists but no sandbox. User's recovery is destroy.
 		_ = s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC())
 		return nil, fmt.Errorf("session: create new sandbox: %w", err)
 	}
@@ -654,7 +654,7 @@ type sandboxRequest struct {
 	Env       map[string]string
 	Mounts    []sandbox.Mount
 	WorkDir   string
-	// OnThisMachine is a runtime with no guest, where the agent home is a folder rather than a volume.
+	// OnThisMachine is a runtime with no guest, where the agent uses the user's own home.
 	OnThisMachine bool
 }
 
@@ -670,23 +670,9 @@ func llmProxyEndpoint(runtime sandbox.Sandbox, proxyURL string) string {
 	return proxyURL
 }
 
-// newSandboxSpec builds the driver spec: the agent's home volume ahead of the caller's mounts, the
-// agent's env under the caller's, and the entrypoint that installs the agent and writes its launch
-// script.
-//
-// The home volume is first so a stray mount cannot shadow /root; the validator rejects that target
-// anyway, while /workspace is deliberately mountable.
+// newSandboxSpec builds the driver spec: the caller's shared folders, the agent's env under the
+// caller's, and the entrypoint that installs the agent and writes its launch script.
 func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
-	var mounts []sandbox.Mount
-	if !req.OnThisMachine {
-		mounts = append(mounts, sandbox.Mount{
-			Source: agentHomeVolumeName(req.Agent.Name),
-			Target: agentHomeMountTarget,
-			Type:   sandbox.MountVolume,
-		})
-	}
-	mounts = append(mounts, req.Mounts...)
-
 	setup := req.Setup
 	if setup == "" {
 		setup = req.Agent.Sandboxed.Setup
@@ -719,9 +705,7 @@ func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
 		Resources: toSandboxResources(req.Resources),
 		Cmd:       buildEntrypoint(req.Name, setup, req.Agent.Sandboxed.LaunchCmd),
 		Env:       env,
-		Mounts:    mounts,
-		// NetNAT for outbound LLM API calls and package installs. NetIsolated would block apk at boot.
-		Network: sandbox.NetworkConfig{Mode: sandbox.NetNAT},
+		Mounts:    req.Mounts,
 	}
 }
 
@@ -756,10 +740,9 @@ cat > /etc/deepcove-motd <<'DEEPCOVE_MOTD_END'
 Welcome to deepcove session "%s".
 
   /workspace  ← your working folder (your mounted code, or empty scratch)
-  /root       ← your home dir (persists across container recreates)
+  /root       ← your home dir (persists across restarts)
 
-Type 'claude' to start the coding agent. Switch to Agent mode to attach
-to the agent's running session in the main tmux window.
+The agent runs in the Agent tab once setup finishes.
 
 DEEPCOVE_MOTD_END
 
@@ -767,7 +750,8 @@ DEEPCOVE_MOTD_END
 echo installing > /etc/deepcove-bootstrap-status
 : > /var/log/deepcove-bootstrap.log
 
-{
+# A subshell, so set -e ends setup rather than the whole script, which still has to record the failure.
+(
   set -e
   echo "[deepcove] Starting setup at $(date -u +%%H:%%M:%%SZ)"
   # Persistent home, VM runtime only. The disk arrives raw because the base image ships no mkfs, so it
@@ -793,14 +777,14 @@ echo installing > /etc/deepcove-bootstrap-status
   fi
 %s
   echo "[deepcove] Setup complete"
-} >> /var/log/deepcove-bootstrap.log 2>&1
+) >> /var/log/deepcove-bootstrap.log 2>&1
 setup_rc=$?
 
 if [ $setup_rc -ne 0 ]; then
   echo errored > /etc/deepcove-bootstrap-status
   echo "[deepcove] Setup failed (exit $setup_rc); see log above" >> /var/log/deepcove-bootstrap.log
-  # Park so the user can inspect from the shell tab.
-  exec sleep infinity
+  # The machine stays up without this script; the UI shows this log from the failure screen.
+  exit "$setup_rc"
 fi
 
 cat > /usr/local/bin/deepcove-agent-launch <<'DEEPCOVE_LAUNCH_END'
@@ -813,8 +797,6 @@ chmod +x /usr/local/bin/deepcove-agent-launch
 rm -rf /tmp/tmux-* 2>/dev/null || true
 
 echo ready > /etc/deepcove-bootstrap-status
-
-exec sleep infinity
 `, sessName, setupScript, launchCmd)
 
 	return []string{"sh", "-c", body}
@@ -873,9 +855,6 @@ func (s *Service) prepareMounts(reqs []MountRequest, folder func(string) error) 
 		return nil, err
 	}
 	for i, m := range mounts {
-		if m.Type != sandbox.MountBind {
-			continue
-		}
 		if err := folder(m.Source); err != nil {
 			return nil, fmt.Errorf("%w: mounts[%d]: %s", ErrMountInvalid, i, err)
 		}
@@ -883,12 +862,25 @@ func (s *Service) prepareMounts(reqs []MountRequest, folder func(string) error) 
 	return mounts, nil
 }
 
-// The allowed roots come first on purpose, so this cannot be used to find out what is on the machine.
 func (s *Service) requireSharedFolder(path string) error {
-	if len(s.allowedMountRoots) == 0 {
+	return requireFolder(path, s.shareRoots)
+}
+
+func (s *Service) ensureSharedFolder(path string) error {
+	return ensureFolder(path, s.shareRoots)
+}
+
+// ensureWorkFolder checks a No sandbox work dir. Nothing goes into a guest, so only Allowed applies.
+func (s *Service) ensureWorkFolder(path string) error {
+	return ensureFolder(path, sandbox.ShareRoots{Allowed: s.shareRoots.Allowed})
+}
+
+// The allowed roots come first on purpose, so this cannot be used to find out what is on the machine.
+func requireFolder(path string, roots sandbox.ShareRoots) error {
+	if len(roots.Allowed) == 0 {
 		return nil
 	}
-	if err := sandbox.MountSourceAllowed(path, s.allowedMountRoots); err != nil {
+	if err := sandbox.MountSourceAllowed(path, roots); err != nil {
 		return err
 	}
 	switch info, err := os.Stat(path); {
@@ -903,8 +895,8 @@ func (s *Service) requireSharedFolder(path string) error {
 	}
 }
 
-func (s *Service) ensureSharedFolder(path string) error {
-	err := s.requireSharedFolder(path)
+func ensureFolder(path string, roots sandbox.ShareRoots) error {
+	err := requireFolder(path, roots)
 	if !errors.Is(err, errFolderGone) {
 		return err
 	}
@@ -931,17 +923,16 @@ func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
 			return nil, fmt.Errorf("%w: mounts[%d]: container_path is required", ErrMountInvalid, i)
 		}
 		target := filepath.Clean(m.ContainerPath)
-		// /root is the shared agent-home volume; a user mount there would shadow the
-		// agent's binary + credentials. /workspace is intentionally NOT reserved: it's
-		// the conventional place to mount your code.
-		if target == agentHomeMountTarget {
+		// /root and anything under it may not be shared (see underAgentHome). /workspace is
+		// intentionally NOT reserved: it's the conventional place to mount your code.
+		if underAgentHome(target) {
 			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q is reserved for the agent home",
 				ErrMountInvalid, i, m.ContainerPath)
 		}
 		// Sub-paths of system dirs are deliberately allowed; only the root itself
 		// is blocked (mounting over / would clobber the whole filesystem).
 		if target == "/" {
-			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q cannot be the container root",
+			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q cannot be /",
 				ErrMountInvalid, i, m.ContainerPath)
 		}
 		if prev, dup := seenTargets[target]; dup {
@@ -965,7 +956,6 @@ func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
 			Source:   filepath.Clean(m.HostPath),
 			Target:   target,
 			ReadOnly: readOnly,
-			Type:     sandbox.MountBind,
 		})
 	}
 	return out, nil

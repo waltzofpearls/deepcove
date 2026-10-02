@@ -1,12 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api } from '$lib/api/client';
+  import { api, preflightTimeoutMs } from '$lib/api/client';
   import { usePolling } from '$lib/polling';
   import { discoveryRequired } from '$lib/api/transport';
   import { tailnetAuth, webNodeInfo, wasmHostname, type WebNodeInfo } from '$lib/api/wasm';
   import { machineName } from '$lib/util/tailnet';
   import { nodeHost } from '$lib/api/sessions';
-  import { runtimeNeedsSetup, runtimeSummary } from '$lib/util/runtime';
+  import { runtimeSetupOffered, runtimeSummary } from '$lib/util/runtime';
   import { discovery } from '$lib/stores/discovery.svelte';
   import { sessions } from '$lib/stores/sessions.svelte';
   import { preferences } from '$lib/stores/preferences.svelte';
@@ -87,31 +87,25 @@
   // Bumped by the refresh button, because the fetch below only reruns when the set of machines changes.
   let runtimeEpoch = $state(0);
   const nodeIDs = $derived((nodes ?? []).map((n) => n.stable_node_id).join(','));
-  const runtimeAnswerTimeoutMs = 8000;
   $effect(() => {
     void nodeIDs;
     void runtimeEpoch;
     const list = untrack(() => nodes) ?? [];
     // One per machine, so a slow one does not take the others down with it.
-    const asking: { controller: AbortController; timer: ReturnType<typeof setTimeout> }[] = [];
+    const asking: AbortController[] = [];
     for (const node of list) {
       if (!node.online) continue;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), runtimeAnswerTimeoutMs);
-      asking.push({ controller, timer });
+      asking.push(controller);
       api
-        .preflight(node.self ? undefined : nodeHost(node), controller.signal)
+        .preflight(node.self ? undefined : nodeHost(node), controller.signal, preflightTimeoutMs)
         .then((p) => {
           runtimeInfo = { ...runtimeInfo, [node.stable_node_id]: p.runtimes };
         })
-        .catch(() => {})
-        .finally(() => clearTimeout(timer));
+        .catch(() => {});
     }
     return () => {
-      for (const { controller, timer } of asking) {
-        clearTimeout(timer);
-        controller.abort();
-      }
+      for (const controller of asking) controller.abort();
     };
   });
 
@@ -315,7 +309,7 @@
             mine: node.self ? 'this machine' : undefined,
             online: node.online,
             detail: detailLine(node),
-            needsSetup: runtimeNeedsSetup(runtimeInfo[node.stable_node_id]),
+            needsSetup: runtimeSetupOffered(runtimeInfo[node.stable_node_id]),
             href: `/nodes/${node.stable_node_id}`,
           })}
         {/each}

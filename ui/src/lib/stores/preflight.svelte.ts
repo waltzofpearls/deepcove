@@ -6,19 +6,16 @@
 // Cadence is adaptive. We poll fast while nothing can host a session so
 // the banner clears promptly once something can, and slow when healthy.
 
-import { api } from '$lib/api/client';
-import type { DockerStatus, RuntimesInfo, SessionResources } from '$lib/api/types';
+import { api, preflightTimeoutMs } from '$lib/api/client';
+import type { RuntimesInfo, SessionResources } from '$lib/api/types';
 import { usePolling } from '$lib/polling';
 import { usableRuntimes } from '$lib/util/runtime';
 
 const HEALTHY_MS = 30_000;
 const UNHEALTHY_MS = 5_000;
 
-// Optimistic default: assume reachable until the first poll says
-// otherwise, so we don't flash a "Docker down" banner on load.
-let docker = $state<DockerStatus>({ reachable: true, version: '', message: '' });
-// Null until the first poll, so the New Session form can tell "not asked yet" from "docker only" and
-// avoid flashing a runtime picker that then disappears.
+// Null until the first poll, so the New Session form can tell "not asked yet" from "nothing to run on"
+// and avoid flashing a runtime picker that then disappears.
 let runtimes = $state<RuntimesInfo | null>(null);
 let loaded = $state(false);
 
@@ -28,14 +25,13 @@ let abortCtrl: AbortController | undefined;
 
 async function check(signal?: AbortSignal): Promise<void> {
   try {
-    const p = await api.preflight(undefined, signal);
-    docker = p.docker;
+    // Bounded, so one hung check over the WASM transport cannot stop the polling for good.
+    const p = await api.preflight(undefined, signal, preflightTimeoutMs);
     runtimes = p.runtimes ?? null;
     loaded = true;
   } catch {
-    // A failed preflight fetch itself (the deepcove server, not
-    // Docker) keeps the last known state. The banner reacts only to
-    // docker.reachable, and the sessions store surfaces server-down.
+    // A failed preflight fetch itself keeps the last known state. The
+    // sessions store surfaces server-down.
     if (signal?.aborted) return;
   }
 }
@@ -59,17 +55,11 @@ function stopIfDone(): void {
 }
 
 export const preflight = {
-  get docker(): DockerStatus {
-    return docker;
-  },
   get runtimes(): RuntimesInfo | null {
     return runtimes;
   },
   get loaded(): boolean {
     return loaded;
-  },
-  get dockerReachable(): boolean {
-    return docker.reachable;
   },
   get usableRuntimes(): string[] {
     return usableRuntimes(runtimes);

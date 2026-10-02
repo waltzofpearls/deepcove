@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,32 +9,6 @@ import (
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
-
-func TestService_DockerStatus(t *testing.T) {
-	t.Run("reachable", func(t *testing.T) {
-		svc, fake, _, _ := newTestService(t)
-		fake.pingVersion = "1.51"
-		st := svc.dockerStatus(context.Background())
-		if !st.Reachable {
-			t.Fatalf("want reachable, got %+v", st)
-		}
-		if st.Version != "1.51" {
-			t.Errorf("version = %q, want 1.51", st.Version)
-		}
-	})
-
-	t.Run("unreachable wraps ErrUnavailable", func(t *testing.T) {
-		svc, fake, _, _ := newTestService(t)
-		fake.pingErr = fmt.Errorf("%w: dial unix: connect: connection refused", sandbox.ErrUnavailable)
-		st := svc.dockerStatus(context.Background())
-		if st.Reachable {
-			t.Fatalf("want unreachable, got %+v", st)
-		}
-		if st.Message == "" {
-			t.Error("want a human-facing message when unreachable")
-		}
-	})
-}
 
 func TestHandlePreflight(t *testing.T) {
 	svc, fake, _, _ := newTestService(t)
@@ -51,8 +24,8 @@ func TestHandlePreflight(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Docker.Reachable {
-		t.Errorf("docker.reachable = true, want false")
+	if resp.Runtimes.Unavailable[runtimeFake] == "" {
+		t.Errorf("unavailable = %v, want the down runtime reported", resp.Runtimes.Unavailable)
 	}
 }
 
@@ -64,7 +37,6 @@ func TestWriteSandboxError(t *testing.T) {
 		wantCode   string
 	}{
 		{"unavailable", fmt.Errorf("wrap: %w", sandbox.ErrUnavailable), http.StatusServiceUnavailable, codeRuntimeUnavailable},
-		{"image not found", fmt.Errorf("wrap: %w", sandbox.ErrImageNotFound), http.StatusUnprocessableEntity, codeImageNotFound},
 		{"sandbox not found", fmt.Errorf("wrap: %w", sandbox.ErrNotFound), http.StatusNotFound, codeNotFound},
 		{"session not found", fmt.Errorf("wrap: %w", ErrNotFound), http.StatusNotFound, codeNotFound},
 		{"conflict", fmt.Errorf("wrap: %w", sandbox.ErrConflict), http.StatusConflict, codeConflict},
@@ -86,6 +58,25 @@ func TestWriteSandboxError(t *testing.T) {
 			}
 			if body.Code != tc.wantCode {
 				t.Errorf("code = %q, want %q", body.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestUnavailableReason(t *testing.T) {
+	cases := []struct {
+		runtime string
+		want    string
+	}{
+		{runtime: RuntimeAppleVF, want: "The virtual machine runtime isn't responding."},
+		{runtime: RuntimeCloudHV, want: "The virtual machine runtime isn't responding."},
+		{runtime: RuntimeSandboxless, want: "tmux isn't installed. Sessions with no sandbox need it."},
+		{runtime: "something new", want: "This runtime isn't available right now."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.runtime, func(t *testing.T) {
+			if got := unavailableReason(tc.runtime); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

@@ -1,20 +1,14 @@
 // Package sandbox abstracts the runtime layer that hosts coding-agent sessions. Drivers live in
-// sibling subpackages (e.g. sandbox/docker) so the heavy SDK dependencies of each backend don't leak
-// into callers that only need the interface, the same pattern as database/sql vs. database/sql/driver.
+// sibling subpackages (e.g. sandbox/vm) so each backend's dependencies stay out of callers that only
+// need the interface, the same pattern as database/sql vs. database/sql/driver.
 //
 // Design highlights:
-//   - Every session runs inside a sandbox. There is no "no-sandbox" fast path.
-//   - The interface accommodates per-session microVMs (Firecracker, Apple Virtualization.framework)
-//     as well as containers (Docker). Snapshot/Restore are optional and return ErrNotSupported on
-//     backends that lack them.
+//   - The interface accommodates per-session VMs (Cloud Hypervisor, Apple Virtualization.framework)
+//     as well as running on the machine itself (sandboxless). Snapshot/Restore are optional and
+//     return ErrNotSupported on backends that lack them.
 //   - SandboxSpec.Mounts only ever points at host paths this node owns. Sessions never cross host
-//     boundaries. ValidateSpec enforces this for every driver.
-//   - Tailscale membership (tsnet) is the node's, not the sandbox's. Network here is just the
-//     sandbox's own netns / port mapping.
-//
-// v1 ships with the Docker driver only. The interface is locked down from day one so the session
-// layer doesn't grow Docker-specific assumptions that would have to be unwound when a second driver
-// lands.
+//     boundaries. The VM driver enforces this with ValidateSpec; sandboxless takes no mounts.
+//   - Tailscale membership (tsnet) is the node's, not the sandbox's.
 package sandbox
 
 import (
@@ -24,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -32,7 +27,7 @@ import (
 // these so the session layer can react portably:
 //
 //   - ErrNotSupported: the operation isn't implemented by this driver
-//     (e.g. Snapshot on Docker). Treat as a perf-only signal.
+//     (e.g. Snapshot on sandboxless). Treat as a perf-only signal.
 //   - ErrNotFound: the id doesn't refer to a live sandbox (e.g.
 //     someone destroyed it out of band). Stop/Destroy can treat this
 //     as idempotent success.
@@ -43,17 +38,10 @@ var (
 	ErrNotFound     = errors.New("sandbox: not found")
 	ErrConflict     = errors.New("sandbox: lifecycle conflict")
 
-	// ErrUnavailable means the backend itself is unreachable: the Docker daemon isn't running, the
-	// socket is gone, etc. Distinct from ErrNotFound (the backend is up but the sandbox/image is
-	// absent). The session layer maps this to a 503 + actionable "start Docker" guidance instead of
-	// a raw socket error.
+	// ErrUnavailable means the backend itself is unreachable. Distinct from ErrNotFound (the backend
+	// is up but the sandbox is absent). The session layer maps this to a 503 with a plain message
+	// instead of a raw error.
 	ErrUnavailable = errors.New("sandbox: backend unavailable")
-
-	// ErrImageNotFound means the requested image isn't present on the
-	// backend and hasn't been pulled. The session layer maps this to a
-	// 422 so the UI can offer to download it, rather than surfacing the
-	// daemon's raw "No such image" string.
-	ErrImageNotFound = errors.New("sandbox: image not found")
 )
 
 // Pinger is an optional capability: a driver that can cheaply check
@@ -62,17 +50,16 @@ var (
 // don't implement it are treated as "readiness unknown."
 type Pinger interface {
 	// Ping reports backend liveness. The returned string is a
-	// human-meaningful version identifier (e.g. the Docker API
-	// version) when reachable; it's best-effort and may be empty.
+	// human-meaningful version identifier when reachable; it's
+	// best-effort and may be empty.
 	// A non-nil error (typically wrapping ErrUnavailable) means the
 	// backend is unreachable.
 	Ping(ctx context.Context) (version string, err error)
 }
 
-// ImageManager is an optional capability for container-style backends
-// that pull images from a registry. microVM backends that materialize
-// a rootfs differently won't implement it, and the session layer skips
-// the image-readiness path for them.
+// ImageManager is an optional capability for backends that build sessions from an OCI image, so the
+// session layer can say whether a create has a download ahead of it. A backend without images, like
+// sandboxless, skips the image-readiness path.
 type ImageManager interface {
 	// ImageExists reports whether ref is already present locally.
 	ImageExists(ctx context.Context, ref string) (bool, error)
@@ -97,7 +84,7 @@ type PullProgress struct {
 // that asks for nothing. It exists so the create form can show the real numbers instead of the word
 // "default", which tells a user nothing about what they are about to get.
 //
-// A driver that imposes no limit of its own (Docker leaves a container free to use the whole host)
+// A driver that imposes no limit of its own (sandboxless leaves a session free to use the whole host)
 // should NOT implement this: reporting the host's size as a "default" would read as an allocation.
 type ResourceDefaulter interface {
 	// DefaultResources is what a sandbox gets when its spec asks for nothing. A zero field means the
@@ -165,8 +152,8 @@ type AgentProvisioner interface {
 // Agent is which coding agent a sandbox hosts, and for a runtime with no guest, how to put it there.
 //
 // Name is all a guest runtime needs: it brokers the agent's login with the host under that name, since
-// it cannot share the named volume that gives container sessions one shared login. The rest is for a
-// runtime that installs the agent on the machine itself.
+// two guests cannot share one login disk. The rest is for a runtime that installs the agent on the
+// machine itself.
 type Agent struct {
 	Name string
 	// Binary is what to look for on PATH and in the agent home.
@@ -199,8 +186,8 @@ type SetupState struct {
 }
 
 // InstanceState is a sandbox's lifecycle state as the driver sees it, normalized across backends. A
-// driver with a richer native vocabulary (Docker's paused, restarting, exited, dead) maps onto these,
-// because the view exists to answer "is this thing still holding resources", not to mirror Docker.
+// driver with a richer native vocabulary maps onto these, because the view exists to answer "is this
+// thing still holding resources", not to mirror the backend.
 type InstanceState string
 
 const (
@@ -229,8 +216,7 @@ type Instance struct {
 	// image you no longer use.
 	Image string
 	// Mounts are the host folders shared into this sandbox, so a view can say what a machine is working
-	// on without joining against a session. Driver managed volumes are left out: their source is a
-	// volume name, which means nothing to a reader.
+	// on without joining against a session.
 	Mounts []Mount
 	// Resources are what the sandbox was actually given, which is not always what was asked for: a VM
 	// rounds CPU up to whole cores, and a zero field means the driver's own default applied.
@@ -243,8 +229,7 @@ type Instance struct {
 // into the same driver; do not interpret its contents. Drivers may key their own state off it.
 type ID string
 
-// Sandbox is the surface every driver implements. The minimal set covering Docker, Firecracker, and
-// Apple Virtualization.framework.
+// Sandbox is the surface every driver implements.
 type Sandbox interface {
 	// Lifecycle.
 	Create(ctx context.Context, spec SandboxSpec) (ID, error)
@@ -273,30 +258,26 @@ type Sandbox interface {
 	Snapshot(ctx context.Context, sandboxID ID) (SnapshotID, error)
 	Restore(ctx context.Context, sandboxID ID, id SnapshotID) error
 
-	// RemoveStorage deletes a named persistent storage primitive (e.g. a Docker volume, a microVM
-	// volume image) by name. Used by the session layer to clean up the agent-home volume when a
-	// session is destroyed; named volumes survive container removal by design, so destroy needs a
-	// separate step to release them. Drivers without named storage return ErrNotSupported; the
-	// session layer treats that as a no-op. ErrNotFound is returned if the name doesn't exist.
-	RemoveStorage(ctx context.Context, name string) error
+	// RemoveStorage deletes the storage a driver keeps for a session across recreates (e.g. a VM's home
+	// disk), named by SandboxSpec.SessionID. Destroy leaves it by design, so the session layer calls this
+	// when the session itself goes. Removing storage that does not exist is not an error.
+	RemoveStorage(ctx context.Context, sessionID string) error
 }
 
-// SandboxSpec is the create-time configuration for a sandbox. Drivers
-// translate this into their own native representation (container
-// config, microVM JSON, etc).
+// SandboxSpec is the create-time configuration for a sandbox. Drivers translate it into their own
+// native representation.
 type SandboxSpec struct {
 	// SessionID is the caller's stable identity for this sandbox, unchanged when the sandbox itself is
 	// recreated. Drivers use it to name storage that must outlive a single sandbox, such as the VM
 	// runtime's per session home disk. Empty means the driver keeps no such storage.
 	SessionID string
 
-	// Image is the canonical OCI image reference. Container drivers
-	// pull it; microVM drivers materialize it to a rootfs at create
-	// time (e.g. via skopeo + umoci or firecracker-containerd).
+	// Image is the canonical OCI image reference. A VM driver flattens it into a read only root
+	// filesystem at create time.
 	Image string
 
-	// Cmd overrides the image's default command (Dockerfile CMD or
-	// equivalent). Nil/empty = use the image default.
+	// Cmd is the entrypoint a guest runs: it sets the agent up and writes its launch script. A runtime with
+	// no guest does its own setup and only checks that Cmd is there.
 	Cmd []string
 
 	// Agent is the coding agent this sandbox hosts.
@@ -311,14 +292,8 @@ type SandboxSpec struct {
 	Env map[string]string
 
 	// Resources caps the sandbox. Zero values mean "no explicit
-	// limit"; drivers pick a sensible default or ignore (e.g. the
-	// Docker driver ignores Resources.Disk because Docker disk quotas
-	// aren't portable across storage drivers).
+	// limit"; drivers pick a sensible default or ignore them.
 	Resources Resources
-
-	// Network configures the sandbox's networking. tsnet membership is not represented here; it lives
-	// on the node, and proxies reach into the sandbox via Network.Ports.
-	Network NetworkConfig
 }
 
 // Mount is a single host→sandbox path mapping.
@@ -326,80 +301,13 @@ type Mount struct {
 	Source   string // host path (must be absolute, cleaned, and under an allowed root)
 	Target   string // path inside the sandbox (must be absolute)
 	ReadOnly bool
-	Type     MountType // Bind = live host share; CopyIn = snapshot at create
 }
-
-// MountType selects the sharing primitive used for a mount. Drivers
-// pick the appropriate native mechanism (bind mount for containers,
-// virtio-fs or 9p for microVMs, or a copy-in for snapshot-style).
-type MountType int
-
-const (
-	// MountBind shares the host path live with the sandbox. Writes
-	// inside the sandbox are visible on the host and vice versa.
-	// Containers implement this as a bind mount; microVMs as virtio-fs
-	// or 9p.
-	MountBind MountType = iota
-
-	// MountCopyIn copies the contents of Source into the sandbox at
-	// create time and does not propagate changes back. Useful for
-	// templates or read-only seed data on microVM backends that
-	// can't (or don't want to) share live.
-	MountCopyIn
-
-	// MountVolume is a driver-managed persistent storage primitive. For Docker: a named volume
-	// (`docker volume`). For microVM backends: a per-volume filesystem image. Survives container
-	// recreate by design; used by the session layer to persist agent state (`/root` and friends)
-	// across the destroy+recreate cycle of an edit-mounts operation. Source is the volume name, not a
-	// host path, so the allowed-roots check is skipped in validateMount.
-	MountVolume
-)
 
 // Resources limits CPU, memory, and disk for a sandbox.
 type Resources struct {
-	CPU    float64 // CPU cores; fractional ok (e.g. 1.5)
+	CPU    float64 // CPU cores; a VM rounds up to whole cores
 	Memory int64   // bytes
-	Disk   int64   // bytes; Docker driver ignores this
-}
-
-// NetworkConfig describes the sandbox's own networking. The
-// node-level tailnet is layered on top of this by the runtime.
-type NetworkConfig struct {
-	// Mode picks the backend's networking primitive. Drivers map
-	// this onto their native concept (Docker network-mode, microVM
-	// netdev, etc).
-	Mode NetworkMode
-
-	// Ports are host:sandbox forwards. Microvm drivers may
-	// implement these via vsock, container drivers via iptables.
-	Ports []PortMapping
-}
-
-// NetworkMode selects the sandbox's networking primitive. The zero value is NetIsolated: a sandbox
-// with no Network field set has no network access, which is the safe default for an agent that hasn't
-// been configured to need it.
-type NetworkMode int
-
-const (
-	// NetIsolated gives the sandbox no network. Useful for batch
-	// jobs that only read host-mounted inputs.
-	NetIsolated NetworkMode = iota
-
-	// NetNAT gives the sandbox outbound network access via a NAT
-	// (Docker bridge, microVM tap, etc) and supports Ports.
-	NetNAT
-
-	// NetHost shares the host's network namespace with the sandbox.
-	// Maximum connectivity, minimum isolation; not all drivers
-	// support it (e.g. microVMs cannot).
-	NetHost
-)
-
-// PortMapping forwards a host port to a sandbox port.
-type PortMapping struct {
-	Host     int
-	Sandbox  int
-	Protocol string // "tcp" or "udp"; empty defaults to "tcp"
+	Disk   int64   // bytes; sizes a VM's writable layer
 }
 
 // ExecSpec is the per-call config for Exec.
@@ -411,16 +319,15 @@ type ExecSpec struct {
 	Stdin      io.Reader         // nil = no stdin
 }
 
-// Process is a handle to a running command inside a sandbox. It owns underlying resources (typically
-// a hijacked connection to the runtime daemon); the caller MUST either Wait it to completion (which
-// closes on return) or call Close to abandon it. Forgetting both leaks goroutines and file
+// Process is a handle to a running command inside a sandbox. It owns underlying resources (typically a
+// vsock connection into the guest, or a local process); the caller MUST either Wait it to completion
+// (which closes on return) or call Close to abandon it. Forgetting both leaks goroutines and file
 // descriptors.
 type Process interface {
 	io.Closer
 
-	// Stdout / Stderr are demultiplexed streams from the running
-	// command. They are closed when the process exits or Close is
-	// called, whichever happens first.
+	// Stdout / Stderr are the running command's output streams. They are closed when the process exits
+	// or Close is called, whichever happens first.
 	Stdout() io.ReadCloser
 	Stderr() io.ReadCloser
 
@@ -456,19 +363,22 @@ type LogOpts struct {
 // SnapshotID names a stored snapshot. The format is driver-defined.
 type SnapshotID string
 
-// ValidateSpec applies the cross-driver mount invariants: mount sources must be absolute, cleaned,
-// and confined under one of allowedRoots. Drivers should call this before invoking their daemon so
-// the same policy is enforced regardless of backend.
-//
-// allowedRoots is the list of host directories the node has decided it is willing to share with
-// sandboxes (typically just the data directory's sessions subtree). An empty allowedRoots means no
-// mounts are allowed at all.
-func ValidateSpec(s SandboxSpec, allowedRoots []string) error {
+// ShareRoots says which host folders a node will share into a sandbox. A shared folder must sit in one
+// of Allowed, and may not equal, sit inside or contain any of Refused. Empty Allowed shares nothing.
+type ShareRoots struct {
+	Allowed []string
+	Refused []string
+}
+
+// ValidateSpec checks a spec before a driver builds anything from it: it needs an image, and every mount
+// source must be absolute, cleaned, and allowed by roots. Drivers that share host folders call it, so the
+// same policy holds regardless of backend; sandboxless takes no image and no mounts, so it does not.
+func ValidateSpec(s SandboxSpec, roots ShareRoots) error {
 	if s.Image == "" {
 		return fmt.Errorf("sandbox: spec.Image is required")
 	}
 	for i, m := range s.Mounts {
-		if err := validateMount(m, allowedRoots); err != nil {
+		if err := validateMount(m, roots); err != nil {
 			return fmt.Errorf("sandbox: spec.Mounts[%d]: %w", i, err)
 		}
 	}
@@ -477,23 +387,16 @@ func ValidateSpec(s SandboxSpec, allowedRoots []string) error {
 
 // MountSourceAllowed reports whether a host folder may be shared into a sandbox. Exported so the
 // session layer can refuse one up front, by the same rule the drivers enforce at create time.
-func MountSourceAllowed(source string, allowedRoots []string) error {
-	return validateMount(Mount{Source: source, Target: "/mnt", Type: MountBind}, allowedRoots)
+func MountSourceAllowed(source string, roots ShareRoots) error {
+	return validateMount(Mount{Source: source, Target: "/mnt"}, roots)
 }
 
-func validateMount(m Mount, allowedRoots []string) error {
+func validateMount(m Mount, roots ShareRoots) error {
 	if m.Source == "" {
 		return fmt.Errorf("mount source is empty")
 	}
 	if !filepath.IsAbs(m.Target) {
 		return fmt.Errorf("mount target %q is not absolute", m.Target)
-	}
-	// Volume mounts use Source as a driver-managed volume name, not a host path. They don't go through
-	// the allowed-roots gate because the storage lives outside the host filesystem from the user's POV
-	// (Docker volumes are stored under the daemon's data dir, not $HOME). Only the host-path checks
-	// below are skipped; empty and non-absolute target still get caught above.
-	if m.Type == MountVolume {
-		return nil
 	}
 	if !filepath.IsAbs(m.Source) {
 		return fmt.Errorf("mount source %q is not absolute", m.Source)
@@ -502,11 +405,67 @@ func validateMount(m Mount, allowedRoots []string) error {
 	if cleaned != m.Source {
 		return fmt.Errorf("mount source %q is not in cleaned form (want %q)", m.Source, cleaned)
 	}
-	for _, root := range allowedRoots {
-		root = filepath.Clean(root)
-		if cleaned == root || strings.HasPrefix(cleaned, root+string(filepath.Separator)) {
+	source := ResolveSymlinks(cleaned)
+	for _, refused := range roots.Refused {
+		folder := ResolveSymlinks(filepath.Clean(refused))
+		if isSameFolderOrInside(source, folder) || isSameFolderOrInside(folder, source) {
+			return fmt.Errorf("%s can't be shared: %s holds deepcove's own files, and a session could change them",
+				m.Source, refused)
+		}
+	}
+	for _, root := range roots.Allowed {
+		if isSameFolderOrInside(source, ResolveSymlinks(filepath.Clean(root))) {
 			return nil
 		}
 	}
-	return fmt.Errorf("mount source %q is outside the allowed roots", m.Source)
+	allowed := strings.Join(roots.Allowed, ", ")
+	// Inside as typed, outside once its links are followed: say it was a link, or the refusal reads wrong.
+	for _, root := range roots.Allowed {
+		if isSameFolderOrInside(cleaned, filepath.Clean(root)) {
+			return fmt.Errorf("%s can't be shared: it is a link to %s, which is outside %s. Only folders inside %s can be shared",
+				m.Source, source, allowed, allowed)
+		}
+	}
+	return fmt.Errorf("%s can't be shared: only folders inside %s can", m.Source, allowed)
+}
+
+// isSameFolderOrInside reports whether path is folder or inside it. The spellings are compared first,
+// ignoring case on macOS, whose disk ignores it too, so this holds even for a folder not created yet.
+// Where both exist, the folders themselves are compared, which catches any other spelling of the same one.
+func isSameFolderOrInside(path, folder string) bool {
+	spelledPath, spelledFolder := path, folder
+	if runtime.GOOS == "darwin" {
+		spelledPath, spelledFolder = strings.ToLower(path), strings.ToLower(folder)
+	}
+	if spelledPath == spelledFolder || strings.HasPrefix(spelledPath, spelledFolder+string(filepath.Separator)) {
+		return true
+	}
+	folderInfo, err := os.Stat(folder)
+	if err != nil {
+		return false
+	}
+	for current := path; ; current = filepath.Dir(current) {
+		if info, err := os.Stat(current); err == nil && os.SameFile(info, folderInfo) {
+			return true
+		}
+		if current == filepath.Dir(current) {
+			return false
+		}
+	}
+}
+
+// ResolveSymlinks follows every link in path, so a link inside an allowed root cannot point a share
+// somewhere else. The part that does not exist yet is kept as written, since a folder can be created
+// after it is checked.
+func ResolveSymlinks(path string) string {
+	rest := ""
+	for current := path; ; current = filepath.Dir(current) {
+		if real, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(real, rest)
+		}
+		if current == filepath.Dir(current) {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(current), rest)
+	}
 }

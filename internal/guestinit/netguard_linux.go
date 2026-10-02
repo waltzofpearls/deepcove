@@ -26,8 +26,9 @@ import (
 // blockedPrefixes are the networks a sandbox must not reach. Both families: the guest gets an IPv6
 // address and a default route even though vmnet gives it no path to the IPv6 internet.
 //
-// The guest's own subnet is deliberately absent. DHCP and router advertisement install a more specific
-// route for it, and the kernel picks the longest match, so the gateway and the internet keep working.
+// The guest's own subnet is deliberately absent, so the gateway and the internet keep working (its route
+// is more specific). On Linux nothing else is there (passt's subnet is a reserved one). On a Mac it is
+// vmnet's shared network: the Mac and the other session VMs are reachable (v1 item 1d).
 var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("172.16.0.0/12"),

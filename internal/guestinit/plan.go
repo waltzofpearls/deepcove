@@ -1,19 +1,20 @@
-// Package guestinit is the PID 1 that runs inside an Apple VF (and later Firecracker) session VM. The
+// Package guestinit is the PID 1 that runs inside an Apple VF or Cloud Hypervisor session VM. The
 // kernel boots the read only ext4 base directly and hands control to the deepcove init binary, baked
 // into the image at InitPath. Init overlays a writable layer on the read only root, pivots into it,
-// brings up the pseudo filesystems, and launches the agent under tmux with the same session shape the
-// Docker runtime uses, so attach and preview work unchanged.
+// brings up the pseudo filesystems, and runs the session's setup. The host then starts the agent over
+// the exec service.
 //
 // The syscall choreography lives in run_linux.go and can only be exercised inside a real guest boot. The
-// pure decisions (overlay options, the tmux launch argv, the mount table) live here so they are unit
+// pure decisions (overlay options, the mount table, the default environment) live here so they are unit
 // tested on any OS, including the Linux CI runner.
 package guestinit
 
 import (
-	"encoding/json"
 	"errors"
 	"strconv"
 	"syscall"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 // InitPath is where the init binary is baked into the rootfs, and what the kernel command line's
@@ -102,8 +103,8 @@ func dhcpCandidates() []dhcpCommand {
 	}
 }
 
-// shellCandidates are the shells init tries, in order, when it has to drop to a console. Container
-// images vary: busybox based ones (alpine) have /bin/sh, glibc ones usually add bash. All absolute,
+// shellCandidates are the shells init tries, in order, when it has to drop to a console. OCI images
+// vary: busybox based ones (alpine) have /bin/sh, glibc ones usually add bash. All absolute,
 // because PATH lookups are unreliable this early (see defaultEnv).
 func shellCandidates() []string {
 	return []string{"/bin/sh", "/bin/bash", "/busybox/sh"}
@@ -112,15 +113,15 @@ func shellCandidates() []string {
 // defaultEnv is the environment init installs for itself and therefore for every process it starts.
 //
 // The kernel hands PID 1 an almost empty environment with no PATH at all, so a bare command name like
-// "tmux" fails to resolve even when the binary is present in the image. Docker never hits this because
-// it sets PATH from the image config; a direct kernel boot has no such step, so init must do it.
+// "tmux" fails to resolve even when the binary is present in the image. A direct kernel boot never reads
+// PATH from the image config, so init must set it.
 func defaultEnv() map[string]string {
 	return map[string]string{
 		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME": "/root",
+		"HOME": sandbox.SandboxedAgentHome,
 		"TERM": "xterm-256color",
 		// C.UTF-8 keeps tmux, less, and git pagers from substituting non ASCII bytes, matching what the
-		// agent image sets for the Docker runtime.
+		// agent image sets.
 		"LANG": "C.UTF-8",
 	}
 }
@@ -130,45 +131,6 @@ func defaultEnv() map[string]string {
 // back EBUSY. Treating that as success is required: returning the error kills init and panics the guest.
 func mountAlreadyDone(err error) bool {
 	return errors.Is(err, syscall.EBUSY)
-}
-
-// agentHome is where the agent keeps its state and credentials inside the guest, matching the /root
-// volume the Docker runtime mounts.
-const agentHome = "/root"
-
-// credentialPaths are the files brokered between the host and the guest, relative to agentHome. Keeping
-// this an explicit list means a session hands back exactly its login state, not whatever else the agent
-// happened to leave in its home directory.
-func credentialPaths() []string {
-	return []string{
-		credentialFile,
-		".claude.json",
-	}
-}
-
-// credentialFile holds the login itself, as opposed to the settings alongside it.
-const credentialFile = ".claude/.credentials.json"
-
-// bundleHasLogin reports whether a bundle is worth sending to the host.
-//
-// A logged out Claude leaves the credentials file in place with empty tokens, so "the file exists" is
-// not enough: pushing that replaces a good login on the host, and every session created afterwards
-// starts logged out. Claude specific, like credentialPaths above.
-func bundleHasLogin(files map[string][]byte) bool {
-	data, ok := files[credentialFile]
-	if !ok {
-		return false
-	}
-	var creds struct {
-		OAuth struct {
-			AccessToken  string `json:"accessToken"`
-			RefreshToken string `json:"refreshToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return false
-	}
-	return creds.OAuth.AccessToken != "" || creds.OAuth.RefreshToken != ""
 }
 
 // tmpfsSizeOption renders the mount option that caps a tmpfs, or "" to leave it at the default. The

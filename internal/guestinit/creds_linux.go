@@ -14,6 +14,7 @@ import (
 
 	"github.com/mdlayher/vsock"
 	"github.com/waltzofpearls/deepcove/internal/credbroker"
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 // hostContextID is the well known vsock address of the host, which is what the guest dials to reach the
@@ -44,7 +45,7 @@ func fetchCredentials(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := writeCredentialFiles(files); err != nil {
+	if err := writeCredentialFiles(credbroker.KeepAgentFiles(cfg.Agent, files)); err != nil {
 		return err
 	}
 	logf("restored %d credential file(s) for %q", len(files), cfg.Agent)
@@ -58,9 +59,8 @@ const credentialPollInterval = 5 * time.Second
 // watchCredentials pushes the agent's login to the host whenever it changes, for the life of the VM.
 //
 // Pushing only at shutdown is not enough: sessions run concurrently, so logging in inside one VM has to
-// reach the host while that VM is still alive, or a session created afterwards starts logged out. The
-// Docker runtime gets this for free by sharing one live volume; VMs cannot share a disk, so the guest
-// has to tell the host.
+// reach the host while that VM is still alive, or a session created afterwards starts logged out. VMs
+// cannot share a disk, so the guest has to tell the host.
 func watchCredentials(cfg Config) {
 	if cfg.Agent == "" {
 		return // a gateway credential profile brokers nothing
@@ -69,8 +69,8 @@ func watchCredentials(cfg Config) {
 	for {
 		time.Sleep(credentialPollInterval)
 
-		files, err := readCredentialFiles()
-		if err != nil || !bundleHasLogin(files) {
+		files, err := readCredentialFiles(cfg.Agent)
+		if err != nil || !credbroker.HasLogin(cfg.Agent, files) {
 			// No login here to share. Never push one: it would wipe a good login on the host, and a
 			// logout in one session is not a logout everywhere.
 			continue
@@ -119,8 +119,8 @@ func returnCredentials(cfg Config) error {
 	if cfg.Agent == "" {
 		return nil
 	}
-	files, err := readCredentialFiles()
-	if err != nil || !bundleHasLogin(files) {
+	files, err := readCredentialFiles(cfg.Agent)
+	if err != nil || !credbroker.HasLogin(cfg.Agent, files) {
 		return err
 	}
 	if err := pushCredentials(cfg.Agent, files); err != nil {
@@ -134,7 +134,7 @@ func returnCredentials(cfg Config) error {
 // owner only because they are secrets.
 func writeCredentialFiles(files map[string][]byte) error {
 	for rel, data := range files {
-		path := filepath.Join(agentHome, rel)
+		path := filepath.Join(sandbox.SandboxedAgentHome, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 		}
@@ -147,10 +147,10 @@ func writeCredentialFiles(files map[string][]byte) error {
 
 // readCredentialFiles collects the agent's credential files for the trip back to the host. Missing files
 // are skipped rather than treated as an error, since the agent may never have created them.
-func readCredentialFiles() (map[string][]byte, error) {
+func readCredentialFiles(agent string) (map[string][]byte, error) {
 	var files map[string][]byte
-	for _, rel := range credentialPaths() {
-		data, err := os.ReadFile(filepath.Join(agentHome, rel))
+	for _, rel := range credbroker.AgentFiles(agent) {
+		data, err := os.ReadFile(filepath.Join(sandbox.SandboxedAgentHome, rel))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

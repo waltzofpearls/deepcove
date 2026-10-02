@@ -21,8 +21,7 @@ import (
 )
 
 // imageStore turns an OCI image reference into a read only ext4 base image, cached by image digest so a
-// given image is pulled and flattened at most once per node. Pulling goes straight to the registry (no
-// Docker), which is why the VF runtime has no Docker dependency.
+// given image is pulled and flattened at most once per node. Pulling goes straight to the registry.
 //
 // resolveDigest and pull are fields rather than direct calls so tests can drive the cache and flatten
 // logic with a synthetic image and no network.

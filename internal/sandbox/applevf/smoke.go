@@ -73,7 +73,7 @@ func BootSmoke(s SmokeSpec) (SmokeMachine, error) {
 		return nil, err
 	}
 	if s.CredStore != nil {
-		if err := m.ServeCredentials(s.CredStore); err != nil {
+		if err := m.ServeCredentials(s.CredStore, s.Agent); err != nil {
 			_ = m.Stop()
 			return nil, err
 		}

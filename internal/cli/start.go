@@ -126,21 +126,16 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	sessionSvc.SetTailnetClient(tailnetClient)
 
-	runtimes, err := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger, tailnetClient)
-	if err != nil {
-		return err
-	}
+	runtimes := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger, tailnetClient)
 	defer runtimes.close()
 	// Defers unwind in reverse, so this runs before the runtimes and the database close. Terminal
 	// streams survive the HTTP drain (their connection is hijacked) and need both to clean up.
 	defer sessionSvc.CloseAttachStreams(attachCloseGrace)
 
-	// Chosen once, after everything has registered, so the answer does not depend on registration order.
+	// Chosen after everything has registered, so the answer does not depend on registration order, and
+	// again when a runtime is installed later.
 	if err := sessionSvc.SelectDefaultRuntime(ctx, cfg.DefaultRuntime); err != nil {
-		logger.Warn("requested default runtime is unavailable on this node", "requested", cfg.DefaultRuntime, "err", err)
-		if err := sessionSvc.SelectDefaultRuntime(ctx, ""); err != nil {
-			return fmt.Errorf("session: %w", err)
-		}
+		logger.Warn("requested default runtime is not provided on this node; picking the best default it has, which may be none", "requested", cfg.DefaultRuntime, "err", err)
 	}
 	logger.Info("runtimes available", "runtimes", sessionSvc.Runtimes(), "default", sessionSvc.DefaultRuntime())
 
@@ -171,7 +166,6 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	sessionSvc.AttachRoutes(mux)
 	if err := ui.New(
-		ui.WithConfig(cfg),
 		ui.WithMux(mux),
 		ui.WithTransport(cfg.Transport),
 		ui.WithTarget(cfg.WasmTarget),
@@ -234,7 +228,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	fmt.Printf("  deepcove:  %s\n", url)
 	fmt.Println()
 
-	logger.Info("server listening", "url", url, "socket", sockPath, "is_dev", cfg.IsDev)
+	logger.Info("server listening", "url", url, "socket", sockPath)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {

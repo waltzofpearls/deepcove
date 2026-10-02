@@ -2,14 +2,15 @@ package session
 
 import (
 	"context"
+	"errors"
 	"sort"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
-// A node can know about a runtime it cannot provide. The VM runtime needs a guest kernel on disk, so a
-// machine without one offers only containers, and until now that machine looked like it simply did not
-// support VMs: nothing registered, so nothing appeared anywhere.
+// A node can know about a runtime it cannot provide. The VM runtime needs a guest kernel on disk, and a
+// machine without one used to look like it simply did not support VMs: nothing registered, so nothing
+// appeared anywhere.
 //
 // This is the third state. Registered means a session can land on it. Unavailable means it is registered
 // but its backend is not answering right now. Missing means the driver was never built, and something
@@ -26,6 +27,12 @@ const (
 	MissingHostBinaries = "no_host_binaries"
 	// MissingTmux: tmux is not installed, and installing it needs a package manager and a password.
 	MissingTmux = "no_tmux"
+	// MissingKVM: this Linux host has no KVM, or this user can't open /dev/kvm (joining the kvm group and
+	// rebooting fixes that).
+	// Nothing to download fixes it.
+	MissingKVM = "no_kvm"
+	// MissingStartFailed: everything is there, but the runtime would not start. The log says why.
+	MissingStartFailed = "start_failed"
 )
 
 // RuntimeInstaller sets up a runtime this node is missing, reporting progress as it goes. On success the
@@ -69,6 +76,34 @@ func (s *Service) runtimeInstaller(name string) (RuntimeInstaller, bool) {
 	defer s.missingMu.Unlock()
 	install, ok := s.runtimeInstallers[name]
 	return install, ok
+}
+
+var (
+	errRuntimeNotMissing = errors.New("this runtime does not need setting up")
+	errRuntimeBeingSetUp = errors.New("this runtime is already being set up")
+)
+
+// startRuntimeSetup claims name for one setup at a time. Both checks sit under one lock, so a request
+// that arrives as another setup finishes sees the runtime as set up rather than starting a second
+// install. That install would rebuild the runtime and stop the session VMs already running on it.
+func (s *Service) startRuntimeSetup(name string) (finish func(), err error) {
+	s.missingMu.Lock()
+	defer s.missingMu.Unlock()
+	if _, missing := s.missingRuntimes[name]; !missing {
+		return nil, errRuntimeNotMissing
+	}
+	if s.runtimesSettingUp[name] {
+		return nil, errRuntimeBeingSetUp
+	}
+	if s.runtimesSettingUp == nil {
+		s.runtimesSettingUp = make(map[string]bool)
+	}
+	s.runtimesSettingUp[name] = true
+	return func() {
+		s.missingMu.Lock()
+		defer s.missingMu.Unlock()
+		delete(s.runtimesSettingUp, name)
+	}, nil
 }
 
 // MissingRuntimes returns what this node cannot provide, keyed by runtime name.

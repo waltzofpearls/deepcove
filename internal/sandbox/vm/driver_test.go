@@ -93,6 +93,108 @@ func TestCreateRequiresAnEntrypoint(t *testing.T) {
 	}
 }
 
+// Start shares the stored folders without checking them again, so Create and Restart are the only gate
+// between a spec and the host's files.
+func TestDriver_RefusesAFolderOutsideTheAllowedRoots(t *testing.T) {
+	cmd := []string{"sh", "-c", "true"}
+	outside := sandbox.SandboxSpec{
+		Image:  "img:tag",
+		Cmd:    cmd,
+		Mounts: []sandbox.Mount{{Source: "/etc", Target: "/workspace"}},
+	}
+
+	t.Run("create", func(t *testing.T) {
+		d := newTestDriver(t)
+		d.shareRoots = sandbox.ShareRoots{Allowed: []string{"/Users/me"}}
+		if _, err := d.Create(context.Background(), outside); err == nil || !strings.Contains(err.Error(), "only folders inside") {
+			t.Errorf("error = %v, want the folder refused as outside the allowed roots", err)
+		}
+	})
+
+	t.Run("restart", func(t *testing.T) {
+		d := newTestDriver(t)
+		d.shareRoots = sandbox.ShareRoots{Allowed: []string{"/Users/me"}}
+		id, err := d.Create(context.Background(), sandbox.SandboxSpec{Image: "img:tag", Cmd: cmd})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := d.Restart(context.Background(), id, outside); err == nil || !strings.Contains(err.Error(), "only folders inside") {
+			t.Errorf("error = %v, want the folder refused as outside the allowed roots", err)
+		}
+		// Refused before anything changed, so the next Start still shares only what was checked.
+		state, err := d.lookup(id)
+		if err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+		if len(state.spec.Mounts) != 0 {
+			t.Errorf("the refused folders were stored anyway: %v", state.spec.Mounts)
+		}
+	})
+}
+
+func TestDriver_RefusesAShareUnderTheGuestHome(t *testing.T) {
+	cases := []struct {
+		target      string
+		wantRefused bool
+	}{
+		{target: "/root", wantRefused: true},
+		{target: "/root/.ssh", wantRefused: true},
+		{target: "/root/../root/x", wantRefused: true},
+		{target: "/rootless", wantRefused: false},
+		{target: "/workspace", wantRefused: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.target, func(t *testing.T) {
+			d := newTestDriver(t)
+			d.shareRoots = sandbox.ShareRoots{Allowed: []string{"/Users/me"}}
+			_, err := d.Create(context.Background(), sandbox.SandboxSpec{
+				Image:  "img:tag",
+				Cmd:    []string{"sh", "-c", "true"},
+				Mounts: []sandbox.Mount{{Source: "/Users/me/code", Target: tc.target}},
+			})
+			refused := err != nil && strings.Contains(err.Error(), "agent's home")
+			if refused != tc.wantRefused {
+				t.Errorf("error = %v, want refused %v", err, tc.wantRefused)
+			}
+		})
+	}
+}
+
+func TestDriver_Start_RechecksTheShares(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(home, "data")
+	project := filepath.Join(home, "project")
+	for _, dir := range []string{dataDir, project} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := newTestDriver(t)
+	d.shareRoots = sandbox.ShareRoots{Allowed: []string{home}, Refused: []string{dataDir}}
+	id, err := d.Create(context.Background(), sandbox.SandboxSpec{
+		Image:  "img:tag",
+		Cmd:    []string{"sh", "-c", "true"},
+		Mounts: []sandbox.Mount{{Source: project, Target: "/workspace"}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// What a guest that can write next to the share could do while the session is stopped.
+	if err := os.Remove(project); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dataDir, project); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Start(context.Background(), id); err == nil || !strings.Contains(err.Error(), "deepcove's own files") {
+		t.Errorf("Start error = %v, want the swapped folder refused", err)
+	}
+}
+
 func TestHandlesAreUnique(t *testing.T) {
 	d := newTestDriver(t)
 	spec := sandbox.SandboxSpec{Image: "ghcr.io/x/agent:latest", Cmd: []string{"sh", "-c", "true"}}
@@ -164,8 +266,8 @@ func TestDestroyForgetsTheSandbox(t *testing.T) {
 	}
 }
 
-// A VM needs concrete CPU and memory values, unlike a container that can inherit the host's, so an unset
-// limit has to become a sensible default rather than zero.
+// A VM needs concrete CPU and memory values, so an unset limit has to become a sensible default rather
+// than zero.
 func TestResourceDefaults(t *testing.T) {
 	if got := cpuCount(sandbox.Resources{}); got != defaultCPUCount {
 		t.Errorf("cpuCount(zero) = %d, want %d", got, defaultCPUCount)
@@ -279,6 +381,23 @@ func TestListSandboxes(t *testing.T) {
 	}
 }
 
+// The spec's folders were checked at create or restart, and Start shares them without checking again. A
+// caller editing the list it was handed must not change what the VM gets.
+func TestListSandboxes_HandsOutACopyOfTheMounts(t *testing.T) {
+	shared := []sandbox.Mount{{Source: "/Users/me/code", Target: "/workspace"}}
+	d := &Driver{sandboxes: map[sandbox.ID]*sandboxState{"vm": {spec: sandbox.SandboxSpec{Mounts: shared}}}}
+
+	got, err := d.ListSandboxes(context.Background())
+	if err != nil {
+		t.Fatalf("ListSandboxes: %v", err)
+	}
+	got[0].Mounts[0].Source = "/etc"
+
+	if source := d.sandboxes["vm"].spec.Mounts[0].Source; source != "/Users/me/code" {
+		t.Errorf("the driver's own spec now shares %q", source)
+	}
+}
+
 // fakeProcess records what was written to stdin and whether it was closed, which is the whole contract
 // streamStdin has to honour.
 type fakeProcess struct {
@@ -328,16 +447,15 @@ type noStdinProcess struct{ sandbox.Process }
 
 func (noStdinProcess) Stdin() io.WriteCloser { return nil }
 
-// Mounts become virtio-fs shares. Volume mounts have no VM equivalent and must be dropped, not shared.
+// Mounts become virtio-fs shares.
 func TestHostShares(t *testing.T) {
 	shares, guest := hostShares([]sandbox.Mount{
-		{Source: "deepcove-agent-claude", Target: "/root"}, // a volume, not a host path
 		{Source: "/Users/me/code", Target: "/workspace"},
 		{Source: "/Users/me/notes", Target: "/notes", ReadOnly: true},
 	})
 
 	if len(shares) != 2 || len(guest) != 2 {
-		t.Fatalf("got %d shares / %d guest mounts, want 2 each (the volume is skipped)", len(shares), len(guest))
+		t.Fatalf("got %d shares / %d guest mounts, want 2 each", len(shares), len(guest))
 	}
 	if shares[0].HostPath != "/Users/me/code" || shares[0].ReadOnly {
 		t.Errorf("share[0] = %+v", shares[0])
@@ -371,17 +489,14 @@ func TestHostSharesWithNoMounts(t *testing.T) {
 // must reuse the same file rather than start over.
 func TestHomeDiskIsPerSessionAndReused(t *testing.T) {
 	d := &Driver{disks: t.TempDir()}
-	spec := sandbox.SandboxSpec{
-		SessionID: "sess-1",
-		Mounts:    []sandbox.Mount{{Source: "vol", Target: "/root", Type: sandbox.MountVolume}},
-	}
+	spec := sandbox.SandboxSpec{SessionID: "sess-1"}
 
 	first, err := d.homeDisk(spec)
 	if err != nil {
 		t.Fatalf("homeDisk: %v", err)
 	}
 	if first == "" {
-		t.Fatal("no disk created for a spec with a volume mount")
+		t.Fatal("no disk created for a spec with a session id")
 	}
 	// Something the agent wrote. A second call must not wipe it.
 	if err := os.WriteFile(first, []byte("state"), 0o600); err != nil {
@@ -401,24 +516,16 @@ func TestHomeDiskIsPerSessionAndReused(t *testing.T) {
 
 func TestHomeDiskSkippedWithoutASession(t *testing.T) {
 	d := &Driver{disks: t.TempDir()}
-	vol := []sandbox.Mount{{Source: "vol", Target: "/root", Type: sandbox.MountVolume}}
 
 	// No session id: nothing stable to name storage after.
-	if got, err := d.homeDisk(sandbox.SandboxSpec{Mounts: vol}); err != nil || got != "" {
+	if got, err := d.homeDisk(sandbox.SandboxSpec{}); err != nil || got != "" {
 		t.Errorf("got %q, %v; want no disk without a session id", got, err)
-	}
-	// No volume mount: this spec does not ask for a persistent home.
-	if got, err := d.homeDisk(sandbox.SandboxSpec{SessionID: "s"}); err != nil || got != "" {
-		t.Errorf("got %q, %v; want no disk without a volume mount", got, err)
 	}
 }
 
 func TestRemoveStorageDeletesTheDisk(t *testing.T) {
 	d := &Driver{disks: t.TempDir()}
-	spec := sandbox.SandboxSpec{
-		SessionID: "sess-2",
-		Mounts:    []sandbox.Mount{{Source: "vol", Target: "/root", Type: sandbox.MountVolume}},
-	}
+	spec := sandbox.SandboxSpec{SessionID: "sess-2"}
 	path, err := d.homeDisk(spec)
 	if err != nil {
 		t.Fatalf("homeDisk: %v", err)
@@ -433,28 +540,6 @@ func TestRemoveStorageDeletesTheDisk(t *testing.T) {
 	// Removing again is how a repeated destroy behaves, and must not be an error.
 	if err := d.RemoveStorage(context.Background(), "sess-2"); err != nil {
 		t.Errorf("second RemoveStorage: %v", err)
-	}
-}
-
-func TestHomeMountTarget(t *testing.T) {
-	cases := []struct {
-		name   string
-		mounts []sandbox.Mount
-		want   string
-	}{
-		{"the volume mount names the home", []sandbox.Mount{
-			{Source: "/host/code", Target: "/workspace"},
-			{Source: "vol", Target: "/root", Type: sandbox.MountVolume},
-		}, "/root"},
-		{"bind mounts alone are not a home", []sandbox.Mount{{Source: "/host/code", Target: "/workspace"}}, ""},
-		{"no mounts", nil, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := homeMountTarget(tc.mounts); got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -491,18 +576,6 @@ func TestNewSweepsStaleSwapDisks(t *testing.T) {
 	}
 	if _, err := os.Stat(home); err != nil {
 		t.Errorf("home disk was removed: %v", err)
-	}
-}
-
-// The agent's home is a driver managed volume, whose source is a name rather than a path. Reporting it
-// as a mount would put a meaningless string in front of the user.
-func TestHostMountsDropsVolumes(t *testing.T) {
-	got := hostMounts([]sandbox.Mount{
-		{Source: "deepcove-agent-claude-home", Target: "/root", Type: sandbox.MountVolume},
-		{Source: "/Users/rollie/Dev", Target: "/workspace", Type: sandbox.MountBind},
-	})
-	if len(got) != 1 || got[0].Source != "/Users/rollie/Dev" {
-		t.Errorf("got %+v, want only the host folder", got)
 	}
 }
 

@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -61,8 +63,8 @@ func TestStartAgentSession(t *testing.T) {
 		}
 	})
 
-	// A container keeps its tmux session across a deepcove restart, and a sandbox built before this
-	// change already has one. Starting again must not spawn a second agent.
+	// A sandboxless session keeps its tmux session across a deepcove restart, so starting again must not
+	// spawn a second agent.
 	t.Run("leaves an existing tmux session alone", func(t *testing.T) {
 		svc, fake, _, _ := newTestService(t)
 		sess := mustRunning(t, svc)
@@ -93,7 +95,7 @@ func TestStartAgentSession(t *testing.T) {
 // machine can carry several sessions and a reboot must bring all of them back, not just one.
 func TestEntrypointPreparesButDoesNotLaunch(t *testing.T) {
 	body := strings.Join(buildEntrypoint("NAME", "SETUP", "LAUNCH"), " ")
-	for _, want := range []string{`session "NAME"`, "SETUP", "#!/bin/sh\nLAUNCH", "sleep infinity"} {
+	for _, want := range []string{`session "NAME"`, "SETUP", "#!/bin/sh\nLAUNCH"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("entrypoint missing %q", want)
 		}
@@ -118,5 +120,38 @@ func TestEntrypointWritesWhatTheRuntimeReadsBack(t *testing.T) {
 		if !strings.Contains(body, line) {
 			t.Errorf("the entrypoint never does %q", line)
 		}
+	}
+}
+
+func TestBuildEntrypoint_RecordsHowSetupEnded(t *testing.T) {
+	cases := []struct {
+		name        string
+		setup       string
+		wantStatus  string
+		wantFailure bool
+	}{
+		{name: "a setup that works", setup: "true", wantStatus: sandbox.SandboxedStatusReady},
+		{name: "a setup that fails", setup: "false", wantStatus: sandbox.SandboxedStatusErrored, wantFailure: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The script writes to absolute guest paths, so run it with each one moved under a temp dir. A new
+			// path in buildEntrypoint needs a line here too, or this test writes to the real one.
+			root := t.TempDir()
+			moved := strings.NewReplacer("/etc", root+"/etc", "/var/log", root+"/var/log",
+				"/usr/local/bin", root+"/usr/local/bin", "/tmp/", root+"/tmp/", "/workspace", root+"/workspace")
+			argv := buildEntrypoint("NAME", tc.setup, "LAUNCH")
+			err := exec.Command("sh", "-c", moved.Replace(argv[len(argv)-1])).Run()
+			if failed := err != nil; failed != tc.wantFailure {
+				t.Errorf("got exit error %v, want failure %v", err, tc.wantFailure)
+			}
+			status, readErr := os.ReadFile(root + sandbox.SandboxedSetupStatusPath)
+			if readErr != nil {
+				t.Fatalf("read status: %v", readErr)
+			}
+			if got := strings.TrimSpace(string(status)); got != tc.wantStatus {
+				t.Errorf("status = %q, want %q", got, tc.wantStatus)
+			}
+		})
 	}
 }

@@ -96,6 +96,10 @@ async function request<T>(path: string, init?: RequestInit, t: Transport = trans
 // unreachable so one slow node never stalls the whole cross-node list.
 const peerFanoutTimeoutMs = 2000;
 
+// preflightTimeoutMs is how long a node gets to say what it can run, for the dialog and the Nodes page
+// alike. Long enough for a cold tailnet dial, short enough that Create is never held forever.
+export const preflightTimeoutMs = 8000;
+
 // withTimeout rejects if p doesn't settle within ms. For calls over the WASM transport, which can hang
 // on a dead peer (it doesn't honor AbortSignal); the orphaned promise may still settle later, discarded.
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -229,13 +233,27 @@ export const api = {
     return request('/health');
   },
 
-  // preflight reports environment readiness (Docker reachable?). Read
+  // preflight reports environment readiness (can a runtime host a session?). Read
   // on app load and before New Session so we can warn/block instead of
-  // failing a create with a raw daemon error.
+  // failing a create with a raw backend error.
   // host (optional) checks a specific node's readiness instead of this one, e.g. the chosen create
   // target in the New Session form. Omit for the local/primary node.
-  preflight(host?: SessionHost, signal?: AbortSignal): Promise<Preflight> {
-    return request('/preflight', { signal }, transportForHost(host));
+  // timeoutMs (optional) gives up on a node that does not answer. Raced as well as aborted: the direct
+  // transport closes the request on abort, while the WASM transport ignores the signal.
+  preflight(host?: SessionHost, signal?: AbortSignal, timeoutMs?: number): Promise<Preflight> {
+    if (!timeoutMs) return request<Preflight>('/preflight', { signal }, transportForHost(host));
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort();
+    signal?.addEventListener('abort', forwardAbort, { once: true });
+    const answer = request<Preflight>(
+      '/preflight',
+      { signal: controller.signal },
+      transportForHost(host),
+    );
+    return withTimeout(answer, timeoutMs, 'preflight').finally(() => {
+      signal?.removeEventListener('abort', forwardAbort);
+      controller.abort();
+    });
   },
 
   // runtimes reports what this node's runtimes are hosting, joined against the session table. Always
@@ -314,7 +332,7 @@ export const api = {
   // imageExists reports whether an image ref is already downloaded, so
   // the New Session form can show a "will download" hint before create.
   // runtime scopes the check to that runtime's image store: a VM runtime builds its own disk image, so
-  // an image present for Docker is not present for it.
+  // an image present for one runtime is not present for another.
   imageExists(
     image: string,
     host?: SessionHost,
@@ -333,7 +351,7 @@ export const api = {
   // pullImageStream downloads an image, reporting progress via
   // onProgress (percent is -1 while still indeterminate). Resolves when
   // the pull completes; rejects with ApiError on a known-up-front
-  // failure (e.g. 503 Docker down) or an in-band stream error.
+  // failure (e.g. 503 runtime down) or an in-band stream error.
   async pullImageStream(
     image: string,
     onProgress: (p: { status: string; percent: number }) => void,
@@ -464,8 +482,8 @@ export const api = {
     return request(`/sessions/${encodeURIComponent(id)}`, { signal }, transportForHost(host));
   },
 
-  // uploadFile streams a pasted/dropped file into the session's container (written via docker exec,
-  // never the host) and returns its in-container path for injection into the agent's prompt.
+  // uploadFile streams a pasted/dropped file into the session's sandbox (written via the runtime's exec,
+  // never a host bind mount) and returns its in-sandbox path for injection into the agent's prompt.
   //
   // Local sessions use XHR so the caller gets real upload progress via onProgress (0–100). A remote
   // session (host set) rides the WASM transport to its owning node instead; tailscale-web's fetch has
@@ -582,9 +600,9 @@ export const api = {
   },
 
   // editMounts replaces the session's user mounts. Server-side this
-  // destroys the running container and recreates it with the new
-  // spec. The shared agent-home volume (/root) survives, but the
-  // writable layer (apt-installed packages, and a no-mount
+  // destroys the running sandbox and recreates it with the new
+  // spec. The agent's home (/root) survives, but the
+  // writable layer (installed packages, and a no-mount
   // /workspace's scratch contents) is gone. A user-mounted folder is
   // host-owned and unaffected. UI is expected to warn before calling.
   // Returns the updated Session.

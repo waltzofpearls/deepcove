@@ -125,3 +125,34 @@ func TestLocalGate(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalGate_RefusesCrossSiteWrites(t *testing.T) {
+	const token = "secret-token"
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	gate := LocalGate(next, token, LocalTokenCookieBaseName, nil)
+	cases := []struct {
+		name      string
+		fetchSite string
+		want      int
+	}{
+		{name: "a page on another port", fetchSite: "same-site", want: http.StatusForbidden},
+		{name: "a page on another site", fetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "the dashboard itself", fetchSite: "same-origin", want: http.StatusOK},
+		{name: "no browser headers", want: http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "http://x/api/sessions", nil)
+			r.Host = "127.0.0.1:9000"
+			r.AddCookie(&http.Cookie{Name: LocalTokenCookieBaseName, Value: token})
+			if tc.fetchSite != "" {
+				r.Header.Set("Sec-Fetch-Site", tc.fetchSite)
+			}
+			w := httptest.NewRecorder()
+			gate.ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Errorf("status = %d, want %d", w.Code, tc.want)
+			}
+		})
+	}
+}

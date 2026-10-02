@@ -14,7 +14,7 @@ import (
 )
 
 // Client is the host end of one exec. It implements sandbox.Process, so the session layer drives a VM
-// backed command exactly as it drives a Docker one.
+// backed command exactly as it drives any other.
 //
 // It takes a net.Conn rather than dialing itself, which keeps it platform neutral: the Apple VF driver
 // hands it a vsock connection, and tests hand it one half of a net.Pipe.

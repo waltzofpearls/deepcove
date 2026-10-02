@@ -164,7 +164,7 @@ func TestStartAgentSession_LeavesAPickedFolderAlone(t *testing.T) {
 	}
 	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
 	root := t.TempDir()
-	svc.SetAllowedMountRoots([]string{root})
+	svc.SetShareRoots(sandbox.ShareRoots{Allowed: []string{root}})
 	ctx := context.Background()
 
 	sess, err := svc.Create(ctx, CreateRequest{
@@ -191,7 +191,7 @@ func TestStartAgentSession_LeavesAPickedFolderAlone(t *testing.T) {
 func TestAdoptRunningSandboxes(t *testing.T) {
 	provisioner := &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: "/data/sandboxless/workspaces/s1"}
 	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
-	svc.RegisterRuntime(RuntimeDocker, newFakeSandbox())
+	svc.RegisterRuntime(RuntimeCloudHV, newFakeSandbox())
 	ctx := context.Background()
 
 	running, err := svc.Create(ctx, CreateRequest{Agent: "claude", Name: "running"})
@@ -357,7 +357,7 @@ func TestService_EditMounts_RefusedOnThisMachine(t *testing.T) {
 	provisioner := &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: "/data/sandboxless/workspaces/s1"}
 	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
 	root := t.TempDir()
-	svc.SetAllowedMountRoots([]string{root})
+	svc.SetShareRoots(sandbox.ShareRoots{Allowed: []string{root}})
 	shared := filepath.Join(root, "never-made")
 	ctx := context.Background()
 
@@ -389,7 +389,7 @@ func TestService_Create_MakesNoFoldersWhenRefused(t *testing.T) {
 	provisioner := &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: "/data/sandboxless/workspaces/s1"}
 	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
 	root := t.TempDir()
-	svc.SetAllowedMountRoots([]string{root})
+	svc.SetShareRoots(sandbox.ShareRoots{Allowed: []string{root}})
 	shared := filepath.Join(root, "never-made")
 
 	_, err := svc.Create(context.Background(), CreateRequest{
@@ -458,8 +458,7 @@ func TestBuildSandboxSpec(t *testing.T) {
 	if got, want := spec.Env["DEEPCOVE_WORKDIR"], svc.sessionWorkDir(sess); got != want {
 		t.Errorf("DEEPCOVE_WORKDIR is %q, want %q", got, want)
 	}
-	// The agent home is a volume inside a guest, and this runtime has neither, which is what lets the
-	// driver refuse every mount it sees.
+	// This runtime has no guest, which is what lets the driver refuse every mount it sees.
 	if len(spec.Mounts) != 0 {
 		t.Errorf("spec carries %v, want no mounts", spec.Mounts)
 	}
@@ -467,7 +466,7 @@ func TestBuildSandboxSpec(t *testing.T) {
 
 func TestService_Create_KeepsAWorkspaceFolderName(t *testing.T) {
 	svc, _ := workspaceService(t)
-	svc.SetAllowedMountRoots([]string{t.TempDir()})
+	svc.SetShareRoots(sandbox.ShareRoots{Allowed: []string{t.TempDir()}})
 
 	// The shared machine resolves a folder name under its own root, so create must not read it as a
 	// path on this machine and refuse it.
@@ -479,13 +478,13 @@ func TestService_Create_KeepsAWorkspaceFolderName(t *testing.T) {
 
 func TestService_Create_IgnoresAWorkDirOnAGuestRuntime(t *testing.T) {
 	svc := newBareService(t)
-	svc.RegisterRuntime(RuntimeDocker, newFakeSandbox())
-	svc.SetAllowedMountRoots([]string{t.TempDir()})
+	svc.RegisterRuntime(RuntimeCloudHV, newFakeSandbox())
+	svc.SetShareRoots(sandbox.ShareRoots{Allowed: []string{t.TempDir()}})
 
 	sess, err := svc.Create(context.Background(), CreateRequest{
 		Agent:   "claude",
 		Name:    "sandboxed-with-work-dir",
-		Runtime: RuntimeDocker,
+		Runtime: RuntimeCloudHV,
 		WorkDir: "/tmp/somewhere-on-the-machine",
 	})
 	if err != nil {

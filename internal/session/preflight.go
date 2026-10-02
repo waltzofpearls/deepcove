@@ -6,34 +6,33 @@ import (
 	"net/http"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 // PreflightResponse is the GET /api/preflight payload: the environment-readiness snapshot the
-// dashboard reads on load (and the New Session form reads before it lets you create). Today it covers
-// the container backend's reachability; per-image readiness is
-// discovered at create time (a missing image comes back as a 422 with
-// code "image_not_found", which the UI turns into a download action).
+// dashboard reads on load (and the New Session form reads before it lets you create). Whether an image
+// is downloaded yet is a separate question, asked through the image check.
 type PreflightResponse struct {
-	Docker DockerStatus `json:"docker"`
-	// Runtimes is what this node can actually host a session on. A node offers Docker everywhere and a
-	// VM runtime only where the platform supports it and its kernel and guest init are present, so the
-	// UI has to ask rather than assume.
+	// Runtimes is what this node can actually host a session on. A VM runtime is offered only where the
+	// platform supports it and its kernel and guest init are present, so the UI has to ask rather than
+	// assume.
 	Runtimes RuntimesInfo `json:"runtimes"`
 }
 
 // RuntimesInfo lists the runtimes a node provides and which one a create request gets by default.
 type RuntimesInfo struct {
 	Available []string `json:"available"`
-	Default   string   `json:"default"`
+	// Default is empty when the node has no runtime it will pick for you: No sandbox is all it has, or
+	// it has nothing.
+	Default string `json:"default"`
 	// Unavailable maps a runtime this node provides a driver for to why it cannot host a session right
-	// now, e.g. Docker with no daemon running. Registration says the driver exists; this says whether it
-	// can actually be used, which is a live property and can change without restarting deepcove.
+	// now, e.g. a VM runtime whose hypervisor stopped answering. Registration says the driver exists;
+	// this says whether it can actually be used, which is a live property and can change without
+	// restarting deepcove.
 	//
 	// Absent from the map means usable. Reported per runtime rather than as one flag because the answer
-	// differs between them: a stopped Docker daemon says nothing about the VM runtime.
+	// differs between them.
 	Unavailable map[string]string `json:"unavailable,omitempty"`
 	// Missing maps a runtime this node knows about but cannot provide to a stable reason code. Different
 	// from Unavailable, which has a driver whose backend is not answering: this one has no driver at
@@ -107,25 +106,11 @@ func (s *Service) runtimeDefaults() map[string]Resources {
 	return out
 }
 
-// DockerStatus reports whether the container backend is reachable.
-// Named "docker" on the wire because Docker is the v1 backend; the
-// field is the place a future backend's readiness would surface too.
-type DockerStatus struct {
-	Reachable bool   `json:"reachable"`
-	Version   string `json:"version"`
-	// Message is human-facing guidance shown when Reachable is false
-	// (e.g. "Docker isn't running. Start it and retry.").
-	Message string `json:"message"`
-}
-
-const preflightPingTimeout = 3 * time.Second
-
 func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, PreflightResponse{
-		Docker: s.dockerStatus(r.Context()),
 		Runtimes: RuntimesInfo{
 			Available:   s.Runtimes(),
-			Default:     s.defaultRuntime,
+			Default:     s.DefaultRuntime(),
 			Defaults:    s.runtimeDefaults(),
 			Unavailable: s.unavailableRuntimes(r.Context()),
 			Missing:     s.MissingRuntimes(),
@@ -174,33 +159,13 @@ func (s *Service) unavailableRuntimes(ctx context.Context) map[string]string {
 // what the user has to do about it differs.
 func unavailableReason(runtime string) string {
 	switch runtime {
-	case RuntimeDocker:
-		return "Docker isn't running. Start it to use this runtime."
 	case RuntimeAppleVF, RuntimeCloudHV:
 		return "The virtual machine runtime isn't responding."
+	case RuntimeSandboxless:
+		return "tmux isn't installed. Sessions with no sandbox need it."
 	default:
 		return "This runtime isn't available right now."
 	}
-}
-
-func (s *Service) dockerStatus(ctx context.Context) DockerStatus {
-	driver, _ := s.lookupRuntime(RuntimeDocker)
-	pinger, ok := driver.(sandbox.Pinger)
-	if !ok {
-		// The backend can't report liveness; don't block on a signal
-		// we can't read; assume reachable.
-		return DockerStatus{Reachable: true}
-	}
-	pingCtx, cancel := context.WithTimeout(ctx, preflightPingTimeout)
-	defer cancel()
-	version, err := pinger.Ping(pingCtx)
-	if err != nil {
-		return DockerStatus{
-			Reachable: false,
-			Message:   "Docker isn't reachable. Start Docker and try again.",
-		}
-	}
-	return DockerStatus{Reachable: true, Version: version}
 }
 
 // ImageExistsResponse is the GET /api/images/exists?image=<ref> payload.
@@ -280,7 +245,7 @@ func (s *Service) handlePullImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve known-up-front outcomes with a clean status before we
-	// commit to a streamed 200: a down daemon → 503, an already-present
+	// commit to a streamed 200: a down runtime → 503, an already-present
 	// image → instant done (idempotent).
 	present, err := puller.ImageExists(r.Context(), req.Image)
 	if err != nil {

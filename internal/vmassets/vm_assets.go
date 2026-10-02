@@ -1,9 +1,8 @@
 // Package vmassets keeps the files VM sessions need that we did not write, downloading them from this
 // build's own release and caching them on disk.
 //
-// Nothing here runs at startup. A node missing an artifact reports that it needs setup and stays usable
-// for containers, so booting deepcove never waits on a download and never fails because the machine is
-// offline.
+// Nothing here runs at startup. A node missing an artifact reports that it needs setup, so booting
+// deepcove never waits on a download and never fails because the machine is offline.
 package vmassets
 
 import (

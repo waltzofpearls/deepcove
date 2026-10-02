@@ -33,11 +33,11 @@ func (s *memStore) Save(agent string, files map[string][]byte) error {
 	return nil
 }
 
-// serveOne wires a guest side conn to the broker over an in memory pipe.
+// serveOne wires a guest side conn to a Claude VM's broker over an in memory pipe.
 func serveOne(t *testing.T, store Store) net.Conn {
 	t.Helper()
 	guestConn, hostConn := net.Pipe()
-	go func() { _ = Serve(hostConn, store) }()
+	go func() { _ = Serve(hostConn, store, "claude") }()
 	t.Cleanup(func() { _ = guestConn.Close() })
 	return guestConn
 }
@@ -66,13 +66,13 @@ func TestFetchWithNothingStoredIsNotAFailure(t *testing.T) {
 
 func TestStoreRoundTrip(t *testing.T) {
 	store := newMemStore()
-	bundle := map[string][]byte{".claude.json": []byte(`{"refreshed":true}`)}
+	bundle := map[string][]byte{".claude/.credentials.json": []byte(loggedIn)}
 
 	if err := StoreFiles(serveOne(t, store), "claude", bundle); err != nil {
 		t.Fatalf("StoreFiles: %v", err)
 	}
-	if !bytes.Equal(store.files["claude"][".claude.json"], bundle[".claude.json"]) {
-		t.Errorf("stored = %q", store.files["claude"][".claude.json"])
+	if !bytes.Equal(store.files["claude"][".claude/.credentials.json"], bundle[".claude/.credentials.json"]) {
+		t.Errorf("stored = %q", store.files["claude"][".claude/.credentials.json"])
 	}
 
 	// What went in must come back out on the next boot.
@@ -80,20 +80,59 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch after store: %v", err)
 	}
-	if !bytes.Equal(got[".claude.json"], bundle[".claude.json"]) {
-		t.Errorf("round tripped = %q", got[".claude.json"])
+	if !bytes.Equal(got[".claude/.credentials.json"], bundle[".claude/.credentials.json"]) {
+		t.Errorf("round tripped = %q", got[".claude/.credentials.json"])
 	}
 }
 
-// Credentials are per agent, so one agent must never see another's login.
-func TestCredentialsAreScopedPerAgent(t *testing.T) {
+// A guest's push is the only way into the bundle every later session gets, so nothing but the login
+// files may ride along.
+func TestStoreKeepsOnlyTheLoginFiles(t *testing.T) {
 	store := newMemStore()
-	store.files["claude"] = map[string][]byte{".claude.json": []byte("claude-secret")}
+	bundle := map[string][]byte{
+		".claude/.credentials.json": []byte(loggedIn),
+		"../usr/local/bin/tmux":     []byte("planted"),
+	}
 
-	if _, err := Fetch(serveOne(t, store), "codex"); !errors.Is(err, ErrNoCredentials) {
-		t.Errorf("a different agent must not receive stored credentials, got %v", err)
+	if err := StoreFiles(serveOne(t, store), "claude", bundle); err != nil {
+		t.Fatalf("StoreFiles: %v", err)
+	}
+	if _, planted := store.files["claude"]["../usr/local/bin/tmux"]; planted {
+		t.Error("a file outside the login list was stored")
+	}
+	if _, kept := store.files["claude"][".claude/.credentials.json"]; !kept {
+		t.Error("the login file was dropped")
 	}
 }
+
+// A Claude VM's broker answers for Claude only. Whatever else a guest names, the store is not touched.
+func TestServe_RefusesWhatTheVMMayNotTouch(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent string
+		files map[string][]byte
+	}{
+		{name: "another agent's login", agent: "codex", files: map[string][]byte{claudeCredentials: []byte(loggedIn)}},
+		{name: "the saved backup copy", agent: "claude/previous", files: map[string][]byte{claudeCredentials: []byte(loggedIn)}},
+		{name: "a bundle with no login", agent: "claude", files: map[string][]byte{claudeCredentials: []byte(loggedOut)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemStore()
+			if err := StoreFiles(serveOne(t, store), tc.agent, tc.files); err == nil {
+				t.Error("the store was accepted")
+			}
+			if len(store.files) != 0 {
+				t.Errorf("the store was changed: %v", store.files)
+			}
+		})
+	}
+}
+
+const (
+	loggedIn  = `{"claudeAiOauth":{"accessToken":"sk-x","refreshToken":"rt-x"}}`
+	loggedOut = `{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`
+)
 
 func TestStoreErrorSurfacesToTheGuest(t *testing.T) {
 	store := newMemStore()

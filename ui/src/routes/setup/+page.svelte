@@ -1,9 +1,9 @@
 <script lang="ts">
   // First-run setup wizard (a full page, not an overlay). Tailscale-style: walk the user through
   // getting deepcove ready, including putting their two devices on the tailnet (session node required-
-  // ish, web node optional/skippable). Steps: Welcome → Sandbox → Workspace → Connect → Done. The
-  // whole thing is skippable (deepcove works purely local), and finishing or skipping marks setup done
-  // (lib/setup).
+  // ish, web node optional/skippable). Steps: Welcome → Virtual machines → Workspace (skipped without a
+  // VM) → Connect → Done. The whole thing is skippable (deepcove works purely local), and finishing or
+  // skipping marks setup done (lib/setup).
   import { getContext } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
@@ -14,7 +14,12 @@
   import { isSetupDone, markSetupDone, setConnectSkipped } from '$lib/setup';
   import { openConnectingTab } from '$lib/signin';
   import { NEW_SESSION_CTX } from '$lib/context';
-  import { runtimeLabel, runtimeMissingReason } from '$lib/util/runtime';
+  import {
+    bootsVMs,
+    runtimeLabel,
+    runtimeMissingReason,
+    runtimeSetUpByDeepcove,
+  } from '$lib/util/runtime';
   import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
   import WorkspaceVMFields from '$lib/components/session/WorkspaceVMFields.svelte';
   import { looksLikePath } from '$lib/util/path';
@@ -29,9 +34,21 @@
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
 
-  const steps = ['Welcome', 'Sandbox', 'Workspace', 'Connect', 'Done'];
-  // Deep link: the dashboard nudge sends ?step=connect to drop the user straight on the Connect step.
-  let step = $state(page.url.searchParams.get('step') === 'connect' ? 3 : 0);
+  const steps = ['Welcome', 'Virtual machines', 'Workspace', 'Connect', 'Done'];
+  // Deep links: ?step=vm opens the virtual machine step (the "nothing can host a session" banner and the
+  // dialog send you there), ?step=connect the Connect step (the dashboard nudge).
+  const deepLinkedSteps: Record<string, number> = { vm: 1, connect: 3 };
+  const deepLink = page.url.searchParams.get('step') ?? '';
+  let step = $state(deepLinkedSteps[deepLink] ?? 0);
+  // Sent here to set up virtual machines and nothing else, so that step ends back home.
+  const cameToSetUpVMs = deepLink === 'vm';
+  // The VM step starts its download on its own only when you came to set it up: "Get started", or a
+  // Set up link in deepcove (banner, dialog), which passes page state. Never an outside link, never Back.
+  let cameForward = $state(false);
+  const autostartSetup = $derived(cameForward || page.state.autostartSetup === true);
+  // The workspace step builds a shared VM, which a machine without a VM runtime cannot, so it is
+  // skipped there both ways.
+  const hasVMRuntime = $derived((preflight.runtimes?.available ?? []).some(bootsVMs));
 
   $effect(() => preflight.subscribe());
   $effect(() => connect.subscribe());
@@ -68,13 +85,16 @@
   }
 
   const runtimesReady = $derived(preflight.loaded && preflight.usableRuntimes.length > 0);
-  // Only shown when nothing works, to say why. When something else can host a session, a runtime that
-  // is merely absent is not the user's problem.
-  const runtimesDown = $derived(Object.entries(preflight.runtimes?.unavailable ?? {}));
-  // Runtimes this machine could have but has not set up. Shown even when something else is ready,
-  // because otherwise there is no way to discover the VM runtime exists. A merely unavailable runtime
-  // stays hidden in that case: that is noise, this is an offer.
-  const runtimesMissing = $derived(Object.entries(preflight.runtimes?.missing ?? {}));
+  // This step is about virtual machines only: running with no sandbox is a choice made in the New
+  // Session dialog, never offered here. A missing VM runtime deepcove can install is set up on arrival.
+  const vmReady = $derived(preflight.usableRuntimes.some(bootsVMs));
+  const vmMissing = $derived(
+    Object.entries(preflight.runtimes?.missing ?? {}).filter(([name]) => bootsVMs(name)),
+  );
+  const vmDown = $derived(
+    Object.entries(preflight.runtimes?.unavailable ?? {}).filter(([name]) => bootsVMs(name)),
+  );
+  let settingUpVM = $state(false);
 
   let auth = $derived($tailnetAuth);
   const webConnected = $derived(auth.phase === 'running');
@@ -146,7 +166,8 @@
   <button
     type="button"
     onclick={() => finish(false)}
-    class="cursor-pointer text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+    disabled={settingUpVM}
+    class="cursor-pointer text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
   >
     Skip setup
   </button>
@@ -187,63 +208,96 @@
             Run coding agents like Claude Code in isolated sandboxes on your own machines, reachable
             from anywhere on your tailnet. Let's get you set up. It only takes a minute.
           </p>
-          <Button class="mt-2" onclick={() => (step = 1)}>Get started</Button>
+          <Button
+            class="mt-2"
+            onclick={() => {
+              cameForward = true;
+              step = 1;
+            }}
+          >
+            Get started
+          </Button>
         </div>
       {:else if step === 1}
         <div class="space-y-4">
-          <h2 class="text-lg font-semibold">Check your sandbox</h2>
+          <h2 class="text-lg font-semibold">Set up virtual machines</h2>
           <p class="text-sm text-muted-foreground">
-            Every session runs in a sandbox of its own. deepcove needs at least one way to make them
-            on this machine.
+            {vmReady
+              ? 'Each session runs in a virtual machine, so the agent cannot touch the rest of this machine.'
+              : 'A virtual machine keeps each session from touching the rest of this machine.'}
           </p>
-          {#if runtimesReady}
+          {#if !preflight.loaded}
+            <div class="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 class="size-4 animate-spin" /> Checking…
+            </div>
+          {:else if vmReady}
             <div
               class="flex items-center gap-2 rounded-md border border-border bg-secondary/30 px-3 py-2.5 text-sm"
             >
               <Check class="size-4 text-[var(--color-success)]" />
-              {preflight.usableRuntimes.map(runtimeLabel).join(', ')} ready.
+              Virtual machines are ready.
             </div>
-            {#each runtimesMissing as [name, code] (name)}
+          {:else}
+            {#each vmMissing as [name, code] (name)}
               <div
                 class="flex items-start gap-2 rounded-md border border-border px-3 py-2.5 text-sm"
               >
                 <Boxes class="size-4 shrink-0 translate-y-0.5 text-muted-foreground" />
                 <div class="flex-1">
-                  <span class="font-medium">{runtimeLabel(name)}</span>
-                  is not set up.
-                  <p class="text-xs text-muted-foreground">{runtimeMissingReason(code)}</p>
-                  <div class="mt-2">
-                    <RuntimeSetupButton runtime={name} ondone={() => preflight.refresh()} />
-                  </div>
+                  {#if runtimeSetUpByDeepcove(code)}
+                    <p class="mb-2">
+                      {settingUpVM
+                        ? 'Setting up virtual machines. This downloads once.'
+                        : 'Virtual machines need a one-time download.'}
+                    </p>
+                    <RuntimeSetupButton
+                      runtime={name}
+                      autostart={autostartSetup}
+                      bind:busy={settingUpVM}
+                      ondone={() => preflight.refresh()}
+                    />
+                  {:else}
+                    <p>{runtimeMissingReason(code)}</p>
+                  {/if}
                 </div>
               </div>
             {/each}
-          {:else if preflight.loaded}
-            <div
-              class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm"
-            >
-              <CircleAlert class="size-4 shrink-0 translate-y-0.5 text-destructive" />
-              <div>
-                Nothing on this machine can host a session yet. This updates on its own once one is
-                available.
-                {#each runtimesDown as [name, why] (name)}
-                  <p class="mt-1">{runtimeLabel(name)}: {why}</p>
-                {/each}
-                {#each runtimesMissing as [name, code] (name)}
-                  <p class="mt-1">{runtimeLabel(name)}: {runtimeMissingReason(code)}</p>
-                {/each}
+            {#each vmDown as [name, why] (name)}
+              <div
+                class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm"
+              >
+                <CircleAlert class="size-4 shrink-0 translate-y-0.5 text-destructive" />
+                <p>{runtimeLabel(name)}: {why}</p>
               </div>
-            </div>
-          {:else}
-            <div class="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 class="size-4 animate-spin" /> Checking…
-            </div>
+            {/each}
+            {#if vmMissing.length === 0 && vmDown.length === 0}
+              <div
+                class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm"
+              >
+                <CircleAlert class="size-4 shrink-0 translate-y-0.5 text-destructive" />
+                <p>This machine cannot run virtual machines.</p>
+              </div>
+            {/if}
           {/if}
           <div class="flex items-center justify-between pt-2">
-            <Button variant="ghost" onclick={() => (step = 0)}>Back</Button>
-            <div class="flex items-center gap-4">
-              {@render skipLink()}
-              <Button onclick={() => (step = 2)} disabled={!runtimesReady}>Continue</Button>
+            <!-- Sent here to fix the VM and nothing else, so there is no wizard to go back through. -->
+            {#if !cameToSetUpVMs}
+              <Button variant="ghost" onclick={() => (step = 0)} disabled={settingUpVM}>
+                Back
+              </Button>
+            {/if}
+            <div class="ml-auto flex items-center gap-4">
+              {#if cameToSetUpVMs}
+                <Button onclick={() => goto('/')} disabled={settingUpVM}>Back to dashboard</Button>
+              {:else}
+                {@render skipLink()}
+                <Button
+                  onclick={() => (step = hasVMRuntime ? 2 : 3)}
+                  disabled={!runtimesReady || settingUpVM}
+                >
+                  Continue
+                </Button>
+              {/if}
             </div>
           </div>
         </div>
@@ -263,7 +317,9 @@
             <p class="text-sm text-destructive">{workspaceError}</p>
           {/if}
           <div class="flex items-center justify-between pt-2">
-            <Button variant="ghost" onclick={() => (step = 1)}>Back</Button>
+            <Button variant="ghost" onclick={() => ((cameForward = false), (step = 1))}>
+              Back
+            </Button>
             <div class="flex items-center gap-4">
               <button
                 type="button"
@@ -356,7 +412,12 @@
           </div>
 
           <div class="flex items-center justify-between pt-2">
-            <Button variant="ghost" onclick={() => (step = 2)}>Back</Button>
+            <Button
+              variant="ghost"
+              onclick={() => ((cameForward = false), (step = hasVMRuntime ? 2 : 1))}
+            >
+              Back
+            </Button>
             <div class="flex items-center gap-4">
               {@render skipLink()}
               <Button onclick={() => (step = 4)}>Continue</Button>

@@ -3,6 +3,8 @@
 
   import { onMount, setContext } from 'svelte';
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
+  import { opensInNewTab } from '$lib/util/links';
   import { ModeWatcher } from 'mode-watcher';
   import TopBar from '$lib/components/layout/TopBar.svelte';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
@@ -13,6 +15,7 @@
   import { discovery } from '$lib/stores/discovery.svelte';
   import { Sheet, SheetContent } from '$lib/components/ui/sheet';
   import { preflight } from '$lib/stores/preflight.svelte';
+  import { missingReasons, runtimeSetupOffered } from '$lib/util/runtime';
   import { NEW_SESSION_CTX } from '$lib/context';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -57,7 +60,7 @@
       ($tailnetAuth.phase !== 'running' || (discoveryRequired() && discovery.phase !== 'ready')),
   );
 
-  // Environment-readiness poller; powers the Docker-down banner below
+  // Environment-readiness poller; powers the nothing-can-run banner below
   // and the New Session dialog's gating. Lazy and ref-counted. In discover mode it
   // rides the boot transport's primary node, so hold it until discovery is ready.
   $effect(() => {
@@ -85,13 +88,14 @@
      + user override stored in localStorage. Defaults to system. -->
 <ModeWatcher defaultMode="system" />
 
-{#if page.url.pathname === '/setup'}
-  <!-- The setup wizard is its own full-screen page with no topbar/sidebar chrome and no gate. -->
-  {@render children()}
-{:else if gated}
+{#if gated}
   <!-- Wasm mode: hold the whole app behind the connect/login gate until the
-       in-browser node is running. The dashboard never mounts before then. -->
+       in-browser node is running. Nothing mounts before then, the setup wizard included, since
+       it asks a node what it can run. -->
   <TailnetGate />
+{:else if page.url.pathname === '/setup'}
+  <!-- The setup wizard is its own full-screen page with no topbar/sidebar chrome. -->
+  {@render children()}
 {:else}
   <div class="flex h-screen flex-col bg-background text-foreground">
     <TopBar onNewSession={() => (newSessionOpen = true)} onMenu={() => (sidebarOpen = true)} />
@@ -103,8 +107,37 @@
       >
         <CircleAlert class="size-4 shrink-0 text-destructive" />
         <span class="min-w-0 flex-1">
-          Nothing on this machine can host a session right now, so new ones can't be created.
+          Nothing on {transport.mode === 'wasm' ? 'your node' : 'this machine'} can host a session
+          {runtimeSetupOffered(preflight.runtimes) ? 'yet' : 'right now'}, so new ones can't be
+          created.
+          <!-- With nothing to set up, the reason is the only thing that helps. -->
+          {#if !runtimeSetupOffered(preflight.runtimes) && preflight.runtimes}
+            {missingReasons(preflight.runtimes).join(' ')}
+          {/if}
         </span>
+        {#if runtimeSetupOffered(preflight.runtimes)}
+          {#if transport.mode === 'wasm'}
+            <a
+              href="/nodes"
+              class="inline-flex h-7 shrink-0 items-center rounded-md border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-secondary"
+            >
+              Set up
+            </a>
+          {:else}
+            <a
+              href="/setup?step=vm"
+              onclick={(e) => {
+                // A new tab lands with no autostart, so it needs a click there.
+                if (opensInNewTab(e)) return;
+                e.preventDefault();
+                goto('/setup?step=vm', { state: { autostartSetup: true } });
+              }}
+              class="inline-flex h-7 shrink-0 items-center rounded-md border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-secondary"
+            >
+              Set up
+            </a>
+          {/if}
+        {/if}
         <button
           onclick={retryPreflight}
           disabled={retrying}

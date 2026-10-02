@@ -136,7 +136,7 @@ func TestCreate(t *testing.T) {
 			spec: sandbox.SandboxSpec{
 				Cmd:    []string{"/bin/sh"},
 				Agent:  testAgent(),
-				Mounts: []sandbox.Mount{{Source: "/home/deep/code", Target: "/workspace", Type: sandbox.MountBind}},
+				Mounts: []sandbox.Mount{{Source: "/home/deep/code", Target: "/workspace"}},
 			},
 			wantErr: "/home/deep/code",
 		},

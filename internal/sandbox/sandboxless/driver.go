@@ -129,12 +129,16 @@ var (
 	_ sandbox.ForceCloser = (*Driver)(nil)
 )
 
+// Create records a session's folder and tmux socket; nothing runs until Start. A refused share is a plain
+// sentence for the user; other errors carry the "sandboxless:" prefix.
 func (d *Driver) Create(_ context.Context, spec sandbox.SandboxSpec) (sandbox.ID, error) {
+	// This driver never runs Cmd, but every spec the session layer builds has one, so an empty Cmd means a
+	// spec built somewhere else, which would also be missing the agent and its folder.
 	if len(spec.Cmd) == 0 {
-		return "", fmt.Errorf("sandboxless: spec.Cmd is required; it is the session entrypoint")
+		return "", fmt.Errorf("sandboxless: spec.Cmd is empty, so the spec did not come from the session layer")
 	}
 	if len(spec.Mounts) > 0 {
-		return "", fmt.Errorf("sandboxless: nothing to mount %s into: the agent works on this machine's own files",
+		return "", fmt.Errorf("a session with no sandbox cannot share %s: the agent already works on this machine's own files",
 			spec.Mounts[0].Source)
 	}
 	instanceID, socket, err := d.mintID()
@@ -214,7 +218,7 @@ func (d *Driver) Start(_ context.Context, instanceID sandbox.ID) error {
 	d.mu.Lock()
 	if inst.running {
 		d.mu.Unlock()
-		return fmt.Errorf("sandboxless: %s is already running: %w", instanceID, sandbox.ErrConflict)
+		return fmt.Errorf("the session is already running: %w", sandbox.ErrConflict)
 	}
 	inst.running = true
 	// The launch script names the path the agent was found at, so one that has gone since is worth

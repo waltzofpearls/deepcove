@@ -14,11 +14,10 @@ import (
 // flags. Creates a session on the local background service via the API, printing the id + name.
 // Attaching is its own command, `deepcove session attach`.
 //
-// If --name is omitted, the service auto-generates one in the form "<agent>-<adjective>_<scientist>"
-// (Docker-style).
+// If --name is omitted, the service auto-generates one in the form "<agent>-<adjective>_<scientist>".
 //
-// --mount may be repeated. Mode defaults to rw; append :ro for read-only. Container_path collisions
-// with /workspace (the scratch dir) are rejected server-side.
+// --mount may be repeated. Mode defaults to rw; append :ro for read-only. The server refuses / and
+// anything under /root, the agent's home.
 func cmdSessionCreate(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("agent name required (e.g. `deepcove session claude`)")
@@ -28,10 +27,10 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("session "+agent, flag.ContinueOnError)
 	var name, image, setupScript, runtime, workDir string
 	fs.StringVar(&name, "name", "", "session name (auto-generated if omitted)")
-	fs.StringVar(&runtime, "runtime", "", "runtime to host the session (default: the node's own)")
+	fs.StringVar(&runtime, "runtime", "", "runtime to host the session: applevf, cloudhv or sandboxless (default: DEEPCOVE_DEFAULT_RUNTIME if the service sets it, else this node's VM runtime; required if neither is available)")
 	fs.StringVar(&workDir, "work-dir", "", "folder the agent works in, for a runtime that works in one")
-	fs.StringVar(&image, "image", "", "container image override (default: agent's registered image)")
-	fs.StringVar(&setupScript, "setup-script", "", "shell script run on container start (default: agent's registered setup)")
+	fs.StringVar(&image, "image", "", "image override (default: agent's registered image)")
+	fs.StringVar(&setupScript, "setup-script", "", "shell script run on session start (default: agent's registered setup)")
 	mounts := &mountFlag{}
 	fs.Var(mounts, "mount", "mount host:container[:ro]; repeatable")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -57,7 +56,7 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 		return err
 	}
 
-	fmt.Printf("%s  %s  %s\n", short(sess.ID), sess.Name, sess.Status)
+	fmt.Printf("%s  %s  %s  %s\n", short(sess.ID), sess.Name, sess.Runtime, sess.Status)
 	return nil
 }
 
@@ -85,7 +84,7 @@ func (m *mountFlag) Set(s string) error {
 	return nil
 }
 
-// short trims a UUID to the leading 12 characters, Docker-style, for terminal friendly output.
+// short trims a UUID to the leading 12 characters, for terminal friendly output.
 func short(id string) string {
 	if len(id) > 12 {
 		return id[:12]

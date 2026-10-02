@@ -9,10 +9,10 @@ behaves exactly like one on your laptop.
 
 ## Sandboxes
 
-**Virtual machine** (macOS, Apple Virtualization). Each session boots its own Linux guest with its own
-kernel, so it is isolated from the host and from every other session.
+**Virtual machine** (Apple Virtualization on macOS, Cloud Hypervisor on Linux). Each session boots its
+own Linux guest with its own kernel, so it is isolated from the host and from every other session.
 
-**Docker**. Shares the host kernel, starts fastest, and keeps the agent's login between sessions.
+**No sandbox**. Runs on the machine itself with your files, network and logins. Nothing is isolated.
 
 ## Your machines
 
@@ -65,12 +65,10 @@ instead of overwriting a file Homebrew tracks.
 ## Develop
 
 ```sh
-make dev    # Go with live reload plus the Vite dev server, in docker compose
+make run    # build everything, then ./deepcove start
 make test
 make lint
 ```
-
-`make dev` expects `make bootstrap` to have installed `ui/node_modules` in a Linux container first.
 
 ## License
 

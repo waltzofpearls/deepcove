@@ -122,10 +122,11 @@ func (s *Service) RuntimeViews(ctx context.Context) ([]RuntimeView, error) {
 		views = append(views, s.runtimeView(ctx, name, sessions, workspaceVM))
 	}
 	// After the registered ones, so the list reads as "what you have, then what you could have".
+	missing := s.MissingRuntimes()
 	for _, name := range s.missingRuntimeNames() {
 		views = append(views, RuntimeView{
 			Name:      name,
-			Missing:   s.missingRuntimes[name],
+			Missing:   missing[name],
 			Sandboxes: []SandboxView{},
 			Orphaned:  []OrphanedSession{},
 		})
@@ -154,7 +155,7 @@ func (s *Service) runtimeView(
 		version, err := pinger.Ping(pingCtx)
 		if err != nil {
 			view.Reachable = false
-			view.Message = "This runtime's backend isn't reachable."
+			view.Message = unavailableReason(name)
 			return view
 		}
 		view.Version = version
@@ -325,7 +326,7 @@ func (s *Service) handleDestroySandbox(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrSandboxNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrSandboxHasSession), errors.Is(err, ErrSandboxIsWorkspaceVM):
-		writeErrorCode(w, http.StatusConflict, codeInvalidInput, err.Error())
+		writeErrorCode(w, http.StatusConflict, codeConflict, err.Error())
 	default:
 		var unknown ErrUnknownRuntime
 		if errors.As(err, &unknown) {
@@ -344,13 +345,14 @@ func (s *Service) handleDestroySandbox(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleSetupRuntime(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("runtime")
 
-	// Both of these are resolved before committing to a streamed 200, so a caller gets a clean status
+	// All of these are resolved before committing to a streamed 200, so a caller gets a clean status
 	// code rather than an error buried in the body.
-	if _, missing := s.MissingRuntimes()[name]; !missing {
-		writeErrorCode(w, http.StatusConflict, codeInvalidInput,
-			"this runtime does not need setting up")
+	finish, err := s.startRuntimeSetup(name)
+	if err != nil {
+		writeErrorCode(w, http.StatusConflict, codeConflict, err.Error())
 		return
 	}
+	defer finish()
 	install, ok := s.runtimeInstaller(name)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "this node cannot set up "+name+" for you")
@@ -373,7 +375,7 @@ func (s *Service) handleSetupRuntime(w http.ResponseWriter, r *http.Request) {
 
 	// Throttled to whole percent or status changes, so a download does not emit thousands of lines.
 	lastPct, lastStatus := -1, ""
-	err := install(r.Context(), func(p sandbox.PullProgress) {
+	err = install(r.Context(), func(p sandbox.PullProgress) {
 		pct := -1
 		if p.Total > 0 {
 			pct = int(p.Current * 100 / p.Total)

@@ -27,7 +27,7 @@ func (s *Service) RestartSandbox(ctx context.Context, runtimeName, sandboxID str
 	}
 	restarter, ok := runtime.(sandbox.Restarter)
 	if !ok {
-		return fmt.Errorf("%w: the %s runtime cannot restart a sandbox", ErrInvalidInput, runtimeName)
+		return fmt.Errorf("%w: only a virtual machine can be restarted", ErrInvalidInput)
 	}
 	spec, err := s.savedSpecFor(ctx, sandboxID)
 	if err != nil {
@@ -84,7 +84,7 @@ func (s *Service) savedSpecFor(ctx context.Context, sandboxID string) (sandbox.S
 			if err != nil {
 				return sandbox.SandboxSpec{}, fmt.Errorf("session: %w", err)
 			}
-			return workspaceVMSpec(vm, agent), nil
+			return workspaceVMSpec(vm, agent)
 		}
 	}
 

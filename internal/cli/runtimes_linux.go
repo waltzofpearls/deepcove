@@ -32,13 +32,21 @@ var (
 	vmSocketDir   = ensureIPCDir
 )
 
-// newVMRuntime builds the VM runtime this machine can provide. On Linux that is Cloud Hypervisor. A
-// machine that cannot run VMs is not an error: it still runs containers, so this returns an empty entry.
+// newVMRuntime builds the VM runtime this machine can provide. On Linux that is Cloud Hypervisor. When it
+// can't, it returns the runtime's name and what is missing, so the UI can say why.
 func newVMRuntime(deps runtimeDeps) runtimeEntry {
-	// First, because a host without KVM can never run VMs. Nothing to download, nothing to offer.
+	// First, because no download gives a host KVM. The reason is still worth reporting, so the UI can say
+	// why this machine has no VMs.
 	if err := hostCanRunVMs(); err != nil {
 		deps.logger.Info("no vm runtime on this host", "err", err)
-		return runtimeEntry{}
+		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingKVM}
+	}
+	// Before the downloads: the guest init ships inside deepcove, so no download can fix it, and a node
+	// missing it must not offer a setup that cannot finish.
+	guestInit, err := resolveGuestInit(deps.cfg)
+	if err != nil {
+		deps.logger.Info("cloud hypervisor runtime needs setup: no guest init binary", "err", err)
+		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingGuestInit}
 	}
 	kernel, ok := resolveKernel(deps.cfg)
 	if !ok {
@@ -52,15 +60,10 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 			"hint", "set it up from the dashboard")
 		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingHostBinaries}
 	}
-	guestInit, err := resolveGuestInit(deps.cfg)
-	if err != nil {
-		deps.logger.Info("cloud hypervisor runtime needs setup: no guest init binary", "err", err)
-		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingGuestInit}
-	}
 	ipcDir, err := vmSocketDir(deps.cfg.DataDir)
 	if err != nil {
 		deps.logger.Warn("cloud hypervisor runtime unavailable", "err", err)
-		return runtimeEntry{}
+		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingStartFailed}
 	}
 
 	backend := cloudhv.Backend{
@@ -82,7 +85,7 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 	driver, err := deps.vmDriver(backend, kernel, guestInit)
 	if err != nil {
 		deps.logger.Warn("cloud hypervisor runtime unavailable", "err", err)
-		return runtimeEntry{}
+		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingStartFailed}
 	}
 
 	ensurePasstCanIsolateItself(deps.cfg, binaries.passt.path, deps.logger)

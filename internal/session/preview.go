@@ -33,7 +33,7 @@ type PreviewResponse struct {
 // previewCache holds the most recent successful capture per session.
 // Used when the session is stopped (no live capture possible) and as
 // a fallback when a live capture transiently fails (typically during
-// a stop/start cycle while the container's tmux is still booting).
+// a stop/start cycle while the sandbox's tmux is still booting).
 // Memory-only; rebuilt as live captures succeed after a service
 // restart.
 //

@@ -90,10 +90,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// Session-group members share the linked window list (so the windows API still operates on "main"
 	// canonically), but each member has its own current-window: true per-client window views. Killing
 	// the view session on disconnect (deferred below) also tears down the attached tmux client
-	// process,
-	// fixing the separate bug where Docker exec doesn't reliably
-	// SIGHUP the child on connection close (left tmux client
-	// processes piling up inside the container after each toggle).
+	// process, so tmux clients don't pile up inside the sandbox after each toggle.
 	viewSession := "view-" + uuid.NewString()[:8]
 	setupCtx, cancelSetup := context.WithTimeout(ctx, 3*time.Second)
 
@@ -114,7 +111,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	cancelSetup()
 	defer func() {
 		// Cleanup on every return path. Killing the view session
-		// detaches the inside-container tmux client and the exec
+		// detaches the in-sandbox tmux client and the exec
 		// process exits, preventing the accumulation.
 		killCtx, cancelKill := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelKill()
