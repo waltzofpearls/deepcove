@@ -1,4 +1,4 @@
-package cloudhv
+package vmproc
 
 import (
 	"errors"
@@ -6,7 +6,8 @@ import (
 	"os"
 )
 
-func removeSocket(path string) error {
+// RemoveSocket removes a socket file, and is fine when it is already gone.
+func RemoveSocket(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}

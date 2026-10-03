@@ -38,6 +38,7 @@ func Run() error {
 	logf("session entrypoint started; the host starts the agent once setup finishes")
 	serveExec(children)
 	serveControl(cfg)
+	go followHardwareClock()
 	children.reapForever()
 	return nil
 }

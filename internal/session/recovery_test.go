@@ -80,6 +80,41 @@ func TestMarkLostSessionsSkipsRuntimesThatCannotList(t *testing.T) {
 	}
 }
 
+func TestService_MarkSandboxStopped(t *testing.T) {
+	cases := []struct {
+		name       string
+		runtime    string
+		startAgain bool
+		want       Status
+		wantReason StopReason
+	}{
+		{"its runtime", runtimeFake, false, StatusStopped, StopReasonUnresponsive},
+		{"another runtime with the same id", "other", false, StatusRunning, ""},
+		{"starting again clears the reason", runtimeFake, true, StatusRunning, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, _ := newTestService(t)
+			sess := mustCreate(t, svc, "claude")
+
+			svc.MarkSandboxStopped(tc.runtime, sandbox.ID(sess.SandboxID))
+			if tc.startAgain {
+				if err := svc.Start(context.Background(), sess.ID); err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+			}
+
+			got, err := svc.Get(context.Background(), sess.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Status != tc.want || got.StopReason != tc.wantReason {
+				t.Errorf("status, reason = %q, %q, want %q, %q", got.Status, got.StopReason, tc.want, tc.wantReason)
+			}
+		})
+	}
+}
+
 // MarkLostSessions only reports the truth. Start is what makes the session usable again, by building a new
 // sandbox instead of failing forever on a handle no driver has ever heard of.
 func TestStartRebuildsAVanishedSandbox(t *testing.T) {

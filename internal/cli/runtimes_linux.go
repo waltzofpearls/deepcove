@@ -82,7 +82,7 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 		deps.logger.Info("stopped vms left over from a previous run", "processes", stopped)
 	}
 
-	driver, err := deps.vmDriver(backend, kernel, guestInit)
+	driver, err := deps.vmDriver(session.RuntimeCloudHV, backend, kernel, guestInit)
 	if err != nil {
 		deps.logger.Warn("cloud hypervisor runtime unavailable", "err", err)
 		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingStartFailed}

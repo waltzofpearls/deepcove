@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vmproc"
 )
 
 // startVirtiofsd shares one host directory with the guest. Cloud Hypervisor has no file sharing of its
@@ -14,7 +15,7 @@ import (
 //
 // `--sandbox none` because the namespace sandbox needs privileges we do not want to require, and the
 // isolation that matters is the VM's, not the daemon's.
-func startVirtiofsd(binary, socket string, share vm.Share) (*child, error) {
+func startVirtiofsd(binary, socket string, share vm.Share) (*vmproc.Process, error) {
 	argv := []string{
 		"--socket-path", socket,
 		"--shared-dir", share.HostPath,
@@ -25,27 +26,27 @@ func startVirtiofsd(binary, socket string, share vm.Share) (*child, error) {
 	if share.ReadOnly {
 		argv = append(argv, "--readonly")
 	}
-	c, err := startChild("virtiofsd for "+share.Tag, binary, argv)
+	virtiofsd, err := vmproc.Start("virtiofsd for "+share.Tag, binary, argv)
 	if err != nil {
 		return nil, err
 	}
-	if err := waitForFile(c, socket, readyWait); err != nil {
-		return nil, errors.Join(err, c.Stop())
+	if err := virtiofsd.WaitForFile(socket, readyWait); err != nil {
+		return nil, errors.Join(err, virtiofsd.Stop())
 	}
-	return c, nil
+	return virtiofsd, nil
 }
 
 // startPasst gives the guest a network with no privileges on the host. passt creates the socket and the
 // VMM connects to it, which is why the VMM is the client.
-func startPasst(binary, socket string, runAs, nameservers []string) (*child, error) {
-	c, err := startChild("passt", binary, passtArgs(socket, runAs, nameservers))
+func startPasst(binary, socket string, runAs, nameservers []string) (*vmproc.Process, error) {
+	passt, err := vmproc.Start("passt", binary, passtArgs(socket, runAs, nameservers))
 	if err != nil {
 		return nil, err
 	}
-	if err := waitForFile(c, socket, readyWait); err != nil {
-		return nil, errors.Join(err, c.Stop())
+	if err := passt.WaitForFile(socket, readyWait); err != nil {
+		return nil, errors.Join(err, passt.Stop())
 	}
-	return c, nil
+	return passt, nil
 }
 
 // passtArgs keeps the guest off the host. passt's defaults would map the gateway to the host's 127.0.0.1
@@ -112,7 +113,7 @@ const (
 )
 
 // stopAll stops helpers in reverse order and reports everything that went wrong.
-func stopAll(helpers []*child) error {
+func stopAll(helpers []*vmproc.Process) error {
 	var err error
 	for i := len(helpers) - 1; i >= 0; i-- {
 		err = errors.Join(err, helpers[i].Stop())

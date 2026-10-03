@@ -212,9 +212,8 @@ func (m *machine) Running() bool {
 	return m.vm.State() == vz.VirtualMachineStateRunning
 }
 
-// stopWait bounds the wait for the guest to actually halt. RequestStop only asks, and a VM here runs as
-// threads of this process, so returning while it is still up lets the caller exit on top of live VM
-// threads. That is what makes a deepcove no signal can reap.
+// stopWait bounds the wait for the guest to actually stop. RequestStop only asks, and `vm run` exiting
+// while the VM is still up can leave a process that no signal can stop.
 const stopWait = 2 * time.Second
 
 // Stop halts the guest and releases the host side resources.
@@ -252,6 +251,26 @@ func (m *machine) WaitStopped(timeout time.Duration) error {
 			return fmt.Errorf("applevf: the guest did not halt within %s", timeout)
 		}
 	}
+}
+
+const stopCheckEvery = 250 * time.Millisecond
+
+// stoppedOnItsOwn closes once the guest has stopped, so `vm run` can exit with it. It checks the state on
+// a timer: vz hands each state change to only one reader, and WaitStopped needs those.
+func (m *machine) stoppedOnItsOwn() <-chan struct{} {
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for !m.isStopped() {
+			time.Sleep(stopCheckEvery)
+		}
+	}()
+	return stopped
+}
+
+func (m *machine) isStopped() bool {
+	state := m.vm.State()
+	return state == vz.VirtualMachineStateStopped || state == vz.VirtualMachineStateError
 }
 
 // Dial connects to a guest vsock port.

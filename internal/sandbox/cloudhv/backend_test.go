@@ -112,7 +112,7 @@ func TestStopRemovesTheIPCDirectory(t *testing.T) {
 	}
 	for _, helper := range m.(*machine).helpers {
 		if helper.Running() {
-			t.Errorf("%s is still running", helper.name)
+			t.Errorf("%s is still running", helper.Name())
 		}
 	}
 }
@@ -161,4 +161,15 @@ func readArgs(t *testing.T, dir, name string) string {
 		t.Fatalf("read %s args: %v", name, err)
 	}
 	return string(body)
+}
+
+// shortTempDir keeps socket paths inside the platform limit; t.TempDir() is already too long on macOS.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "dc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

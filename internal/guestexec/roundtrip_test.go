@@ -291,3 +291,105 @@ func TestExecInheritsTheServerEnvironment(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 }
+
+// The bug behind the Apple VF jam: a caller that reads only stdout left the pump blocked on stderr, so
+// the host stopped reading the guest for good.
+func TestClient_KeepsReadingWhenAStreamIsNotRead(t *testing.T) {
+	hostConn, guestConn := net.Pipe()
+	go func() {
+		_, _ = ReadRequest(guestConn)
+		_ = WriteFrame(guestConn, FrameStderr, []byte("cat: no such file\n"))
+		_ = WriteFrame(guestConn, FrameStdout, []byte("ok"))
+		_ = WriteFrame(guestConn, FrameExit, EncodeExit(0))
+	}()
+	client, err := Start(hostConn, ExecRequest{Argv: []string{"cat"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	out := readWithin(t, client.Stdout(), 2*time.Second)
+	if string(out) != "ok" {
+		t.Errorf("stdout = %q, want ok", out)
+	}
+}
+
+// A reader that stops must not stop the host reading the guest for long: the exec is cut off.
+func TestClient_CutsOffOutputPastTheLimit(t *testing.T) {
+	hostConn, guestConn := net.Pipe()
+	guestErr := make(chan error, 1)
+	go func() {
+		_, _ = ReadRequest(guestConn)
+		for {
+			if err := WriteFrame(guestConn, FrameStdout, make([]byte, 64)); err != nil {
+				guestErr <- err
+				return
+			}
+		}
+	}()
+	client, err := startWithLimits(hostConn, ExecRequest{Argv: []string{"yes"}}, 256, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := client.Wait(ctx); !errors.Is(err, errStreamFull) {
+		t.Errorf("Wait error = %v, want the cut off", err)
+	}
+	select {
+	case <-guestErr:
+	case <-time.After(2 * time.Second):
+		t.Error("the guest is still writing into a connection nobody reads")
+	}
+}
+
+// A terminal on a slow browser falls behind but keeps reading, so it gets all the output.
+func TestClient_WaitsForASlowReader(t *testing.T) {
+	hostConn, guestConn := net.Pipe()
+	go func() {
+		_, _ = ReadRequest(guestConn)
+		for range 16 {
+			_ = WriteFrame(guestConn, FrameStdout, make([]byte, 64))
+		}
+		_ = WriteFrame(guestConn, FrameExit, EncodeExit(0))
+	}()
+	client, err := startWithLimits(hostConn, ExecRequest{Argv: []string{"cat"}}, 256, time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	total := 0
+	chunk := make([]byte, 64)
+	for {
+		time.Sleep(5 * time.Millisecond)
+		read, err := client.Stdout().Read(chunk)
+		total += read
+		if err != nil {
+			break
+		}
+	}
+	if total != 16*64 {
+		t.Errorf("read %d bytes, want %d", total, 16*64)
+	}
+}
+
+// readWithin reads reader to the end, failing the test instead of hanging when it never ends.
+func readWithin(t *testing.T, reader io.Reader, limit time.Duration) []byte {
+	t.Helper()
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(reader)
+		done <- result{data, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("read: %v", got.err)
+		}
+		return got.data
+	case <-time.After(limit):
+		t.Fatal("the read never finished: the pump stopped reading the guest")
+		return nil
+	}
+}

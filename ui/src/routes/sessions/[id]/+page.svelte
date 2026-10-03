@@ -151,6 +151,8 @@
   // The shell window lives in the sandbox's tmux, so a rebuilt sandbox has none, while the URL still
   // says Shell. Without this the attach quietly lands on the agent's window instead.
   let shellReady = $state(false);
+  // Set when the shell gave up, so the pane stops saying it is still opening.
+  let shellFailed = $state(false);
   $effect(() => {
     const needsShell = currentMode === 'shell' || currentMode === 'split';
     const ready = session?.status === 'running';
@@ -158,33 +160,75 @@
     void session?.sandbox_id;
     if (!needsShell || !ready || !session) {
       shellReady = false;
+      shellFailed = false;
       return;
     }
-    let cancelled = false;
     const sess = untrack(() => session);
+    if (!sess) return;
+    const stopOpening = new AbortController();
     const h = untrack(() => host);
-    void ensureShellWindow(sess, h).then((ok) => {
-      if (!cancelled) shellReady = ok;
+    void openShellWhenSetupIsDone(sess, h, stopOpening.signal).then((opened) => {
+      if (stopOpening.signal.aborted) return;
+      shellReady = opened;
+      shellFailed = !opened;
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => stopOpening.abort();
   });
 
-  // 409 means it is already there, which is success for us.
-  async function ensureShellWindow(
-    sess: Session | null,
+  const setupPollMs = 1000;
+  // deepcove starts the agent's tmux a moment after setup is done, so the first tries can miss it.
+  const shellOpenAttempts = 5;
+
+  // The shell window lives in the agent's tmux, which exists only once setup is done. A VM that just
+  // booted is still setting up, so opening the window right away fails.
+  async function openShellWhenSetupIsDone(
+    sess: Session,
     h: SessionHost | undefined,
+    signal: AbortSignal,
   ): Promise<boolean> {
-    if (!sess) return false;
-    try {
-      await api.createTmuxWindow(sess.id, { name: 'shell' }, h);
-      return true;
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) return true;
-      actionError = `Failed to open the shell window: ${e instanceof Error ? e.message : String(e)}`;
+    const setupDone = await waitForSetup(sess, h, signal);
+    if (!setupDone) {
+      if (!signal.aborted)
+        actionError = 'Setup failed, so the shell cannot open. The Agent tab shows the setup log.';
       return false;
     }
+    for (let attempt = 1; !signal.aborted; attempt++) {
+      try {
+        await api.createTmuxWindow(sess.id, { name: 'shell' }, h);
+        return true;
+      } catch (e) {
+        // 409 means it is already there, which is success for us.
+        if (e instanceof ApiError && e.status === 409) return true;
+        if (attempt === shellOpenAttempts) {
+          actionError = `Failed to open the shell window: ${e instanceof Error ? e.message : String(e)}`;
+          return false;
+        }
+      }
+      await wait(setupPollMs);
+    }
+    return false;
+  }
+
+  async function waitForSetup(
+    sess: Session,
+    h: SessionHost | undefined,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    while (!signal.aborted) {
+      try {
+        const setup = await api.sessionBootstrap(sess.id, h, signal);
+        if (setup.status === 'ready') return true;
+        if (setup.status === 'errored') return false;
+      } catch {
+        // Aborts and passing errors both land here.
+      }
+      await wait(setupPollMs);
+    }
+    return false;
+  }
+
+  function wait(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   async function switchMode(next: SessionMode): Promise<void> {
@@ -215,7 +259,9 @@
   const statusHint = $derived(
     session?.status === 'errored'
       ? 'Start it again, or destroy and recreate it.'
-      : 'The terminal opens when the session is running.',
+      : session?.status === 'stopped' && session.stop_reason === 'unresponsive'
+        ? 'The VM stopped answering and was shut down. Start it again.'
+        : 'The terminal opens when the session is running.',
   );
 
   $effect(() => {
@@ -263,8 +309,19 @@
     const polled = listed;
     if (!polled) return;
     untrack(() => {
-      if (session && session.id === polled.id && session.status !== polled.status) {
-        session = { ...session, status: polled.status };
+      if (
+        session &&
+        session.id === polled.id &&
+        (session.status !== polled.status ||
+          session.stop_reason !== polled.stop_reason ||
+          session.sandbox_id !== polled.sandbox_id)
+      ) {
+        session = {
+          ...session,
+          status: polled.status,
+          stop_reason: polled.stop_reason,
+          sandbox_id: polled.sandbox_id,
+        };
       }
     });
   });
@@ -628,7 +685,7 @@
             />
           {:else}
             <div class="flex h-full items-center justify-center text-sm text-muted-foreground">
-              opening shell…
+              {shellFailed ? 'the shell could not open' : 'opening shell…'}
             </div>
           {/if}
         </div>
@@ -643,7 +700,7 @@
         />
       {:else}
         <div class="flex h-full items-center justify-center text-sm text-muted-foreground">
-          opening shell…
+          {shellFailed ? 'the shell could not open' : 'opening shell…'}
         </div>
       {/if}
     {:else if session}

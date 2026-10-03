@@ -51,6 +51,19 @@ func TestGuestStopAsksTheGuestFirst(t *testing.T) {
 	}
 }
 
+func TestGuest_Stop_StopsAFrozenGuestWithoutAnError(t *testing.T) {
+	// Never answers the control port.
+	machine := newFakeMachine()
+	guest := NewGuest(machine, nil)
+
+	if err := guest.Stop(); err != nil {
+		t.Errorf("Stop = %v, want no error: the VM did stop", err)
+	}
+	if machine.Running() {
+		t.Error("the frozen guest is still running after Stop")
+	}
+}
+
 // WaitReady must not report a bare timeout: the console tail is the only evidence of why a guest failed.
 func TestWaitReadyReportsTheConsole(t *testing.T) {
 	m := newFakeMachine()

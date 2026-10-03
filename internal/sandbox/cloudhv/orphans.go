@@ -11,14 +11,16 @@ import (
 	"time"
 )
 
-// orphanGracePeriod is how long a leftover process gets to go on its own before it is killed.
-const orphanGracePeriod = 2 * time.Second
+const (
+	// orphanGracePeriod is how long a leftover process gets to go on its own before it is killed.
+	orphanGracePeriod    = 2 * time.Second
+	orphanGoneCheckEvery = 20 * time.Millisecond
+)
 
 // SweepOrphans stops the VMs a previous deepcove left running and removes the directories they used.
 //
-// Apple VF runs a VM inside this process, so one dies with it. Cloud Hypervisor does not: the VMM,
-// virtiofsd and passt are separate processes, and an abrupt exit leaves them running with nobody left to
-// stop them. They are found by the directory they were given, so only this node's are touched.
+// The VMM, virtiofsd and passt are separate processes, and an abrupt exit leaves them running with nobody
+// left to stop them. They are found by the directory they were given, so only this node's are touched.
 func (b Backend) SweepOrphans() (int, error) {
 	dirs, err := ipcDirEntries(b.IPCDir)
 	if err != nil || len(dirs) == 0 {
@@ -103,6 +105,6 @@ func waitGone(pids []int, grace time.Duration) int {
 		if alive == 0 || time.Now().After(deadline) {
 			return alive
 		}
-		time.Sleep(readyPoll)
+		time.Sleep(orphanGoneCheckEvery)
 	}
 }

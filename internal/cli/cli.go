@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -32,6 +33,11 @@ var commands = []command{
 	{"version", "print version", cmdVersion},
 }
 
+// internalCommands are run by deepcove itself, never typed, so the help leaves them out.
+var internalCommands = []command{
+	{"vm", "", cmdVM},
+}
+
 // Run dispatches to a subcommand and returns an exit code. Intended to be called from cmd/deepcove/main.go as:
 //
 //	os.Exit(cli.Run(os.Args[1:]))
@@ -49,13 +55,13 @@ func Run(args []string) int {
 		return 0
 	}
 
-	for _, c := range commands {
-		if c.name != name {
+	for _, cmd := range slices.Concat(commands, internalCommands) {
+		if cmd.name != name {
 			continue
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		if err := c.run(ctx, rest); err != nil {
+		if err := cmd.run(ctx, rest); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return 0
 			}

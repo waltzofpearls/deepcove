@@ -20,10 +20,13 @@ func (r *fakeRepo) List(context.Context, string, bool) ([]*Session, error) {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].LastActivityAt.After(out[j].LastActivityAt) })
 	return out, nil
 }
-func (r *fakeRepo) Insert(context.Context, *Session) error                          { return nil }
-func (r *fakeRepo) Get(context.Context, string, string) (*Session, error)           { return nil, ErrNotFound }
-func (r *fakeRepo) MarkRunning(context.Context, string, string, time.Time) error    { return nil }
-func (r *fakeRepo) MarkStopped(context.Context, string, string, time.Time) error    { return nil }
+func (r *fakeRepo) Insert(context.Context, *Session) error                       { return nil }
+func (r *fakeRepo) Get(context.Context, string, string) (*Session, error)        { return nil, ErrNotFound }
+func (r *fakeRepo) MarkRunning(context.Context, string, string, time.Time) error { return nil }
+func (r *fakeRepo) MarkStopped(context.Context, string, string, time.Time) error { return nil }
+func (r *fakeRepo) MarkStoppedBecause(context.Context, string, string, StopReason, time.Time) error {
+	return nil
+}
 func (r *fakeRepo) UpdateActivity(context.Context, string, string, time.Time) error { return nil }
 func (r *fakeRepo) Rename(context.Context, string, string, string, time.Time) error { return nil }
 func (r *fakeRepo) UpdateUseLLMProxy(context.Context, string, string, bool, time.Time) error {

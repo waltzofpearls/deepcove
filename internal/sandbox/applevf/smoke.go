@@ -43,14 +43,15 @@ type SmokeMachine interface {
 	Stop() error
 }
 
-// BootSmoke boots one VM from a SmokeSpec. On non darwin platforms it returns the not supported error
-// from bootVM. Running a booted VM requires the com.apple.security.virtualization entitlement.
+// BootSmoke boots one VM from a SmokeSpec, inside this process: the smoke tool tests Apple VF itself. On
+// non darwin platforms it returns the not supported error from bootVM. Running a booted VM requires the
+// com.apple.security.virtualization entitlement.
 func BootSmoke(s SmokeSpec) (SmokeMachine, error) {
 	cmdline := s.Cmdline
 	if cmdline == "" {
 		cmdline = vm.DefaultCmdline().String()
 	}
-	booted, err := Backend{}.Boot(vm.Spec{
+	booted, err := bootVM(vm.Spec{
 		KernelPath:   s.KernelPath,
 		InitrdPath:   s.InitrdPath,
 		Cmdline:      cmdline,
@@ -58,7 +59,7 @@ func BootSmoke(s SmokeSpec) (SmokeMachine, error) {
 		ScratchImage: s.ScratchImage,
 		CPUCount:     s.CPUCount,
 		MemoryBytes:  s.MemoryBytes,
-	})
+	}, nil)
 	if err != nil {
 		return nil, err // return a nil interface, not a typed nil *machine
 	}

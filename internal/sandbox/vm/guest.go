@@ -57,9 +57,13 @@ func (g *Guest) Unresponsive() bool {
 // Stop asks the guest to power itself off, then tears down the machine and everything held for it.
 //
 // The polite shutdown comes first because it is the guest's only chance to hand back credentials the
-// agent refreshed. The backend's Stop is the hard stop underneath it.
+// agent refreshed. The backend's Stop is the hard stop underneath it, so a guest that does not answer is
+// still stopped, and only a failed hard stop is an error.
 func (g *Guest) Stop() error {
-	return errors.Join(g.Shutdown(), g.release())
+	if err := g.Shutdown(); err != nil {
+		g.logger.Warn("the guest did not answer the shutdown request, stopping it anyway", "err", err)
+	}
+	return g.release()
 }
 
 // ForceStop tears the machine down without asking the guest, which loses whatever it would hand back.

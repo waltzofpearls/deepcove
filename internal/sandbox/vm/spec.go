@@ -28,6 +28,9 @@ type Spec struct {
 
 	// Shares are host directories exposed over virtio-fs, one device each. The guest mounts them by tag.
 	Shares []Share
+	// HostPorts are the vsock ports the host serves the guest on. A backend that runs the VM in another
+	// process listens on these for the guest from the start.
+	HostPorts []uint32
 }
 
 // Share is one host directory shared into the guest.

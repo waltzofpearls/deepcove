@@ -4,6 +4,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -29,7 +31,25 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 		return runtimeEntry{name: session.RuntimeAppleVF, missing: session.MissingKernel}
 	}
 
-	driver, err := deps.vmDriver(applevf.Backend{Logger: deps.logger}, kernel, guestInit)
+	self, err := os.Executable()
+	if err != nil {
+		deps.logger.Warn("apple vf runtime unavailable: cannot find this binary", "err", err)
+		return runtimeEntry{name: session.RuntimeAppleVF, missing: session.MissingStartFailed}
+	}
+	ipcDir, err := ensureIPCDir(deps.cfg.DataDir)
+	if err != nil {
+		deps.logger.Warn("apple vf runtime unavailable", "err", err)
+		return runtimeEntry{name: session.RuntimeAppleVF, missing: session.MissingStartFailed}
+	}
+	vmDir := filepath.Join(ipcDir, "vm")
+	// Before the driver is built: it clears out disks, and a VM a crashed deepcove left could still use them.
+	if stopped, err := applevf.SweepLeftovers(vmDir); err != nil {
+		deps.logger.Warn("could not clear out the vms a previous run left behind", "err", err)
+	} else if stopped > 0 {
+		deps.logger.Info("stopped vms left over from a previous run", "processes", stopped)
+	}
+	backend := applevf.Backend{Self: self, IPCDir: vmDir}
+	driver, err := deps.vmDriver(session.RuntimeAppleVF, backend, kernel, guestInit)
 	if err != nil {
 		deps.logger.Warn("apple vf runtime unavailable", "err", err)
 		return runtimeEntry{name: session.RuntimeAppleVF, missing: session.MissingStartFailed}

@@ -39,6 +39,9 @@ type SessionRepository interface {
 	// Service.Stop.
 	MarkStopped(ctx context.Context, owner, id string, now time.Time) error
 
+	// MarkStoppedBecause is MarkStopped for a session deepcove stopped on its own, and records why.
+	MarkStoppedBecause(ctx context.Context, owner, id string, reason StopReason, now time.Time) error
+
 	// UpdateActivity bumps last_activity_at. Called per attach
 	// open / 30s tick / disconnect; cheap by design.
 	UpdateActivity(ctx context.Context, owner, id string, at time.Time) error
@@ -116,7 +119,7 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 
 func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*Session, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources,
+		SELECT id, name, agent, image, owner_email, status, stop_reason, mounts, env, setup_script, runtime, resources,
 		       sandbox_id, on_workspace_vm, use_llm_proxy, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, owner)
@@ -132,7 +135,7 @@ func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*S
 
 func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includeAll bool) ([]*Session, error) {
 	query := `
-		SELECT id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources,
+		SELECT id, name, agent, image, owner_email, status, stop_reason, mounts, env, setup_script, runtime, resources,
 		       sandbox_id, on_workspace_vm, use_llm_proxy, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
@@ -163,7 +166,7 @@ func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includ
 
 func (r *duckdbSessionRepository) MarkRunning(ctx context.Context, owner, id string, now time.Time) error {
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE sessions SET status = ?, updated_at = ?, last_activity_at = ?
+		`UPDATE sessions SET status = ?, stop_reason = NULL, updated_at = ?, last_activity_at = ?
 		 WHERE id = ? AND owner_email = ?`,
 		string(StatusRunning), now, now, id, owner)
 	if err != nil {
@@ -173,10 +176,14 @@ func (r *duckdbSessionRepository) MarkRunning(ctx context.Context, owner, id str
 }
 
 func (r *duckdbSessionRepository) MarkStopped(ctx context.Context, owner, id string, now time.Time) error {
+	return r.MarkStoppedBecause(ctx, owner, id, "", now)
+}
+
+func (r *duckdbSessionRepository) MarkStoppedBecause(ctx context.Context, owner, id string, reason StopReason, now time.Time) error {
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE sessions SET status = ?, updated_at = ?
+		`UPDATE sessions SET status = ?, stop_reason = NULLIF(?, ''), updated_at = ?
 		 WHERE id = ? AND owner_email = ?`,
-		string(StatusStopped), now, id, owner)
+		string(StatusStopped), string(reason), now, id, owner)
 	if err != nil {
 		return fmt.Errorf("session: mark stopped: %w", err)
 	}
@@ -280,11 +287,12 @@ func scanRow(r rowScanner) (*Session, error) {
 		useLLMProxy    sql.NullBool
 		workDir        sql.NullString
 		status         string
+		stopReason     sql.NullString
 		lastActivityAt sql.NullTime
 	)
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &mountsJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &sandboxID,
+		&status, &stopReason, &mountsJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &sandboxID,
 		&onWorkspaceVM, &useLLMProxy, &workDir,
 		&sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
@@ -314,6 +322,7 @@ func scanRow(r rowScanner) (*Session, error) {
 		sess.LastActivityAt = sess.CreatedAt
 	}
 	sess.Status = Status(status)
+	sess.StopReason = StopReason(stopReason.String)
 	if sandboxID.Valid {
 		sess.SandboxID = sandboxID.String
 	}

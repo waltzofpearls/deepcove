@@ -146,14 +146,17 @@ type runtimeDeps struct {
 
 // vmDriver builds the driver every VM runtime uses. Only the hypervisor differs between platforms;
 // everything above it is this.
-func (deps runtimeDeps) vmDriver(backend vm.Backend, kernel, guestInit vmAsset) (*vm.Driver, error) {
+func (deps runtimeDeps) vmDriver(name string, backend vm.Backend, kernel, guestInit vmAsset) (*vm.Driver, error) {
 	return vm.NewDriver(backend, kernel.path, guestInit.path, deps.cfg.DataDir,
 		vm.WithCredentialStore(deps.creds),
 		vm.WithLogger(deps.logger),
 		vm.WithShareRoots(deps.shareRoots),
 		vm.WithNetworkAllow(deps.cfg.AllowSandboxHosts...),
 		vm.WithTailnetClient(deps.tailnetClient),
-		vm.WithLLMProxyURL(deps.svc.LLMProxyURL))
+		vm.WithLLMProxyURL(deps.svc.LLMProxyURL),
+		vm.WithOnSilentGuestStopped(func(sandboxID sandbox.ID) {
+			deps.svc.MarkSandboxStopped(name, sandboxID)
+		}))
 }
 
 // vmRuntimeEntry is a built VM runtime, ready to register.
