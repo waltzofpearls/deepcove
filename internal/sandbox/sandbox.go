@@ -110,9 +110,9 @@ type Adopter interface {
 // independent of what the session table believes. That gap is the whole point: comparing the two is how
 // you tell a leaked sandbox from a session whose sandbox is already gone.
 //
-// It matters most for VM backends. Their VMs run in process, as threads inside deepcove rather than as
-// OS processes, so no external tool can ever show them. Drivers that cannot enumerate their sandboxes
-// simply do not implement this, and the session layer reports listing as unsupported for them.
+// It matters most for VM backends: only deepcove knows which VM belongs to which session. Drivers that
+// cannot enumerate their sandboxes simply do not implement this, and the session layer reports listing as
+// unsupported for them.
 type Lister interface {
 	// ListSandboxes returns every sandbox this driver currently tracks, running or not.
 	ListSandboxes(ctx context.Context) ([]Instance, error)

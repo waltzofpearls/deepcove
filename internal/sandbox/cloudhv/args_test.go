@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vmproc"
 )
 
 func testSpec() vm.Spec {
@@ -125,7 +126,7 @@ func TestArgsInitrd(t *testing.T) {
 }
 
 func TestCommandLineQuotesTheCmdline(t *testing.T) {
-	got := commandLine("/usr/bin/cloud-hypervisor", args(testSpec(), testPaths()))
+	got := vmproc.CommandLine("/usr/bin/cloud-hypervisor", args(testSpec(), testPaths()))
 	if !strings.Contains(got, `"console=hvc0 root=/dev/vda ro init=/sbin/deepcove-init"`) {
 		t.Errorf("the command line should be runnable as printed: %s", got)
 	}

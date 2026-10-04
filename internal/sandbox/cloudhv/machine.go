@@ -3,12 +3,14 @@ package cloudhv
 import (
 	"errors"
 	"os"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vmproc"
 )
 
 // machine is one VM: the hypervisor process, the helpers serving it, and the directory they share.
 type machine struct {
 	*process
-	helpers []*child
+	helpers []*vmproc.Process
 	ipcDir  string
 }
 

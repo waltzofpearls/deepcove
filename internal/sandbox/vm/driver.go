@@ -56,6 +56,11 @@ type Driver struct {
 	// agent can read.
 	llmProxyURL func() string
 
+	silentGuestCheckEvery time.Duration
+	silentGuestLimit      time.Duration
+	// onSilentGuestStopped hears about a VM the driver stopped on its own, so the session can say so.
+	onSilentGuestStopped func(sandbox.ID)
+
 	mu        sync.Mutex
 	sandboxes map[sandbox.ID]*sandboxState
 }
@@ -73,8 +78,7 @@ type sandboxState struct {
 // Option configures a Driver.
 type Option func(*Driver)
 
-// WithLogger records VM lifecycle transitions. On a Mac the VMs are threads inside deepcove, so ps and
-// Activity Monitor never show them; outside the Nodes page, the log is the only way to watch them.
+// WithLogger records VM lifecycle transitions, which tie each VM to its session in the log.
 func WithLogger(logger *slog.Logger) Option {
 	return func(d *Driver) { d.logger = logger }
 }
@@ -111,6 +115,11 @@ func WithCredentialStore(store credbroker.Store) Option {
 	return func(d *Driver) { d.creds = store }
 }
 
+// WithOnSilentGuestStopped is told about each VM the driver stopped because its guest went silent.
+func WithOnSilentGuestStopped(stopped func(sandbox.ID)) Option {
+	return func(d *Driver) { d.onSilentGuestStopped = stopped }
+}
+
 // NewDriver builds a Driver on a hypervisor. kernelPath is the guest kernel (a Kata style build with
 // virtio and overlayfs compiled in), guestInitPath is the compiled Linux init binary baked into every
 // image, and stateDir is where this runtime keeps what it owns: cached base images, and the per session
@@ -136,6 +145,9 @@ func NewDriver(backend Backend, kernelPath, guestInitPath, stateDir string, opts
 		kernel:    kernelPath,
 		guestInit: guestInitPath,
 		sandboxes: map[sandbox.ID]*sandboxState{},
+
+		silentGuestCheckEvery: silentGuestCheckEvery,
+		silentGuestLimit:      silentGuestLimit,
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -241,23 +253,24 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		CPUCount:     cpuCount(state.spec.Resources),
 		MemoryBytes:  memory,
 		Shares:       shares,
+		HostPorts:    []uint32{llmproxy.HostVSockPort, guestcfg.Port, credbroker.Port},
 	})
 	if err != nil {
 		return err
 	}
-	m := NewGuest(booted, d.logger)
+	guest := NewGuest(booted, d.logger)
 	// Recorded before it is ready: a hypervisor owns its VM as a separate process, so one booted while
 	// the node is shutting down has to be reachable by Close or it outlives deepcove.
 	d.mu.Lock()
-	state.machine = m
+	state.machine = guest
 	d.mu.Unlock()
 
 	homeDevice, swapDevice := guestDevices(home, swap)
-	if err := m.ServeLLMForward(d.llmProxyURL, d.tailnetClient); err != nil {
-		return d.abandon(state, m, err)
+	if err := guest.ServeLLMForward(d.llmProxyURL, d.tailnetClient); err != nil {
+		return d.abandon(state, guest, err)
 	}
 	// The guest asks for both of these at boot, so they have to be listening before it gets that far.
-	if err := m.ServeConfig(guestcfg.Config{
+	if err := guest.ServeConfig(guestcfg.Config{
 		Entrypoint:     state.spec.Cmd,
 		Agent:          state.spec.Agent.Name,
 		Env:            state.spec.Env,
@@ -268,31 +281,32 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		NetworkAllow:   d.networkAllow,
 		LLMRequestPort: llmproxy.LLMRequestPort,
 	}); err != nil {
-		return d.abandon(state, m, err)
+		return d.abandon(state, guest, err)
 	}
 	if d.creds != nil {
-		if err := m.ServeCredentials(d.creds, state.spec.Agent.Name); err != nil {
-			return d.abandon(state, m, err)
+		if err := guest.ServeCredentials(d.creds, state.spec.Agent.Name); err != nil {
+			return d.abandon(state, guest, err)
 		}
 	}
 
 	// Drain the console before waiting: it is an OS pipe, so an undrained one eventually blocks the
 	// guest mid boot, and its contents are what explain a failure to come up.
-	m.CaptureConsole(d.consolePath(sandboxID))
+	guest.CaptureConsole(d.consolePath(sandboxID))
 
 	// Do not report a running session until the guest actually answers. Otherwise a guest that panicked
 	// still looks healthy and only reveals itself later as an empty terminal.
-	if err := m.WaitReady(ctx, bootTimeout); err != nil {
-		return d.abandon(state, m, err)
+	if err := guest.WaitReady(ctx, bootTimeout); err != nil {
+		return d.abandon(state, guest, err)
 	}
 
 	d.mu.Lock()
-	ours := state.machine == m
+	ours := state.machine == guest
 	live := d.liveCountLocked()
 	d.mu.Unlock()
 	if !ours {
 		return fmt.Errorf("vm: sandbox %s was stopped while it was starting", sandboxID)
 	}
+	go d.watchForSilence(sandboxID, guest)
 	d.logger.Info("vm started", "handle", sandboxID, "image", state.spec.Image, "live_vms", live)
 	return nil
 }

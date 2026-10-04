@@ -146,6 +146,29 @@ func (s *Service) MarkLostSessions(ctx context.Context) ([]*Session, error) {
 	return lost, nil
 }
 
+// MarkSandboxStopped marks the sessions on a sandbox stopped after their runtime stopped it on its own.
+// Left running, Start would refuse to bring them back.
+func (s *Service) MarkSandboxStopped(runtime string, sandboxID sandbox.ID) {
+	ctx := context.Background()
+	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
+	if err != nil {
+		s.logger.Warn("could not mark the sessions on a stopped sandbox", "sandbox", sandboxID, "err", err)
+		return
+	}
+	defaultRuntime := s.DefaultRuntime()
+	for _, sess := range sessions {
+		if sess.Status != StatusRunning || sess.SandboxID != string(sandboxID) || cmp.Or(sess.Runtime, defaultRuntime) != runtime {
+			continue
+		}
+		if err := s.repo.MarkStoppedBecause(ctx, placeholderOwner, sess.ID, StopReasonUnresponsive, time.Now().UTC()); err != nil {
+			s.logger.Warn("could not mark a session stopped", "id", sess.ID, "err", err)
+			continue
+		}
+		s.logger.Info("session marked stopped: its vm stopped answering", "id", sess.ID, "name", sess.Name,
+			"runtime", runtime, "sandbox", sandboxID)
+	}
+}
+
 // RestartSessions starts sessions again at boot: a VM dies with the process that ran it.
 //
 // One at a time, so booting VMs does not spike memory. A session that fails is logged and left

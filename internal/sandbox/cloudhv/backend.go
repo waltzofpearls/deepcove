@@ -13,8 +13,6 @@ package cloudhv
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -27,6 +25,7 @@ import (
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vmproc"
 	"github.com/waltzofpearls/deepcove/internal/vmruntime"
 )
 
@@ -54,7 +53,7 @@ func (b Backend) Boot(spec vm.Spec) (vm.Machine, error) {
 	if err := b.validate(); err != nil {
 		return nil, err
 	}
-	ipcDir, err := b.newIPCDir()
+	ipcDir, err := vmproc.NewRunDir(b.IPCDir)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +63,7 @@ func (b Backend) Boot(spec vm.Spec) (vm.Machine, error) {
 		vsock:   filepath.Join(ipcDir, "vsock.sock"),
 		console: filepath.Join(ipcDir, "console"),
 	}
-	var helpers []*child
+	var helpers []*vmproc.Process
 	fail := func(err error) (vm.Machine, error) {
 		return nil, errors.Join(err, stopAll(helpers), os.RemoveAll(ipcDir))
 	}
@@ -140,18 +139,4 @@ func (b Backend) validate() error {
 		}
 	}
 	return nil
-}
-
-// newIPCDir makes one VM's directory. The name is short on purpose: every socket in it counts against
-// the path limit.
-func (b Backend) newIPCDir() (string, error) {
-	var id [4]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		return "", err
-	}
-	dir := filepath.Join(b.IPCDir, hex.EncodeToString(id[:]))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("cloudhv: %w", err)
-	}
-	return dir, nil
 }

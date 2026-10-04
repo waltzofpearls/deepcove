@@ -30,15 +30,23 @@ const (
 	StatusErrored  Status = "errored"
 )
 
+// StopReason says why deepcove stopped a session on its own.
+type StopReason string
+
+// StopReasonUnresponsive is a VM that stopped answering, so deepcove shut it down.
+const StopReasonUnresponsive StopReason = "unresponsive"
+
 // Mounts only holds USER-supplied mounts; the agent's home is an implementation detail and stays out of
 // the API.
 type Session struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Agent       string            `json:"agent"`
-	Image       string            `json:"image"`
-	OwnerEmail  string            `json:"owner_email"`
-	Status      Status            `json:"status"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Agent      string `json:"agent"`
+	Image      string `json:"image"`
+	OwnerEmail string `json:"owner_email"`
+	Status     Status `json:"status"`
+	// StopReason is empty unless deepcove stopped the session on its own.
+	StopReason  StopReason        `json:"stop_reason,omitempty"`
 	Env         map[string]string `json:"env"`
 	Mounts      []MountRequest    `json:"mounts"`
 	SetupScript string            `json:"setup_script"`

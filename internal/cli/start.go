@@ -294,12 +294,10 @@ func drainServers(grace time.Duration, logger *slog.Logger, servers ...*http.Ser
 // forceCloseGrace bounds the last attempt to put the VMs down.
 const forceCloseGrace = 3 * time.Second
 
-// watchShutdown force-exits if teardown wedges, after writing every goroutine stack to a file. A VM runs
-// as threads inside this process, so one stuck in the kernel can make the process unkillable; the stacks
-// have to be on disk before that.
+// watchShutdown force-exits if teardown wedges, after writing every goroutine stack to a file. The stacks
+// are what explain the wedge.
 //
-// The VMs go down before exiting: exiting on top of VMs the hypervisor still owns leaves a process no
-// signal can reap, holding the database lock until the machine reboots.
+// The VMs are stopped before exiting, so none is left running with nobody to stop it.
 func watchShutdown(dataDir string, logger *slog.Logger, runtimes *runtimeSet) {
 	go func() {
 		time.Sleep(shutdownHardStop)

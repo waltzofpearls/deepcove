@@ -2,8 +2,6 @@ package cloudhv
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 )
@@ -72,16 +70,4 @@ func diskArgs(spec vm.Spec) []string {
 		}
 	}
 	return out
-}
-
-// commandLine is what a failing launch prints, so the command can be run by hand.
-func commandLine(binary string, argv []string) string {
-	quoted := make([]string, 0, len(argv))
-	for _, a := range argv {
-		if strings.ContainsAny(a, " \t") {
-			a = strconv.Quote(a)
-		}
-		quoted = append(quoted, a)
-	}
-	return binary + " " + strings.Join(quoted, " ")
 }

@@ -1,4 +1,4 @@
-package cloudhv
+package vmproc
 
 import (
 	"context"
@@ -59,9 +59,9 @@ func fakeVMM(t *testing.T, reply func(port string) string) string {
 func TestDialGuest(t *testing.T) {
 	path := fakeVMM(t, func(port string) string { return "OK " + port + "\n" })
 
-	conn, err := dialGuest(context.Background(), path, 1024)
+	conn, err := DialGuest(context.Background(), path, 1024)
 	if err != nil {
-		t.Fatalf("dialGuest: %v", err)
+		t.Fatalf("DialGuest: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -82,7 +82,7 @@ func TestDialGuest(t *testing.T) {
 func TestDialGuestRefused(t *testing.T) {
 	path := fakeVMM(t, func(string) string { return "ERROR 2\n" })
 
-	if _, err := dialGuest(context.Background(), path, 1024); err == nil {
+	if _, err := DialGuest(context.Background(), path, 1024); err == nil {
 		t.Error("a refused port should fail")
 	} else if !strings.Contains(err.Error(), "refused") {
 		t.Errorf("the error should say it was refused, got: %v", err)
@@ -91,7 +91,7 @@ func TestDialGuestRefused(t *testing.T) {
 
 func TestDialGuestNoSocket(t *testing.T) {
 	missing := filepath.Join(shortTempDir(t), "not-there.sock")
-	if _, err := dialGuest(context.Background(), missing, 1024); err == nil {
+	if _, err := DialGuest(context.Background(), missing, 1024); err == nil {
 		t.Error("dialing a socket that does not exist should fail")
 	}
 }
@@ -115,7 +115,7 @@ func TestDialGuestHonoursTheContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if _, err := dialGuest(ctx, path, 1024); err == nil {
+	if _, err := DialGuest(ctx, path, 1024); err == nil {
 		t.Fatal("a silent VMM should not produce a working connection")
 	}
 	if elapsed := time.Since(start); elapsed > handshakeTimeout {
@@ -125,9 +125,9 @@ func TestDialGuestHonoursTheContext(t *testing.T) {
 
 func TestListenGuest(t *testing.T) {
 	socket := filepath.Join(shortTempDir(t), "vsock.sock")
-	listener, err := listenGuest(socket, 1026)
+	listener, err := ListenGuest(socket, 1026)
 	if err != nil {
-		t.Fatalf("listenGuest: %v", err)
+		t.Fatalf("ListenGuest: %v", err)
 	}
 	defer func() { _ = listener.Close() }()
 
@@ -152,22 +152,22 @@ func TestListenGuestReplacesAStaleSocket(t *testing.T) {
 	}
 	_ = stale.Close()
 
-	listener, err := listenGuest(socket, 1026)
+	listener, err := ListenGuest(socket, 1026)
 	if err != nil {
-		t.Fatalf("listenGuest over a stale socket: %v", err)
+		t.Fatalf("ListenGuest over a stale socket: %v", err)
 	}
 	_ = listener.Close()
 }
 
 func TestRemoveSocketIgnoresMissing(t *testing.T) {
-	if err := removeSocket(filepath.Join(shortTempDir(t), "gone.sock")); err != nil {
+	if err := RemoveSocket(filepath.Join(shortTempDir(t), "gone.sock")); err != nil {
 		t.Errorf("removing a socket that is not there should be fine, got %v", err)
 	}
 }
 
 func TestListenGuestRejectsALongPath(t *testing.T) {
 	long := filepath.Join(shortTempDir(t), strings.Repeat("d", 100), "vsock.sock")
-	_, err := listenGuest(long, 1026)
+	_, err := ListenGuest(long, 1026)
 	if err == nil {
 		t.Fatal("a socket path over the limit should fail")
 	}

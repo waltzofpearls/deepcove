@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
@@ -21,10 +22,8 @@ import (
 type Client struct {
 	conn net.Conn
 
-	stdout   *io.PipeWriter
-	stderr   *io.PipeWriter
-	stdoutR  *io.PipeReader
-	stderrR  *io.PipeReader
+	stdout   *stream
+	stderr   *stream
 	writeMu  sync.Mutex // serializes frames written to conn
 	done     chan struct{}
 	closeOne sync.Once
@@ -39,17 +38,17 @@ var _ sandbox.Process = (*Client)(nil)
 // Start opens an exec on conn: it sends the request and begins pumping frames from the guest. The Client
 // owns conn from this point and closes it on Close or when the guest reports exit.
 func Start(conn net.Conn, req ExecRequest) (*Client, error) {
+	return startWithLimits(conn, req, streamLimit, stallLimit)
+}
+
+func startWithLimits(conn net.Conn, req ExecRequest, limit int, stall time.Duration) (*Client, error) {
 	if err := WriteRequest(conn, req); err != nil {
 		return nil, err
 	}
-	outR, outW := io.Pipe()
-	errR, errW := io.Pipe()
 	c := &Client{
 		conn:     conn,
-		stdout:   outW,
-		stderr:   errW,
-		stdoutR:  outR,
-		stderrR:  errR,
+		stdout:   newStream(limit, stall),
+		stderr:   newStream(limit, stall),
 		done:     make(chan struct{}),
 		exitCode: -1,
 	}
@@ -69,12 +68,12 @@ func (c *Client) pump() {
 		}
 		switch t {
 		case FrameStdout:
-			if _, werr := c.stdout.Write(payload); werr != nil {
+			if werr := c.stdout.write(payload); werr != nil {
 				c.finish(werr)
 				return
 			}
 		case FrameStderr:
-			if _, werr := c.stderr.Write(payload); werr != nil {
+			if werr := c.stderr.write(payload); werr != nil {
 				c.finish(werr)
 				return
 			}
@@ -102,6 +101,9 @@ func (c *Client) finish(err error) {
 	}
 	c.setExit(-1, err)
 	c.closeStreams(err)
+	// The pump stops reading here, so the connection goes too: one left open and unread is what freezes
+	// the guest's vsock.
+	_ = c.conn.Close()
 }
 
 func (c *Client) setExit(code int32, err error) {
@@ -113,8 +115,8 @@ func (c *Client) setExit(code int32, err error) {
 }
 
 func (c *Client) closeStreams(err error) {
-	_ = c.stdout.CloseWithError(err)
-	_ = c.stderr.CloseWithError(err)
+	c.stdout.end(err)
+	c.stderr.end(err)
 }
 
 // send writes one frame to the guest, serialized because stdin writes, resizes, and signals can race.
@@ -126,8 +128,8 @@ func (c *Client) send(t FrameType, payload []byte) error {
 
 // Stdout and Stderr are the guest's streams. With Tty set the guest merges stderr into stdout, the same
 // as a real terminal, and Stderr stays empty.
-func (c *Client) Stdout() io.ReadCloser { return c.stdoutR }
-func (c *Client) Stderr() io.ReadCloser { return c.stderrR }
+func (c *Client) Stdout() io.ReadCloser { return c.stdout }
+func (c *Client) Stderr() io.ReadCloser { return c.stderr }
 
 // Stdin returns a writer that frames whatever is written to it as stdin for the guest process.
 func (c *Client) Stdin() io.WriteCloser { return &stdinWriter{c: c} }

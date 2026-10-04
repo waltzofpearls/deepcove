@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/waltzofpearls/deepcove/internal/sandbox/vmproc"
 	"golang.org/x/sys/unix"
 )
 
@@ -15,7 +16,7 @@ import (
 // fd on Linux, where this runs. macOS never polls a FIFO opened as a file, so a read there is not
 // interruptible.
 func openConsoleFIFO(path string) (*os.File, error) {
-	_ = removeSocket(path)
+	_ = vmproc.RemoveSocket(path)
 	if err := unix.Mkfifo(path, 0o600); err != nil {
 		return nil, fmt.Errorf("cloudhv: create the console fifo %s: %w", path, err)
 	}
