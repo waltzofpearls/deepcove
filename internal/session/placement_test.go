@@ -474,26 +474,6 @@ func TestValidateGuestRoot(t *testing.T) {
 	}
 }
 
-// The size of a shared machine follows the host, within bounds that keep it runnable at one end and
-// sane at the other.
-func TestWorkspaceDefaults(t *testing.T) {
-	got := WorkspaceDefaults(t.TempDir())
-
-	if got.CPU < minWorkspaceCPU || got.CPU > maxWorkspaceCPU {
-		t.Errorf("cpu %v, want between %d and %d", got.CPU, minWorkspaceCPU, maxWorkspaceCPU)
-	}
-	if got.MemoryMB < minWorkspaceMemoryMB || got.MemoryMB > maxWorkspaceMemoryMB {
-		t.Errorf("memory %d MiB, want between %d and %d", got.MemoryMB, minWorkspaceMemoryMB, maxWorkspaceMemoryMB)
-	}
-	if got.DiskMB < minWorkspaceDiskMB || got.DiskMB > maxWorkspaceDiskMB {
-		t.Errorf("disk %d MiB, want between %d and %d", got.DiskMB, minWorkspaceDiskMB, maxWorkspaceDiskMB)
-	}
-	// A machine that cannot be measured still has to produce something runnable.
-	if floor := WorkspaceDefaults(""); floor.CPU < minWorkspaceCPU || floor.MemoryMB < minWorkspaceMemoryMB {
-		t.Errorf("unmeasured host gave %+v, want at least the minimums", floor)
-	}
-}
-
 // Asked to take the sessions with it, the machine goes and so do they: a session cannot outlive the
 // sandbox it lives on, and a row pointing at a machine that is gone is the state worth avoiding.
 func TestDeleteWorkspaceVMWithItsSessions(t *testing.T) {

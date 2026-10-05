@@ -157,12 +157,15 @@ func (s *Service) handleTestLLMProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePatch updates one session. PATCH /api/sessions/{id} with any of {"name": "...",
-// "use_llm_proxy": true}. Fields left out are left alone, which is why they are pointers.
+// "use_llm_proxy": true, "vm_size": "large", "restart_now": false}. Fields left out are left alone,
+// which is why they are pointers. A new VM size restarts a running VM unless restart_now is false.
 func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Name        *string `json:"name"`
 		UseLLMProxy *bool   `json:"use_llm_proxy"`
+		VMSize      *string `json:"vm_size"`
+		RestartNow  *bool   `json:"restart_now"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -182,6 +185,13 @@ func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil && req.UseLLMProxy != nil {
 		sess, err = s.SetUseLLMProxy(r.Context(), id, *req.UseLLMProxy)
+	}
+	switch {
+	case err != nil || req.VMSize == nil:
+	case req.RestartNow != nil && !*req.RestartNow:
+		sess, err = s.SaveVMSize(r.Context(), id, *req.VMSize)
+	default:
+		sess, err = s.ResizeVM(r.Context(), id, *req.VMSize)
 	}
 	if err == nil && sess == nil {
 		sess, err = s.Get(r.Context(), id)

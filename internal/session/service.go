@@ -136,8 +136,7 @@ type Service struct {
 	// shareRoots bounds which host folders may be shared into a sandbox. Empty Allowed means the service
 	// does not check, and the driver still does.
 	shareRoots sandbox.ShareRoots
-	// dataDir is where this node keeps its state. Used to size a workspace VM against the volume its
-	// disks will land on; empty falls back to the home directory.
+	// dataDir is where this node keeps its state, such as files uploaded into a session.
 	dataDir string
 
 	// Sessions with a start in flight, for StatusStarting.
@@ -182,6 +181,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		return nil, err
 	}
 	if err := req.Resources.Validate(); err != nil {
+		return nil, err
+	}
+	if err := validateVMSize(req.Resources, SessionVMSizes); err != nil {
 		return nil, err
 	}
 
@@ -256,6 +258,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 				ErrInvalidInput, unused)
 		}
 		sess.Image = ""
+	} else if !req.OnWorkspaceVM && !sess.Resources.Asked() {
+		// A session's own VM gets the default size unless you picked one.
+		sess.Resources.Size = DefaultVMSize
 	}
 
 	// Made once the runtime is known, so a refused create leaves no folders behind.
@@ -716,7 +721,7 @@ func (s *Service) buildSandboxSpec(sess *Session, agent AgentSpec, userMounts []
 		Name:      sess.Name,
 		Agent:     agent,
 		Image:     sess.Image,
-		Resources: sess.Resources,
+		Resources: sess.Resources.withSizeApplied(SessionVMSizes),
 		Setup:     sess.SetupScript,
 		Env:       sess.Env,
 		Mounts:    userMounts,

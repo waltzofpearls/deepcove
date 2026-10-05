@@ -38,13 +38,11 @@ type RuntimesInfo struct {
 	// from Unavailable, which has a driver whose backend is not answering: this one has no driver at
 	// all, and something has to be installed first. See missing.go.
 	Missing map[string]string `json:"missing,omitempty"`
-	// Defaults maps a runtime name to what a session gets when it asks for no particular size, so the
-	// create form can show real numbers rather than the word "default". A runtime is absent from the map
-	// when it imposes no limit of its own, which is different from a limit of zero.
-	Defaults map[string]Resources `json:"defaults,omitempty"`
-	// WorkspaceDefaults is the size a new workspace VM gets on this host. Separate from Defaults, which
-	// is per runtime: this one is a property of the machine.
-	WorkspaceDefaults Resources `json:"workspace_defaults"`
+	// SessionVMSizes are the sizes a session VM can have, each with how many fit on this host.
+	SessionVMSizes []SessionVMSizeChoice `json:"session_vm_sizes"`
+	// WorkspaceVMSizes are the sizes the workspace VM can have, each with about how many agents it runs.
+	WorkspaceVMSizes []WorkspaceVMSizeChoice `json:"workspace_vm_sizes"`
+	DefaultVMSize    string                  `json:"default_vm_size"`
 	// WorkspaceRoots maps a runtime that makes a folder for each session to where those folders live, so
 	// the create form can show the path before the session exists. Only a runtime with no guest has one.
 	WorkspaceRoots map[string]string `json:"workspace_roots,omitempty"`
@@ -90,34 +88,19 @@ func (s *Service) runtimeWorkspaceRoots() map[string]string {
 	return out
 }
 
-// runtimeDefaults collects each runtime's own idea of a default size. Drivers that do not allocate a
-// fixed amount are left out entirely rather than reported as zeroes.
-func (s *Service) runtimeDefaults() map[string]Resources {
-	registered := s.registeredRuntimes()
-	out := make(map[string]Resources, len(registered))
-	for name, driver := range registered {
-		if d, ok := driver.(sandbox.ResourceDefaulter); ok {
-			out[name] = fromSandboxResources(d.DefaultResources())
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, PreflightResponse{
 		Runtimes: RuntimesInfo{
 			Available:   s.Runtimes(),
 			Default:     s.DefaultRuntime(),
-			Defaults:    s.runtimeDefaults(),
 			Unavailable: s.unavailableRuntimes(r.Context()),
 			Missing:     s.MissingRuntimes(),
 
-			WorkspaceDefaults: WorkspaceDefaults(s.dataDir),
-			WorkspaceRoots:    s.runtimeWorkspaceRoots(),
-			AgentsToInstall:   s.runtimeAgentsToInstall(),
+			SessionVMSizes:   sessionVMSizeChoices(hostMemoryMB()),
+			WorkspaceVMSizes: workspaceVMSizeChoices(),
+			DefaultVMSize:    DefaultVMSize,
+			WorkspaceRoots:   s.runtimeWorkspaceRoots(),
+			AgentsToInstall:  s.runtimeAgentsToInstall(),
 		},
 	})
 }

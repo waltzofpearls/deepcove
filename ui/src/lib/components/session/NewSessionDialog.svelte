@@ -22,7 +22,9 @@
   import { onlineHostNodes, defaultNodeId, nodeHost } from '$lib/api/sessions';
   import HostPathField from './HostPathField.svelte';
   import WorkspaceVMFields from './WorkspaceVMFields.svelte';
+  import VMSizePicker from './VMSizePicker.svelte';
   import { shellQuote } from '$lib/util/shell';
+  import { pathInsideFolder } from '$lib/util/path';
   import type {
     Agent,
     MountRequest,
@@ -33,7 +35,6 @@
   } from '$lib/api/types';
   import {
     bootsVMs,
-    runtimeCapsDisk,
     runtimeHint,
     runtimeLabel,
     missingReasons,
@@ -41,7 +42,7 @@
     showsRuntimePicker,
     RUNTIME_SANDBOXLESS,
   } from '$lib/util/runtime';
-  import { emptyResourceFields, fieldsFromDefaults, parseResources } from '$lib/util/resources';
+  import { DEFAULT_VM_SIZE, sessionVMSizeCards } from '$lib/util/vmSize';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
   import Plus from '@lucide/svelte/icons/plus';
@@ -302,8 +303,19 @@
   let workspaceVM = $state<WorkspaceVM | null>(null);
   let workspaceHostRoot = $state('');
   let workspaceGuestRoot = $state('/workspace');
-  let workspaceFields = $state({ ...emptyResourceFields });
+  let workspaceSize = $state(DEFAULT_VM_SIZE);
   let workDir = $state('');
+  // The session's folder on the workspace VM, as a path on this machine inside the VM's shared folder.
+  let workspaceFolder = $state('');
+  $effect(() => {
+    const hostRoot = workspaceVM?.host_root;
+    if (hostRoot && !untrack(() => workspaceFolder)) workspaceFolder = hostRoot + '/';
+  });
+  // What the server is sent: a name inside the shared folder, '' for the session's own name, or null when
+  // the folder is outside it.
+  const workspaceFolderName = $derived(
+    workspaceVM ? pathInsideFolder(workspaceVM.host_root, workspaceFolder) : '',
+  );
   // Only on a runtime that boots VMs. The Machine picker is hidden otherwise, so a node without one
   // would keep the default and ask for a workspace VM it cannot build.
   const onWorkspace = $derived(placement === 'workspace' && onVMRuntime);
@@ -315,7 +327,6 @@
     runtimeKnown && (!onWorkspace || creatingWorkspaceVM) && !onSandboxless,
   );
   const showsSizeControls = $derived(runtimeKnown && !onWorkspace && !onSandboxless);
-  const parsedWorkspaceResources = $derived(parseResources(workspaceFields, true));
 
   // Reads the workspace VM when the dialog opens. Null is normal rather than an error: this node
   // just does not have one yet.
@@ -334,33 +345,12 @@
     return () => ac.abort();
   });
 
-  // Size of the machine the session runs on. Blank fields mean "whatever the runtime defaults to",
-  // which is what every session got before these inputs existed.
-  let resourceFields = $state({ ...emptyResourceFields });
-  // Only offer the disk field where it does something.
-  const showDiskField = $derived(runtimeCapsDisk(effectiveRuntime));
-  const parsedResources = $derived(parseResources(resourceFields, showDiskField));
-  // What this runtime gives a session that asks for nothing. Keyed as a string, not held as the object
-  // itself: the preflight poll hands back a fresh object every tick, and an effect that depended on the
-  // reference would re-seed the form underneath the user on every poll.
-  const defaultsKey = $derived(JSON.stringify(runtimes?.defaults?.[effectiveRuntime] ?? null));
-  // Set once the user edits any size field, so re-seeding can never discard what they typed.
-  let sizeEdited = $state(false);
-
-  // Seed the size fields with this runtime's real defaults, so the numbers are visible AND editable
-  // rather than hidden behind a placeholder. Re-seeds when the runtime changes, because each runtime
-  // has its own defaults. Reads only defaultsKey and sizeEdited, never resourceFields, so it cannot
-  // retrigger itself into effect_update_depth_exceeded.
-  $effect(() => {
-    const key = defaultsKey;
-    if (sizeEdited) return;
-    resourceFields = fieldsFromDefaults(JSON.parse(key));
-  });
-  // Naming the runtime makes "default" mean something: each runtime has its own defaults.
-  const sizeHint = $derived(
-    showDiskField
-      ? "Greyed values are what you get if you leave a field blank. Disk caps the writable layer, which lives in the VM's memory."
-      : 'Greyed values are what you get if you leave a field blank.',
+  // The size you picked, or empty to take the node's default size.
+  let pickedVMSize = $state('');
+  const vmSize = $derived(pickedVMSize || runtimes?.default_vm_size || DEFAULT_VM_SIZE);
+  const sessionVMSizes = $derived(sessionVMSizeCards(runtimes?.session_vm_sizes ?? []));
+  const pickedSizeTooBig = $derived(
+    sessionVMSizes.find((card) => card.name === vmSize)?.tooBigForThisMachine ?? false,
   );
 
   // Resolve the home dir of the node the session will run on, then seed the default folder row with it.
@@ -373,6 +363,7 @@
     untrack(() => {
       ownFolder = false;
       workDir = '';
+      workspaceFolder = '';
     });
     let cancelled = false;
     api
@@ -433,7 +424,7 @@
     // The machine settings below belong to the workspace VM, not to a session on it.
     if (onWorkspace) {
       parts.push('--workspace');
-      if (workDir.trim()) parts.push('--work-dir', shellQuote(workDir.trim()));
+      if (workspaceFolderName) parts.push('--work-dir', shellQuote(workspaceFolderName));
       return parts.join(' ');
     }
     // Matches buildPayload, which sends a runtime only while the picker is on screen.
@@ -516,9 +507,8 @@
     runtimeChoice = '';
     ownFolder = false;
     workDir = '';
-    resourceFields = { ...emptyResourceFields };
-    // Let the defaults seed again on the next open, rather than keeping the last session's sizes.
-    sizeEdited = false;
+    workspaceFolder = '';
+    pickedVMSize = '';
     // baseImage / setupScript / imageStrategy get re-seeded by the agent-change $effect.
   }
 
@@ -555,7 +545,7 @@
         name: name.trim() || undefined,
         node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
         on_workspace_vm: true,
-        work_dir: workDir.trim() || undefined,
+        work_dir: workspaceFolderName || undefined,
         use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
         mounts: [],
       };
@@ -586,7 +576,7 @@
       // Send a runtime only while the picker is on screen, which includes a lone No sandbox; otherwise
       // let the node pick its default.
       runtime: showRuntimePicker ? effectiveRuntime || undefined : undefined,
-      resources: parsedResources.resources,
+      resources: showsSizeControls ? { size: vmSize } : undefined,
       name: name.trim() || undefined,
       use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
       // Only send a target when there's a real choice; on a single node the backend creates here.
@@ -699,13 +689,6 @@
       // The machine has to exist before a session can land on it. Recording it is instant; the VM boots
       // when this session starts, which the session page already shows.
       if (creatingWorkspaceVM) {
-        if (parsedWorkspaceResources.error) {
-          submitError = {
-            title: 'Check the workspace VM size',
-            raw: parsedWorkspaceResources.error,
-          };
-          return;
-        }
         workspaceVM = await api.saveWorkspaceVM(
           {
             host_root: workspaceHostRoot.trim(),
@@ -713,7 +696,7 @@
             image: chosenImage(),
             // The machine is what installs the agent, so a custom setup belongs to it.
             setup_script: imageStrategy === 'custom' ? customSetup.trim() || undefined : undefined,
-            resources: parsedWorkspaceResources.resources,
+            resources: { size: workspaceSize },
           },
           selectedHost,
         );
@@ -935,6 +918,16 @@
         </div>
       {/if}
 
+      {#if onWorkspace && !creatingWorkspaceVM}
+        <div class="space-y-2">
+          <Label>Image</Label>
+          <p class="font-mono text-xs text-muted-foreground">{workspaceVM?.image}</p>
+          <p class="text-xs text-muted-foreground">
+            The workspace VM's own image. Every session on it runs this one.
+          </p>
+        </div>
+      {/if}
+
       {#if creatingWorkspaceVM}
         <div class="space-y-4 rounded-md border border-dashed border-border p-3">
           <p class="text-sm">
@@ -944,77 +937,32 @@
           <WorkspaceVMFields
             bind:hostRoot={workspaceHostRoot}
             bind:guestRoot={workspaceGuestRoot}
-            bind:fields={workspaceFields}
+            bind:size={workspaceSize}
           />
         </div>
       {:else if onWorkspace}
         <div class="space-y-2">
           <Label for="work-dir">Folder</Label>
-          <Input id="work-dir" bind:value={workDir} placeholder={name || 'my-repo'} />
-          <p class="text-xs text-muted-foreground">
-            A folder inside {workspaceVM?.host_root}, which the VM sees at {workspaceVM?.guest_root}.
-            Created if it isn't there; blank uses the session name.
-          </p>
+          <HostPathField id="work-dir" bind:value={workspaceFolder} host={selectedHost} />
+          {#if workspaceFolderName === null}
+            <p class="text-xs text-destructive">Pick a folder inside {workspaceVM?.host_root}.</p>
+          {:else}
+            <p class="text-xs text-muted-foreground">
+              A folder inside {workspaceVM?.host_root}, which the VM sees at {workspaceVM?.guest_root}.
+              Created if it isn't there; leaving it at {workspaceVM?.host_root}/ uses the session
+              name.
+            </p>
+          {/if}
         </div>
       {/if}
 
       {#if showsSizeControls}
-        <div class="space-y-2">
-          <Label>Size</Label>
-          <div
-            class="grid gap-3"
-            class:grid-cols-3={showDiskField}
-            class:grid-cols-2={!showDiskField}
-          >
-            <div class="space-y-1.5">
-              <Label for="cpu" class="text-xs font-normal text-muted-foreground">CPU cores</Label>
-              <Input
-                id="cpu"
-                type="number"
-                min="1"
-                step="1"
-                placeholder="No limit"
-                bind:value={resourceFields.cpu}
-                oninput={() => (sizeEdited = true)}
-              />
-            </div>
-            <div class="space-y-1.5">
-              <Label for="memory" class="text-xs font-normal text-muted-foreground">
-                Memory (GiB)
-              </Label>
-              <Input
-                id="memory"
-                type="number"
-                min="0.5"
-                step="0.5"
-                placeholder="No limit"
-                bind:value={resourceFields.memoryGiB}
-                oninput={() => (sizeEdited = true)}
-              />
-            </div>
-            {#if showDiskField}
-              <div class="space-y-1.5">
-                <Label for="disk" class="text-xs font-normal text-muted-foreground">
-                  Disk (GiB)
-                </Label>
-                <Input
-                  id="disk"
-                  type="number"
-                  min="0.5"
-                  step="0.5"
-                  placeholder="No limit"
-                  bind:value={resourceFields.diskGiB}
-                  oninput={() => (sizeEdited = true)}
-                />
-              </div>
-            {/if}
-          </div>
-          {#if parsedResources.error}
-            <p class="text-xs text-destructive">{parsedResources.error}</p>
-          {:else}
-            <p class="text-xs text-muted-foreground">{sizeHint}</p>
-          {/if}
-        </div>
+        <VMSizePicker
+          title="Session VM size"
+          cards={sessionVMSizes}
+          selected={vmSize}
+          onselect={(name) => (pickedVMSize = name)}
+        />
       {/if}
 
       {#if showsImageControls}
@@ -1122,16 +1070,6 @@
               </div>
             </div>
           {/if}
-        </div>
-      {/if}
-
-      {#if onWorkspace && !creatingWorkspaceVM}
-        <div class="space-y-2">
-          <Label>Image</Label>
-          <p class="font-mono text-xs text-muted-foreground">{workspaceVM?.image}</p>
-          <p class="text-xs text-muted-foreground">
-            The workspace VM's own image. Every session on it runs this one.
-          </p>
         </div>
       {/if}
 
@@ -1362,11 +1300,12 @@
             // Nothing is sent until the runtime is known: the sections that depend on it are hidden.
             !runtimeKnown ||
             (onSandboxless && ownFolder && !workDir.trim()) ||
+            (onWorkspace && workspaceFolderName === null) ||
+            (showsSizeControls && pickedSizeTooBig) ||
             (showsImageControls &&
               imageStrategy === 'official' &&
               !selectedAgent?.sandboxed.official_image) ||
-            (showsImageControls && imageStrategy === 'custom' && !customImage.trim()) ||
-            (showsSizeControls && !!parsedResources.error)}
+            (showsImageControls && imageStrategy === 'custom' && !customImage.trim())}
         >
           {#if pulling}
             Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}

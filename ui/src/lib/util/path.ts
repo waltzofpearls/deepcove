@@ -19,3 +19,18 @@ export function looksLikePath(value: string): boolean {
   const trimmed = value.trim();
   return trimmed.startsWith('/') && !trimmed.includes('\0');
 }
+
+// pathInsideFolder is where path sits inside folder: '' for the folder itself, the rest of the path for
+// something inside it, and null for anything outside.
+export function pathInsideFolder(folder: string, path: string): string | null {
+  const root = withoutTrailingSlash(folder);
+  const target = withoutTrailingSlash(path.trim());
+  if (target === root) return '';
+  if (!target.startsWith(root + '/')) return null;
+  return target.slice(root.length + 1);
+}
+
+// withoutTrailingSlash is path as the server saves it, so a typed "/Users/me/Dev/" matches "/Users/me/Dev".
+export function withoutTrailingSlash(path: string): string {
+  return path.replace(/\/+$/, '') || '/';
+}

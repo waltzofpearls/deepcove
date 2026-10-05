@@ -188,6 +188,7 @@ var (
 	_ sandbox.Sandbox      = (*Driver)(nil)
 	_ sandbox.Pinger       = (*Driver)(nil)
 	_ sandbox.ImageManager = (*Driver)(nil)
+	_ sandbox.SpecUpdater  = (*Driver)(nil)
 )
 
 // Create resolves the session's image into a cached read only ext4 base and records the spec. The VM is
@@ -392,9 +393,6 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 	})
 	return out, nil
 }
-
-// DefaultResources implements sandbox.ResourceDefaulter: what a session gets when it names no size.
-func (d *Driver) DefaultResources() sandbox.Resources { return actualResources(sandbox.Resources{}) }
 
 // hostShares turns the spec's mounts into virtio-fs shares and the matching guest side mount list.
 func hostShares(mounts []sandbox.Mount) ([]Share, []guestcfg.Mount) {
@@ -782,10 +780,21 @@ func stopAll(running []*Guest, stop func(*Guest) error) error {
 
 // Restart replaces the stored spec, then stops and starts. Start builds the VM from that spec, so a new
 // size or folder takes effect.
-//
-// The spec goes through the same checks as Create. Skipping them would make a restart a way to mount a
-// host folder this node refuses to share, and would leave a renamed image booting the old rootfs.
 func (d *Driver) Restart(ctx context.Context, sandboxID sandbox.ID, spec sandbox.SandboxSpec) error {
+	if err := d.UpdateSpec(ctx, sandboxID, spec); err != nil {
+		return err
+	}
+	if err := d.Stop(ctx, sandboxID); err != nil {
+		return err
+	}
+	return d.Start(ctx, sandboxID)
+}
+
+// UpdateSpec replaces the spec the VM boots from next. A running VM keeps going as it is.
+//
+// The spec goes through the same checks as Create. Skipping them would make this a way to mount a host
+// folder this node refuses to share, and would leave a renamed image booting the old rootfs.
+func (d *Driver) UpdateSpec(ctx context.Context, sandboxID sandbox.ID, spec sandbox.SandboxSpec) error {
 	state, err := d.lookup(sandboxID)
 	if err != nil {
 		return err
@@ -797,14 +806,11 @@ func (d *Driver) Restart(ctx context.Context, sandboxID sandbox.ID, spec sandbox
 	if err != nil {
 		return err
 	}
-	if err := d.Stop(ctx, sandboxID); err != nil {
-		return err
-	}
 	d.mu.Lock()
 	state.spec = spec
 	state.baseImage = base
 	d.mu.Unlock()
-	return d.Start(ctx, sandboxID)
+	return nil
 }
 
 func (d *Driver) lookup(sandboxID sandbox.ID) (*sandboxState, error) {

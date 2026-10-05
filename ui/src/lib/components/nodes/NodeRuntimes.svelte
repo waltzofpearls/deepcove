@@ -27,14 +27,17 @@
     AlertDialogTitle,
   } from '$lib/components/ui/alert-dialog';
   import WorkspaceVMDialog from '$lib/components/session/WorkspaceVMDialog.svelte';
-  import EditSharedFolderDialog from '$lib/components/session/EditSharedFolderDialog.svelte';
-  import { formatResources } from '$lib/util/resources';
+  import SessionSettingsDialog from '$lib/components/session/SessionSettingsDialog.svelte';
+  import { describeVMSize, formatRunningSize } from '$lib/util/vmSize';
+  import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
   import type {
     NodeInfo,
     RuntimeView,
     SandboxView,
     SessionHost,
     Session,
+    SessionResources,
+    VMSize,
     WorkspaceVM,
   } from '$lib/api/types';
   import Box from '@lucide/svelte/icons/box';
@@ -125,20 +128,19 @@
     }
   }
 
-  // The session whose folders are being edited. A private machine hosts exactly one session, so its row
-  // edits that one. Null closes the dialog.
-  let mountsSession = $state<Session | null>(null);
-  let mountsOpen = $state(false);
+  // The session being edited. A session VM hosts exactly one session, so its row edits that one.
+  let editingSession = $state<Session | null>(null);
+  let settingsOpen = $state(false);
 
-  function editFolders(sandbox: SandboxView) {
-    mountsSession = sessions.list.find((s) => s.id === sandbox.sessions[0]?.id) ?? null;
-    if (!mountsSession) {
+  function editSession(sandbox: SandboxView) {
+    editingSession = sessions.list.find((s) => s.id === sandbox.sessions[0]?.id) ?? null;
+    if (!editingSession) {
       // The row knows the session's id, the store has not caught up. Better to say so than to swallow
       // the click.
       error = 'That session is still loading. Try again in a moment.';
       return;
     }
-    mountsOpen = true;
+    settingsOpen = true;
   }
 
   // The sandbox the destroy confirm is about. Held as a pair because the handle alone does not say
@@ -171,10 +173,10 @@
     }
   }
 
-  // The section for the machine's own runtime, which is where an unbuilt one belongs. Keying on the
-  // node default instead put the row in a section that then refused to draw it, leaving an empty box.
+  // The workspace VM's row when this node lists no VM for it, in its own runtime's section. Its record
+  // can still name a VM that died with a deepcove restart.
   const pendingWorkspaceOn = (view: RuntimeView) =>
-    Boolean(workspaceVM) && !workspaceVM?.sandbox_id && workspaceVM?.runtime === view.name;
+    Boolean(workspaceVM) && !workspaceSandbox && workspaceVM?.runtime === view.name;
 
   // Which kind of VM a row is, which only a VM runtime has: everywhere else the section header already
   // says what it is. Empty means no chip, except for one nobody owns, which is worth saying anywhere.
@@ -194,15 +196,28 @@
 
   // The size that is saved for a sandbox, which is what applies after a restart. A running machine can
   // differ from it, because it booted with whatever was saved at the time.
-  function savedSize(s: SandboxView): string {
-    if (s.is_workspace_vm) return formatResources(workspaceVM?.resources);
+  function savedResources(s: SandboxView): SessionResources | undefined {
+    if (s.is_workspace_vm) return workspaceVM?.resources;
     const id = s.sessions?.[0]?.id;
     const sess = id ? sessions.list.find((x) => x.id === id) : undefined;
-    return formatResources(sess?.resources);
+    return sess?.resources;
+  }
+
+  // The size lists are the same on every node, so this node's answer fits any row.
+  function sizesFor(s: SandboxView): VMSize[] | undefined {
+    return s.is_workspace_vm
+      ? preflight.runtimes?.workspace_vm_sizes
+      : preflight.runtimes?.session_vm_sizes;
+  }
+
+  function savedSize(s: SandboxView): string {
+    return describeVMSize(savedResources(s), sizesFor(s));
   }
 
   function sizeOf(s: SandboxView): string {
-    return savedSize(s) || formatResources(s.resources) || 'runtime defaults';
+    return (
+      savedSize(s) || (s.resources ? formatRunningSize(s.resources) : '') || 'runtime defaults'
+    );
   }
 
   // What the row says under the name. A session on the machine itself has no size: nothing caps it, so
@@ -218,11 +233,11 @@
     return parts.join(' · ');
   }
 
-  // Only worth saying when something is actually saved and the machine is running something else.
-  function runningDiffers(s: SandboxView): boolean {
-    const saved = savedSize(s);
-    return saved !== '' && saved !== formatResources(s.resources);
-  }
+  const sizeWaitsForRestart = (s: SandboxView) =>
+    sizeAwaitingRestart(s.resources, savedResources(s), sizesFor(s));
+  const folderWaitsForRestart = (s: SandboxView) =>
+    Boolean(s.is_workspace_vm && workspaceVM) &&
+    folderAwaitingRestart(s.mounts, workspaceVM!.host_root, workspaceVM!.guest_root);
 
   // The VM the restart confirm is about. Paired with its runtime, since the handle alone does not say
   // which runtime to ask.
@@ -253,7 +268,7 @@
 
   const sessionNames = (s: SandboxView) => s.sessions.map((x) => x.name).join(', ');
 
-  // The workspace VM as it is actually running, so the edit dialog can say what it booted with.
+  // The workspace VM's own VM, when this node lists one.
   const workspaceSandbox = $derived(
     runtimes?.flatMap((v) => v.sandboxes).find((s) => s.is_workspace_vm) ?? null,
   );
@@ -390,7 +405,10 @@
                     {workspaceVM.host_root} → {workspaceVM.guest_root}
                   </div>
                   <div class="mt-0.5 text-xs text-muted-foreground">
-                    {formatResources(workspaceVM.resources) || 'runtime defaults'}
+                    {describeVMSize(
+                      workspaceVM.resources,
+                      preflight.runtimes?.workspace_vm_sizes,
+                    ) || 'runtime defaults'}
                   </div>
                   {#if workspaceVM.image}
                     <div class="truncate text-xs text-muted-foreground">{workspaceVM.image}</div>
@@ -465,9 +483,15 @@
                       The machine is up but not answering. Restart brings it back.
                     </div>
                   {/if}
-                  {#if runningDiffers(sandbox)}
+                  {#if sizeWaitsForRestart(sandbox) || folderWaitsForRestart(sandbox)}
                     <div class="mt-0.5 text-xs text-amber-600 dark:text-amber-400">
-                      Running with {formatResources(sandbox.resources)}. Restart to apply.
+                      {#if sizeWaitsForRestart(sandbox)}
+                        Running with {formatRunningSize(sandbox.resources ?? {})}.
+                      {/if}
+                      {#if folderWaitsForRestart(sandbox)}
+                        Still sharing {sandbox.mounts?.[0]?.host_path}.
+                      {/if}
+                      Restart to apply.
                     </div>
                   {/if}
                   {#if sandbox.image}
@@ -499,7 +523,7 @@
                       size="sm"
                       class="shrink-0"
                       disabled={!sessions.list.some((s) => s.id === sandbox.sessions[0]?.id)}
-                      onclick={() => editFolders(sandbox)}
+                      onclick={() => editSession(sandbox)}
                     >
                       Edit
                     </Button>
@@ -583,20 +607,16 @@
   </AlertDialogContent>
 </AlertDialog>
 
-<WorkspaceVMDialog
-  bind:open={editOpen}
-  vm={workspaceVM}
-  running={workspaceSandbox?.resources}
-  {host}
-  onsaved={() => load()}
-/>
+<WorkspaceVMDialog bind:open={editOpen} vm={workspaceVM} {host} onsaved={() => load()} />
 
-<EditSharedFolderDialog
-  bind:open={mountsOpen}
-  bind:session={mountsSession}
-  host={mountsSession ? sessions.hostFor(mountsSession) : undefined}
-  onsaved={() => load()}
-/>
+{#if editingSession}
+  <SessionSettingsDialog
+    bind:open={settingsOpen}
+    bind:session={editingSession}
+    {host}
+    onsaved={() => load()}
+  />
+{/if}
 
 <AlertDialog bind:open={deleteWorkspaceOpen}>
   <AlertDialogContent>

@@ -16,6 +16,8 @@ import (
 type restartingSandbox struct {
 	*fakeSandbox
 	specs []sandbox.SandboxSpec
+	// nextBootSpecs are the specs handed to UpdateSpec, newest last.
+	nextBootSpecs []sandbox.SandboxSpec
 	// onRestart runs inside Restart, so a test can see the context the driver was handed.
 	onRestart func(context.Context)
 
@@ -75,6 +77,12 @@ func (r *restartingSandbox) Restart(ctx context.Context, _ sandbox.ID, spec sand
 		r.onRestart(ctx)
 	}
 	r.specs = append(r.specs, spec)
+	return nil
+}
+
+// UpdateSpec keeps the spec too: what the next plain Start would boot.
+func (r *restartingSandbox) UpdateSpec(_ context.Context, _ sandbox.ID, spec sandbox.SandboxSpec) error {
+	r.nextBootSpecs = append(r.nextBootSpecs, spec)
 	return nil
 }
 

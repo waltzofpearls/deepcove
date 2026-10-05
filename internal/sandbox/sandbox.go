@@ -80,18 +80,6 @@ type PullProgress struct {
 	Total   int64
 }
 
-// ResourceDefaulter is an optional capability for drivers that allocate a fixed amount to a sandbox
-// that asks for nothing. It exists so the create form can show the real numbers instead of the word
-// "default", which tells a user nothing about what they are about to get.
-//
-// A driver that imposes no limit of its own (sandboxless leaves a session free to use the whole host)
-// should NOT implement this: reporting the host's size as a "default" would read as an allocation.
-type ResourceDefaulter interface {
-	// DefaultResources is what a sandbox gets when its spec asks for nothing. A zero field means the
-	// driver does not cap that dimension.
-	DefaultResources() Resources
-}
-
 // ForceCloser abandons its sandboxes instead of stopping them politely. Exiting on top of a VM the
 // hypervisor still owns leaves a process the kernel cannot reap.
 type ForceCloser interface {
@@ -122,6 +110,13 @@ type Lister interface {
 // its size and mounts at boot, so this applies changes without losing the sandbox.
 type Restarter interface {
 	Restart(ctx context.Context, sandboxID ID, spec SandboxSpec) error
+}
+
+// SpecUpdater is a runtime whose sandbox boots from a stored spec. UpdateSpec replaces that spec for the
+// next boot and leaves a running sandbox as it is, so a change saved for later reaches a plain Start
+// too, not only a restart.
+type SpecUpdater interface {
+	UpdateSpec(ctx context.Context, sandboxID ID, spec SandboxSpec) error
 }
 
 // LLMForwarder is a runtime that carries a sandbox's LLM traffic itself, so the sandbox never reaches

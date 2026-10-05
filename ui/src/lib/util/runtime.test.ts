@@ -8,7 +8,6 @@ import {
   usableRuntimes,
   runtimeMissingReason,
   missingReasons,
-  runtimeCapsDisk,
   runtimeSetUpByDeepcove,
   runtimeSetupOffered,
   runtimeHint,
@@ -224,19 +223,6 @@ describe('bootsVMs', () => {
   for (const tc of cases) {
     it(tc.name, () => {
       expect(bootsVMs(tc.runtime)).toBe(tc.want);
-    });
-  }
-});
-
-describe('runtimeCapsDisk', () => {
-  const cases: { name: string; runtime: string; want: boolean }[] = [
-    { name: 'a VM caps its writable layer', runtime: RUNTIME_CLOUDHV, want: true },
-    { name: 'no sandbox has nothing to cap', runtime: RUNTIME_SANDBOXLESS, want: false },
-    { name: 'no runtime offers no field', runtime: '', want: false },
-  ];
-  for (const tc of cases) {
-    it(tc.name, () => {
-      expect(runtimeCapsDisk(tc.runtime)).toBe(tc.want);
     });
   }
 });
