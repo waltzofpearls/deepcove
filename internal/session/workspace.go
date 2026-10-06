@@ -143,8 +143,7 @@ func (s *duckdbWorkspaceVMStore) Delete(ctx context.Context) error {
 	return nil
 }
 
-// SetDataDir records where this node keeps its state, which is the volume a workspace VM is sized
-// against.
+// SetDataDir records where this node keeps its state, such as files uploaded into a session.
 func (s *Service) SetDataDir(dir string) { s.dataDir = dir }
 
 // SetShareRoots records which host folders may be shared into a sandbox, so a workspace VM can be
@@ -205,6 +204,12 @@ func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (
 	}
 	if err := req.Resources.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)
+	}
+	if err := validateVMSize(req.Resources, WorkspaceVMSizes); err != nil {
+		return nil, err
+	}
+	if !req.Resources.Asked() {
+		req.Resources = Resources{Size: DefaultVMSize}
 	}
 	agent, err := resolveAgent(defaultAgent)
 	if err != nil {
@@ -406,7 +411,7 @@ func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec) (sandbox.SandboxSpec, err
 		Agent:     agent,
 		Image:     vm.Image,
 		Setup:     vm.SetupScript,
-		Resources: vm.Resources,
+		Resources: vm.Resources.withSizeApplied(WorkspaceVMSizes),
 		Mounts:    []sandbox.Mount{{Source: vm.HostRoot, Target: vm.GuestRoot}},
 		WorkDir:   vm.GuestRoot,
 	}), nil

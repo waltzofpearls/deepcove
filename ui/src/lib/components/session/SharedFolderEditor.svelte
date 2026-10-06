@@ -1,6 +1,6 @@
 <script lang="ts">
   // The folder rows for one session's machine, with the warning and the button that commits them.
-  // Its own component so the session settings dialog and the Runtimes page share one editor.
+  // Its own component so the session settings dialog and the Nodes page share one editor.
   //
   // host is the node owning the session, set for peer-hosted sessions so the save and the file browsing
   // target that node. Omit for a local session.
@@ -120,26 +120,6 @@
 </script>
 
 <div class="flex flex-col gap-5">
-  <!-- Saving destroys the machine and creates a new one. The agent's /root home (agent state, shell
-       history) survives; the writable layer does not, including an unmounted /workspace's contents. A
-       mounted folder is host-owned and unaffected. -->
-  <div
-    class="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm"
-    role="alert"
-  >
-    <TriangleAlert class="size-4 shrink-0 translate-y-0.5 text-warning" />
-    <div class="space-y-1">
-      <div class="font-medium">Saving recreates the machine.</div>
-      <p class="text-xs text-muted-foreground">
-        <code>/root</code>
-        (agent state, shell history) and any mounted folder are preserved. Everything else inside it (installed
-        packages, and an unmounted
-        <code>/workspace</code>
-        's contents) will be lost.
-      </p>
-    </div>
-  </div>
-
   <div class="space-y-2">
     <div class="flex items-center justify-between">
       <Label>Folders</Label>
@@ -202,9 +182,28 @@
     </div>
   {/if}
 
+  <!-- Next to its button, so it reads as what this Save does and not the whole dialog. /root sits on its
+       own disk and a mounted folder lives on the host, so both survive the recreate. -->
+  <div
+    class="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm"
+    role="alert"
+  >
+    <TriangleAlert class="size-4 shrink-0 translate-y-0.5 text-warning" />
+    <div class="space-y-1">
+      <div class="font-medium">Saving folders recreates the VM.</div>
+      <p class="text-xs text-muted-foreground">
+        <code>/root</code>
+        (agent state, shell history) and any mounted folder are preserved. Everything else inside it (installed
+        packages, and an unmounted
+        <code>/workspace</code>
+        's contents) will be lost.
+      </p>
+    </div>
+  </div>
+
   <div class="flex items-center justify-end">
     <Button size="sm" onclick={submit} disabled={submitting || !session || !dirty}>
-      {submitting ? 'Recreating…' : 'Save and recreate'}
+      {submitting ? 'Recreating…' : 'Save folders'}
     </Button>
   </div>
 </div>

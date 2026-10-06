@@ -23,7 +23,7 @@
   import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
   import WorkspaceVMFields from '$lib/components/session/WorkspaceVMFields.svelte';
   import { looksLikePath } from '$lib/util/path';
-  import { emptyResourceFields, parseResources } from '$lib/util/resources';
+  import { DEFAULT_VM_SIZE } from '$lib/util/vmSize';
   import { Button } from '$lib/components/ui/button';
   import Logo from '$lib/components/layout/Logo.svelte';
   import TailscaleLogo from '$lib/components/TailscaleLogo.svelte';
@@ -57,24 +57,19 @@
   // without one, every session gets a VM of its own, which is how deepcove worked before.
   let workspaceHostRoot = $state('');
   let workspaceGuestRoot = $state('/workspace');
-  let workspaceFields = $state({ ...emptyResourceFields });
+  let workspaceSize = $state(DEFAULT_VM_SIZE);
   let workspaceError = $state<string | null>(null);
   let savingWorkspace = $state(false);
-  const parsedWorkspace = $derived(parseResources(workspaceFields, true));
 
   async function createWorkspaceVM() {
     if (savingWorkspace) return;
-    if (parsedWorkspace.error) {
-      workspaceError = parsedWorkspace.error;
-      return;
-    }
     savingWorkspace = true;
     workspaceError = null;
     try {
       await api.saveWorkspaceVM({
         host_root: workspaceHostRoot.trim(),
         guest_root: workspaceGuestRoot.trim() || undefined,
-        resources: parsedWorkspace.resources,
+        resources: { size: workspaceSize },
       });
       step = 3;
     } catch (e) {
@@ -311,7 +306,7 @@
           <WorkspaceVMFields
             bind:hostRoot={workspaceHostRoot}
             bind:guestRoot={workspaceGuestRoot}
-            bind:fields={workspaceFields}
+            bind:size={workspaceSize}
           />
           {#if workspaceError}
             <p class="text-sm text-destructive">{workspaceError}</p>

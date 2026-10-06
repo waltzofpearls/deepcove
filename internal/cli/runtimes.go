@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/waltzofpearls/deepcove/internal/config"
@@ -232,10 +233,17 @@ func shareRoots(cfg *config.Config) sandbox.ShareRoots {
 		refused = append(refused, filepath.Join(cache, "deepcove"))
 	}
 	if exe, err := os.Executable(); err == nil {
-		refused = append(refused, exe)
+		programs := []string{exe}
 		// Started through a link (Homebrew does this), the real program is somewhere else. Refuse both.
 		if real, err := filepath.EvalSymlinks(exe); err == nil {
-			refused = append(refused, real)
+			programs = append(programs, real)
+		}
+		for _, program := range programs {
+			// Guarding a program built in its own source checkout protects nothing: a session that can
+			// reach it can already change the source it is built from.
+			if !builtInSourceCheckout(program) {
+				refused = append(refused, program)
+			}
 		}
 	}
 	refused = append(refused, service.ProtectedFolders(home)...)
@@ -254,4 +262,15 @@ func shareRoots(cfg *config.Config) sandbox.ShareRoots {
 		}
 	}
 	return sandbox.ShareRoots{Allowed: []string{home}, Refused: refused}
+}
+
+// builtInSourceCheckout reports whether program sits next to deepcove's own go.mod, which is where
+// `make build` puts it.
+func builtInSourceCheckout(program string) bool {
+	goMod, err := os.ReadFile(filepath.Join(filepath.Dir(program), "go.mod"))
+	if err != nil {
+		return false
+	}
+	firstLine, _, _ := strings.Cut(string(goMod), "\n")
+	return strings.TrimSpace(firstLine) == "module github.com/waltzofpearls/deepcove"
 }

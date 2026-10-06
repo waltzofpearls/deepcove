@@ -56,6 +56,9 @@ type SessionRepository interface {
 	// UpdateUseLLMProxy records whether this session's agent uses the node's LLM proxy.
 	UpdateUseLLMProxy(ctx context.Context, owner, id string, use bool, now time.Time) error
 
+	// UpdateResources replaces the session's size.
+	UpdateResources(ctx context.Context, owner, id string, resources Resources, now time.Time) error
+
 	// Delete removes the session row.
 	Delete(ctx context.Context, owner, id string) error
 }
@@ -186,6 +189,21 @@ func (r *duckdbSessionRepository) MarkStoppedBecause(ctx context.Context, owner,
 		string(StatusStopped), string(reason), now, id, owner)
 	if err != nil {
 		return fmt.Errorf("session: mark stopped: %w", err)
+	}
+	return rowsAffectedOrNotFound(res)
+}
+
+func (r *duckdbSessionRepository) UpdateResources(ctx context.Context, owner, id string, resources Resources, now time.Time) error {
+	resourcesJSON, err := json.Marshal(resources)
+	if err != nil {
+		return fmt.Errorf("session: marshal resources: %w", err)
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET resources = ?, updated_at = ?
+		 WHERE id = ? AND owner_email = ?`,
+		string(resourcesJSON), now, id, owner)
+	if err != nil {
+		return fmt.Errorf("session: update resources: %w", err)
 	}
 	return rowsAffectedOrNotFound(res)
 }

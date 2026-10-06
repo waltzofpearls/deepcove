@@ -130,13 +130,17 @@ func returnCredentials(cfg Config) error {
 	return nil
 }
 
-// writeCredentialFiles materializes a bundle under the agent home, creating parents as needed. Files are
-// owner only because they are secrets.
+// writeCredentialFiles materializes a bundle under the agent home, creating parents as needed. A file
+// the session already has is merged rather than replaced, so it keeps what is its own. Files are owner
+// only because they are secrets.
 func writeCredentialFiles(files map[string][]byte) error {
 	for rel, data := range files {
 		path := filepath.Join(sandbox.SandboxedAgentHome, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+		}
+		if sessionCopy, err := os.ReadFile(path); err == nil {
+			data = credbroker.MergeIntoSession(rel, data, sessionCopy)
 		}
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)

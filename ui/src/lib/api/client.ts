@@ -91,6 +91,18 @@ async function request<T>(path: string, init?: RequestInit, t: Transport = trans
   return (await requestRaw<T>(path, init, t)).data;
 }
 
+function patchSessionVMSize(id: string, body: object, host?: SessionHost): Promise<Session> {
+  return request(
+    `/sessions/${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    transportForHost(host),
+  );
+}
+
 // peerFanoutTimeoutMs bounds each per-node /api/sessions/local fetch in the browser-side fan-out
 // (dashboard mode), mirroring the Go peerFanoutTimeout. A node that doesn't answer in time is reported
 // unreachable so one slow node never stalls the whole cross-node list.
@@ -553,6 +565,16 @@ export const api = {
       },
       transportForHost(host),
     );
+  },
+
+  // resizeSessionVM gives a session's own VM a new size now. A running VM restarts with it.
+  resizeSessionVM(id: string, size: string, host?: SessionHost): Promise<Session> {
+    return patchSessionVMSize(id, { vm_size: size }, host);
+  },
+
+  // saveSessionVMSize records a new size without restarting. A running VM gets it when it next restarts.
+  saveSessionVMSize(id: string, size: string, host?: SessionHost): Promise<Session> {
+    return patchSessionVMSize(id, { vm_size: size, restart_now: false }, host);
   },
 
   // suggestName returns a generated session name to pre-fill the New Session

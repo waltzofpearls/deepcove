@@ -7,32 +7,51 @@
   import { Button } from '$lib/components/ui/button';
   import { api } from '$lib/api/client';
   import { sessions } from '$lib/stores/sessions.svelte';
-  import { formatResources } from '$lib/util/resources';
   import { bootsVMs, runtimeLabel, RUNTIME_SANDBOXLESS } from '$lib/util/runtime';
   import { shortId } from '$lib/format';
   import SharedFolderEditor from './SharedFolderEditor.svelte';
   import WorkspaceVMDialog from './WorkspaceVMDialog.svelte';
-  import type { Session, SessionHost, WorkspaceVM } from '$lib/api/types';
+  import VMSizePicker from './VMSizePicker.svelte';
+  import {
+    describeVMSize,
+    formatRunningSize,
+    sessionVMSizeCards,
+    type VMSizeCard,
+  } from '$lib/util/vmSize';
+  import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
+  import { preflight } from '$lib/stores/preflight.svelte';
+  import type { SandboxView, Session, SessionHost, WorkspaceVM } from '$lib/api/types';
 
   let {
     open = $bindable(false),
     session = $bindable<Session>(),
     host,
+    onsaved,
   }: {
     open?: boolean;
     session: Session;
     host?: SessionHost;
+    // Called after a save that changes the machine: a resize or a folder change.
+    onsaved?: () => void;
   } = $props();
 
   let machineOpen = $state(false);
+
+  // The node's name, not the host object: the list poll hands back a new object every few seconds, and
+  // an effect keyed on it would fetch again each time.
+  const hostKey = $derived(host?.dns_name ?? '');
 
   // The machine's folder and size live on the workspace record, not on the session.
   let workspaceVM = $state<WorkspaceVM | null>(null);
   $effect(() => {
     if (!open || !session.on_workspace_vm) return;
+    void hostKey;
     const ac = new AbortController();
     api
-      .workspaceVM(host, ac.signal)
+      .workspaceVM(
+        untrack(() => host),
+        ac.signal,
+      )
       .then((vm) => (workspaceVM = vm))
       .catch(() => {});
     return () => ac.abort();
@@ -57,9 +76,13 @@
   let llmProxyUrl = $state('');
   $effect(() => {
     if (!open) return;
+    void hostKey;
     const ac = new AbortController();
     api
-      .llmProxy(host, ac.signal)
+      .llmProxy(
+        untrack(() => host),
+        ac.signal,
+      )
       .then((p) => (llmProxyUrl = p.url ?? ''))
       .catch(() => {});
     return () => ac.abort();
@@ -100,9 +123,150 @@
   );
   const size = $derived(
     session.on_workspace_vm
-      ? formatResources(workspaceVM?.resources) || 'runtime defaults'
-      : formatResources(session.resources) || 'runtime defaults',
+      ? `${describeVMSize(workspaceVM?.resources, preflight.runtimes?.workspace_vm_sizes) || 'runtime defaults'}, shared by every session on this VM`
+      : describeVMSize(session.resources, preflight.runtimes?.session_vm_sizes) ||
+          'runtime defaults',
   );
+
+  // Only a session's own VM can change size. The workspace VM is sized from its own dialog.
+  const resizable = $derived(
+    !session.on_workspace_vm && !onThisMachine && bootsVMs(session.runtime),
+  );
+
+  // The sizes the session's own node offers, so "fits N" counts that machine, not this one.
+  let sizeCards = $state<VMSizeCard[]>([]);
+  $effect(() => {
+    if (!open || !resizable) return;
+    void hostKey;
+    const ac = new AbortController();
+    api
+      .preflight(
+        untrack(() => host),
+        ac.signal,
+      )
+      .then((p) => (sizeCards = sessionVMSizeCards(p.runtimes.session_vm_sizes ?? [])))
+      .catch(() => {});
+    return () => ac.abort();
+  });
+
+  let pickedSize = $state('');
+  // Which size save is running, so only its own button says so.
+  let sizeSave = $state<'restart now' | 'restart later' | null>(null);
+  const resizing = $derived(sizeSave !== null);
+  let resizeError = $state<string | null>(null);
+  $effect(() => {
+    if (!open) return;
+    sessionId;
+    untrack(() => {
+      pickedSize = session.resources?.size ?? '';
+      resizeError = null;
+    });
+  });
+
+  const sizeChanged = $derived(Boolean(pickedSize) && pickedSize !== session.resources?.size);
+  // Starting counts as running: a restart passes through it, and the buttons must not change under you.
+  const running = $derived(session.status === 'running' || session.status === 'starting');
+
+  async function saveAndRestart() {
+    await applySize('restart now', () => api.resizeSessionVM(session.id, pickedSize, host));
+  }
+
+  async function saveForLater() {
+    await applySize('restart later', () => api.saveSessionVMSize(session.id, pickedSize, host));
+  }
+
+  async function applySize(
+    which: 'restart now' | 'restart later',
+    request: () => Promise<Session>,
+  ) {
+    sizeSave = which;
+    resizeError = null;
+    try {
+      session = await request();
+      void sessions.refresh();
+      onsaved?.();
+      await loadRunningSandbox();
+    } catch (e) {
+      resizeError = e instanceof Error ? e.message : String(e);
+    } finally {
+      sizeSave = null;
+    }
+  }
+
+  // The VM this session runs on, its own or the workspace VM, as it runs right now. Used to tell saved
+  // changes it has not picked up yet.
+  let runningSandbox = $state<SandboxView | null>(null);
+
+  async function loadRunningSandbox() {
+    const sandboxID = session.sandbox_id;
+    if (onThisMachine || !sandboxID) {
+      runningSandbox = null;
+      return;
+    }
+    try {
+      const views = await api.runtimes(host);
+      runningSandbox =
+        views.runtimes
+          .flatMap((view) => view.sandboxes)
+          .find((sandbox) => sandbox.sandbox_id === sandboxID && sandbox.state === 'running') ??
+        null;
+    } catch {
+      runningSandbox = null;
+    }
+  }
+
+  $effect(() => {
+    if (!open) return;
+    void session.sandbox_id;
+    untrack(() => void loadRunningSandbox());
+  });
+
+  const savedSizeWaiting = $derived(
+    resizable &&
+      running &&
+      // Mid save, the new size is in but the running one has not been read again yet.
+      !resizing &&
+      sizeAwaitingRestart(
+        runningSandbox?.resources,
+        session.resources,
+        preflight.runtimes?.session_vm_sizes,
+      ),
+  );
+
+  const workspaceChangesWaiting = $derived(
+    session.on_workspace_vm &&
+      runningSandbox !== null &&
+      workspaceVM !== null &&
+      (sizeAwaitingRestart(
+        runningSandbox.resources,
+        workspaceVM.resources,
+        preflight.runtimes?.workspace_vm_sizes,
+      ) ||
+        folderAwaitingRestart(
+          runningSandbox.mounts,
+          workspaceVM.host_root,
+          workspaceVM.guest_root,
+        )),
+  );
+  const sessionsOnWorkspaceVM = $derived(runningSandbox?.sessions.length ?? 0);
+
+  let restartingVM = $state(false);
+
+  async function restartVM() {
+    if (!session.sandbox_id) return;
+    restartingVM = true;
+    resizeError = null;
+    try {
+      await api.restartSandbox(session.runtime, session.sandbox_id, host);
+      void sessions.refresh();
+      await loadRunningSandbox();
+      onsaved?.();
+    } catch (e) {
+      resizeError = e instanceof Error ? e.message : String(e);
+    } finally {
+      restartingVM = false;
+    }
+  }
 </script>
 
 <Dialog bind:open>
@@ -121,6 +285,12 @@
       <dt class="text-muted-foreground">Machine</dt>
       <dd>{machine}</dd>
 
+      <!-- Nothing caps a session that runs on the machine itself, so there is no size to show. -->
+      {#if !onThisMachine}
+        <dt class="text-muted-foreground">Size</dt>
+        <dd>{size}</dd>
+      {/if}
+
       <dt class="text-muted-foreground">Folder</dt>
       <dd class="font-mono text-xs break-all">
         {#if session.work_dir}
@@ -136,12 +306,6 @@
           /workspace <span class="text-muted-foreground">(nothing mounted)</span>
         {/if}
       </dd>
-
-      <!-- Nothing caps a session that runs on the machine itself, so there is no size to show. -->
-      {#if !onThisMachine}
-        <dt class="text-muted-foreground">Size</dt>
-        <dd>{size}</dd>
-      {/if}
 
       {#if session.image}
         <dt class="text-muted-foreground">Image</dt>
@@ -178,6 +342,74 @@
       />
     </div>
 
+    {#if resizable && sizeCards.length}
+      <div class="space-y-3 border-t border-border pt-4">
+        <VMSizePicker
+          title="Session VM size"
+          cards={sizeCards}
+          selected={pickedSize}
+          onselect={(name) => (pickedSize = name)}
+        />
+        {#if savedSizeWaiting && runningSandbox}
+          <div
+            class="flex items-start justify-between gap-4 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm"
+            role="status"
+          >
+            <div class="space-y-1">
+              <div class="font-medium">The new size is saved but not in use yet.</div>
+              <p class="text-xs text-muted-foreground">
+                The VM still runs with {formatRunningSize(runningSandbox.resources)}. It switches to
+                {describeVMSize(session.resources, preflight.runtimes?.session_vm_sizes)} when it restarts.
+                Restarting interrupts this session.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              class="shrink-0"
+              disabled={restartingVM || resizing}
+              onclick={restartVM}
+            >
+              {restartingVM ? 'Restarting…' : 'Restart now'}
+            </Button>
+          </div>
+        {/if}
+        {#if !savedSizeWaiting || sizeChanged}
+          <p class="text-xs text-muted-foreground">
+            {#if running}
+              A new size takes effect when the VM restarts. Restarting interrupts this session. Your
+              home folder and login stay.
+            {:else}
+              The VM gets this size when it next starts.
+            {/if}
+          </p>
+        {/if}
+        <div class="flex items-center justify-end gap-2">
+          {#if running}
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={resizing || restartingVM || !sizeChanged}
+              onclick={saveForLater}
+            >
+              {sizeSave === 'restart later' ? 'Saving…' : 'Save, restart later'}
+            </Button>
+            <Button
+              size="sm"
+              disabled={resizing || restartingVM || !sizeChanged}
+              onclick={saveAndRestart}
+            >
+              {sizeSave === 'restart now' ? 'Restarting…' : 'Save and restart'}
+            </Button>
+          {:else}
+            <Button size="sm" disabled={resizing || !sizeChanged} onclick={saveForLater}>
+              Save size
+            </Button>
+          {/if}
+        </div>
+        {#if resizeError}<p class="text-xs text-destructive">{resizeError}</p>{/if}
+      </div>
+    {/if}
+
     <div class="border-t border-border pt-4">
       {#if session.on_workspace_vm}
         <div class="flex items-start justify-between gap-4">
@@ -199,18 +431,56 @@
             Edit the machine
           </Button>
         </div>
+        {#if workspaceChangesWaiting}
+          <div
+            class="mt-3 flex items-start justify-between gap-4 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm"
+            role="status"
+          >
+            <div class="space-y-1">
+              <div class="font-medium">The workspace VM has saved changes not in use yet.</div>
+              <p class="text-xs text-muted-foreground">
+                Restarting applies them and interrupts
+                {sessionsOnWorkspaceVM === 1
+                  ? 'the 1 session'
+                  : `all ${sessionsOnWorkspaceVM} sessions`}
+                on this VM.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              class="shrink-0"
+              disabled={restartingVM || resizing}
+              onclick={restartVM}
+            >
+              {restartingVM ? 'Restarting…' : 'Restart now'}
+            </Button>
+          </div>
+          {#if resizeError}<p class="mt-2 text-xs text-destructive">{resizeError}</p>{/if}
+        {/if}
       {:else if onThisMachine}
         <p class="text-xs leading-relaxed text-muted-foreground">
           This session runs on the machine, so there is nothing to mount: the agent reads the folder
           it works in directly.
         </p>
       {:else}
-        <SharedFolderEditor bind:session {host} />
+        <SharedFolderEditor bind:session {host} {onsaved} />
       {/if}
     </div>
   </DialogContent>
 </Dialog>
 
 {#if workspaceVM}
-  <WorkspaceVMDialog bind:open={machineOpen} vm={workspaceVM} />
+  <WorkspaceVMDialog
+    bind:open={machineOpen}
+    vm={workspaceVM}
+    {host}
+    onsaved={() => {
+      void api
+        .workspaceVM(host)
+        .then((vm) => (workspaceVM = vm))
+        .catch(() => {});
+      void loadRunningSandbox();
+      onsaved?.();
+    }}
+  />
 {/if}

@@ -32,6 +32,9 @@ func (r *fakeRepo) Rename(context.Context, string, string, string, time.Time) er
 func (r *fakeRepo) UpdateUseLLMProxy(context.Context, string, string, bool, time.Time) error {
 	return nil
 }
+func (r *fakeRepo) UpdateResources(context.Context, string, string, Resources, time.Time) error {
+	return nil
+}
 func (r *fakeRepo) UpdateMountsAndSandbox(context.Context, string, string, []MountRequest, string, time.Time) error {
 	return nil
 }

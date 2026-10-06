@@ -130,6 +130,9 @@ type ListFilter struct {
 // these come straight from a form field. Zero means "no explicit limit", which each runtime resolves to
 // its own default.
 type Resources struct {
+	// Size names one of the VM sizes, Small, Medium or Large. When set, CPU and memory come from the size
+	// each time the VM boots, so the numbers below stay empty.
+	Size string `json:"size,omitempty"`
 	// CPU is the number of cores. A VM rounds to whole vCPUs, since you cannot give a virtual machine
 	// half a processor.
 	CPU float64 `json:"cpu,omitempty"`
@@ -170,5 +173,5 @@ func (r Resources) Validate() error {
 
 // Asked returns whether this request caps anything at all. Zero means the runtime decides.
 func (r Resources) Asked() bool {
-	return r.CPU != 0 || r.MemoryMB != 0 || r.DiskMB != 0
+	return r.Size != "" || r.CPU != 0 || r.MemoryMB != 0 || r.DiskMB != 0
 }

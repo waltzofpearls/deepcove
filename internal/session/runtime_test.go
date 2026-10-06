@@ -320,37 +320,6 @@ func TestRuntimesOrder(t *testing.T) {
 	}
 }
 
-// defaulterSandbox reports a fixed allocation, the way a VM driver does.
-type defaulterSandbox struct {
-	*fakeSandbox
-	defaults sandbox.Resources
-}
-
-func (d *defaulterSandbox) DefaultResources() sandbox.Resources { return d.defaults }
-
-func TestRuntimeDefaults(t *testing.T) {
-	svc, _, _, _ := newTestService(t) // plain fake: no ResourceDefaulter
-	if got := svc.runtimeDefaults(); got != nil {
-		t.Errorf("runtimeDefaults() = %v, want nil when no driver reports one", got)
-	}
-
-	svc.RegisterRuntime(RuntimeAppleVF, &defaulterSandbox{
-		fakeSandbox: newFakeSandbox(),
-		defaults:    sandbox.Resources{CPU: 2, Memory: 2 << 30, Disk: 1 << 30},
-	})
-	got := svc.runtimeDefaults()
-
-	// A driver that does not report defaults stays out of the map, rather than appearing as zeroes that
-	// would read as "capped at nothing".
-	if _, ok := got[runtimeFake]; ok {
-		t.Error("a runtime with no ResourceDefaulter was reported with defaults")
-	}
-	want := Resources{CPU: 2, MemoryMB: 2048, DiskMB: 1024}
-	if got[RuntimeAppleVF] != want {
-		t.Errorf("defaults = %+v, want %+v", got[RuntimeAppleVF], want)
-	}
-}
-
 // unreachableSandbox is a driver whose backend is down: registered, but unable to host anything.
 type unreachableSandbox struct{ *fakeSandbox }
 
@@ -486,7 +455,6 @@ func TestRegisterRuntimeWhileReading(t *testing.T) {
 			_ = svc.Runtimes()
 			_ = svc.DefaultRuntime()
 			_, _ = svc.runtimeByName("")
-			_ = svc.runtimeDefaults()
 			_, _ = svc.pickVMRuntime("")
 			rec := httptest.NewRecorder()
 			svc.handlePreflight(rec, httptest.NewRequest(http.MethodGet, "/api/preflight", nil))

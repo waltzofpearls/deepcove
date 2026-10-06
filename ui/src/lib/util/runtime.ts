@@ -126,13 +126,6 @@ export function runtimeHint(name: string): string {
   }
 }
 
-// runtimeCapsDisk reports whether a runtime actually applies a disk cap. Only the VM runtime does: its
-// writable layer is a tmpfs that would otherwise be free to eat the guest's RAM. Anywhere else the
-// input would promise something we do not deliver.
-export function runtimeCapsDisk(name: string): boolean {
-  return bootsVMs(name);
-}
-
 // runtimeSummary is one line saying what a machine can host, for a list with no room for the detail.
 export function runtimeSummary(info: RuntimesInfo | null | undefined): string {
   if (!info) return '';

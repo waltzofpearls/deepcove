@@ -45,6 +45,8 @@ export interface Session {
 // runtime picks. Memory and disk are MiB, because a byte count is neither readable in a payload nor
 // something anyone wants to type.
 export interface SessionResources {
+  // size names one of the VM sizes. When set, the VM's CPU and memory come from that size.
+  size?: string;
   // cpu is a core count. A VM rounds up to whole vCPUs.
   cpu?: number;
   memory_mb?: number;
@@ -251,10 +253,6 @@ export interface RuntimesInfo {
   // default is what a create request gets when it does not name a runtime. Empty when the node has no
   // runtime it will pick for you: No sandbox is all it has, or it has nothing.
   default: string;
-  // defaults maps a runtime name to what a session gets when it asks for no particular size, so the
-  // form can show real numbers instead of the word "default". A runtime is ABSENT when it imposes no
-  // limit of its own (sandboxless lets a session use the whole host), which is not the same as zero.
-  defaults?: Record<string, SessionResources>;
   // unavailable maps a runtime this node has a driver for to why it cannot host a session right now,
   // e.g. a hypervisor that stopped answering. Absent from the map means usable. Being registered says the
   // driver exists, not that the backend is up, and the backend can come up without restarting the node.
@@ -262,14 +260,31 @@ export interface RuntimesInfo {
   // missing maps a runtime this node knows about but cannot provide to a reason code. Unlike
   // unavailable, there is no driver at all and something has to be installed first.
   missing?: Record<string, string>;
-  // workspace_defaults is the size a new workspace VM gets on this host, derived from what the machine
-  // actually has. Not part of defaults, which is per runtime: this one is per machine.
-  workspace_defaults?: SessionResources;
+  // session_vm_sizes are the sizes a session VM can have, each with how many fit on this machine.
+  session_vm_sizes?: SessionVMSizeChoice[];
+  // workspace_vm_sizes are the sizes the workspace VM can have, each with about how many agents it runs.
+  workspace_vm_sizes?: WorkspaceVMSizeChoice[];
+  default_vm_size?: string;
   // workspace_roots maps a runtime that makes a folder per session to where those folders live. Only a
   // runtime with no sandbox has one.
   workspace_roots?: Record<string, string>;
   // agents_to_install maps a runtime to the agents that machine does not have yet.
   agents_to_install?: Record<string, string[]>;
+}
+
+export interface VMSize {
+  name: string;
+  cpu: number;
+  memory_mb: number;
+}
+
+export interface SessionVMSizeChoice extends VMSize {
+  // Absent when the machine's memory could not be measured.
+  fits_on_this_host?: number;
+}
+
+export interface WorkspaceVMSizeChoice extends VMSize {
+  agents_it_runs: number;
 }
 
 export type BootstrapStatus = 'installing' | 'ready' | 'errored';

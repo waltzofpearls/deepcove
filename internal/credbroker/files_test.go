@@ -1,6 +1,7 @@
 package credbroker
 
 import (
+	"encoding/json"
 	"maps"
 	"slices"
 	"strings"
@@ -15,9 +16,13 @@ func TestKeepAgentFiles(t *testing.T) {
 		want  []string
 	}{
 		{
-			name: "the login file kept, settings dropped", agent: "claude",
-			files: map[string][]byte{".claude/.credentials.json": nil, ".claude.json": nil},
-			want:  []string{".claude/.credentials.json"},
+			name: "the login and the settings kept", agent: "claude",
+			files: map[string][]byte{".claude/.credentials.json": nil, ".claude.json": []byte(`{}`)},
+			want:  []string{".claude.json", ".claude/.credentials.json"},
+		},
+		{
+			name: "settings that are not JSON dropped", agent: "claude",
+			files: map[string][]byte{".claude.json": []byte("not json")},
 		},
 		{
 			name: "anything else dropped", agent: "claude",
@@ -36,6 +41,55 @@ func TestKeepAgentFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKeepAgentFiles_DropsTheDenylistedKeys(t *testing.T) {
+	settings := []byte(`{"oauthAccount":{"emailAddress":"a@b.c"},"mcpServers":{"x":{"command":"evil"}},"projects":{"/w":{}}}`)
+	kept := KeepAgentFiles("claude", map[string][]byte{".claude.json": settings})
+
+	got := keysOf(t, kept[".claude.json"])
+	if want := []string{"oauthAccount"}; !slices.Equal(got, want) {
+		t.Errorf("shared keys = %v, want %v", got, want)
+	}
+}
+
+func TestMergeIntoSession(t *testing.T) {
+	cases := []struct {
+		name        string
+		rel         string
+		shared      string
+		sessionCopy string
+		wantKeys    []string
+	}{
+		{"the session keeps its own MCP servers and projects", ".claude.json",
+			`{"oauthAccount":{}}`, `{"oauthAccount":{"old":1},"mcpServers":{},"projects":{}}`,
+			[]string{"mcpServers", "oauthAccount", "projects"}},
+		{"a broken session copy is replaced", ".claude.json", `{"oauthAccount":{}}`, `broken`,
+			[]string{"oauthAccount"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			merged := MergeIntoSession(tc.rel, []byte(tc.shared), []byte(tc.sessionCopy))
+			if got := keysOf(t, merged); !slices.Equal(got, tc.wantKeys) {
+				t.Errorf("keys = %v, want %v", got, tc.wantKeys)
+			}
+		})
+	}
+}
+
+func TestMergeIntoSession_ReplacesTheCredentialsFile(t *testing.T) {
+	if got := MergeIntoSession(claudeCredentials, []byte("new"), []byte("old")); string(got) != "new" {
+		t.Errorf("got %q, want the shared file", got)
+	}
+}
+
+func keysOf(t *testing.T, data []byte) []string {
+	t.Helper()
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	return slices.Sorted(maps.Keys(settings))
 }
 
 // Joined onto the agent home as they are, so none may be absolute or climb out of it.
