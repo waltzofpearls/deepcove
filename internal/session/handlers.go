@@ -30,6 +30,10 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	inner.HandleFunc("GET /api/llm-proxy", s.handleGetLLMProxy)
 	inner.HandleFunc("PUT /api/llm-proxy", s.handleSetLLMProxy)
 	inner.HandleFunc("POST /api/llm-proxy/test", s.handleTestLLMProxy)
+	inner.HandleFunc("GET /api/shared-logins/{agent}", s.handleGetSharedLogin)
+	inner.HandleFunc("PUT /api/shared-logins/{agent}", s.handleSaveLoginSettings)
+	inner.HandleFunc("POST /api/shared-logins/{agent}/switch", s.handleSwitchSharedLogin)
+	inner.HandleFunc("POST /api/shared-logins/{agent}/keep", s.handleKeepSharedLogin)
 	inner.HandleFunc("GET /api/sessions/suggest-name", s.handleSuggestName)
 	inner.HandleFunc("GET /api/sessions/{id}", s.handleGet)
 	inner.HandleFunc("PATCH /api/sessions/{id}", s.handlePatch)
@@ -157,15 +161,15 @@ func (s *Service) handleTestLLMProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePatch updates one session. PATCH /api/sessions/{id} with any of {"name": "...",
-// "use_llm_proxy": true, "vm_size": "large", "restart_now": false}. Fields left out are left alone,
+// "login_mode": "api_key", "vm_size": "large", "restart_now": false}. Fields left out are left alone,
 // which is why they are pointers. A new VM size restarts a running VM unless restart_now is false.
 func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Name        *string `json:"name"`
-		UseLLMProxy *bool   `json:"use_llm_proxy"`
-		VMSize      *string `json:"vm_size"`
-		RestartNow  *bool   `json:"restart_now"`
+		Name       *string    `json:"name"`
+		LoginMode  *LoginMode `json:"login_mode"`
+		VMSize     *string    `json:"vm_size"`
+		RestartNow *bool      `json:"restart_now"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -178,13 +182,28 @@ func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.LoginMode != nil {
+		sess, err := s.Get(r.Context(), id)
+		// Asking for the mode it already has changes nothing, so it is not checked, as SetLoginMode does.
+		if err == nil && sess.LoginMode != *req.LoginMode {
+			err = s.loginModeChangeable(sess, *req.LoginMode)
+		}
+		if errors.Is(err, ErrNotFound) {
+			writeNotHostedHere(w)
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	var sess *Session
 	var err error
 	if req.Name != nil {
 		sess, err = s.Rename(r.Context(), id, *req.Name)
 	}
-	if err == nil && req.UseLLMProxy != nil {
-		sess, err = s.SetUseLLMProxy(r.Context(), id, *req.UseLLMProxy)
+	if err == nil && req.LoginMode != nil {
+		sess, err = s.SetLoginMode(r.Context(), id, *req.LoginMode)
 	}
 	switch {
 	case err != nil || req.VMSize == nil:

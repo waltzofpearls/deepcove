@@ -45,7 +45,7 @@
     </span>
   {/if}
   <RuntimeBadge runtime={session.runtime} shared={session.on_workspace_vm ?? false} />
-  {#if session.use_llm_proxy}
+  {#if session.login_mode === 'llm_proxy'}
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger>

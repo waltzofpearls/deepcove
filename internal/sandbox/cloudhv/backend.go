@@ -5,9 +5,8 @@
 // network. They talk over UNIX sockets in a per VM run directory, which is why that directory has to
 // stay short enough for a socket path.
 //
-// Those sockets carry the guest's credential and config services, so the directory's 0700 mode is what
-// protects them. That is enough because anyone with this uid can read the credential store on disk
-// anyway; it is not enough for a machine where another user is a threat, and that machine needs a
+// Those sockets carry the guest's config, shared login and LLM services, so the directory's 0700 mode is
+// what protects them. That is not enough for a machine where another user is a threat, and that machine needs a
 // different answer than a socket permission.
 package cloudhv
 

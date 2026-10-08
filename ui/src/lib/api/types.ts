@@ -25,8 +25,8 @@ export interface Session {
   sandbox_id?: string;
   // On this node's shared machine, rather than one of its own.
   on_workspace_vm?: boolean;
-  // LLM requests go to this node's LLM proxy instead of the agent's own login.
-  use_llm_proxy?: boolean;
+  // How this session's agent logs in. On the workspace VM, shared means the machine's login.
+  login_mode: LoginMode;
   // The folder this session works in, inside the sandbox.
   work_dir?: string;
   // Where the agent actually works, answered by the runtime. The one place the path comes from when
@@ -88,8 +88,8 @@ export interface CreateSessionRequest {
   // Put the session on this node's shared machine instead of building it one. The machine owns the
   // mounts, its runtime and its size, so those are ignored.
   on_workspace_vm?: boolean;
-  // Send this session's LLM requests to the node's LLM proxy. Omitted means no.
-  use_llm_proxy?: boolean;
+  // Omitted means the node's default.
+  login_mode?: LoginMode;
   // The session's folder under the workspace root, created if missing. Empty means one named after the
   // session. Workspace sessions only.
   work_dir?: string;
@@ -99,6 +99,19 @@ export interface CreateSessionRequest {
 // provider, with the key inside the sandbox.
 export interface LLMProxy {
   url: string;
+}
+
+// SharedLoginStatus mirrors internal/sharedlogin.Status, plus the node's login settings.
+export interface SharedLoginStatus {
+  logged_in: boolean;
+  // How new sessions on this node log in, unless the user picks otherwise when creating one.
+  default_login_mode: LoginMode;
+  has_api_key: boolean;
+  // The saved key's last four characters, empty when it is too short to spare them.
+  api_key_ending: string;
+  // Can be empty even when logged in, if the agent never said which account it is.
+  account: string;
+  waiting: { account: string; sandbox_id: string } | null;
 }
 
 // WorkspaceVM mirrors internal/session.WorkspaceVM: this node's shared machine, one per node. Sessions
@@ -191,8 +204,14 @@ export interface ConnectStatus {
 export interface Agent {
   name: string;
   display_name: string;
+  // login_modes are the ways this agent may be logged in, safest first.
+  login_modes: LoginMode[];
   sandboxed: SandboxedAgent;
 }
+
+// in_session: its own login. shared: the user's login, kept by deepcove. api_key: the user's key, kept by
+// deepcove. llm_proxy: the node's LLM proxy.
+export type LoginMode = 'in_session' | 'shared' | 'api_key' | 'llm_proxy';
 
 // How the agent is built into a guest, for the runtimes that have one. The script that starts it stays
 // on the node, along with everything about installing it on a machine with no guest.

@@ -12,6 +12,8 @@ import type {
   CreateTmuxWindowRequest,
   FsListResponse,
   LLMProxy,
+  LoginMode,
+  SharedLoginStatus,
   MountRequest,
   NodeInfo,
   Preflight,
@@ -304,6 +306,44 @@ export const api = {
     return request('/llm-proxy', { method: 'PUT', body: JSON.stringify({ url }) });
   },
 
+  // sharedLogin is the account a node's sessions share for agent. Per node, like the LLM proxy.
+  sharedLogin(agent: string, host?: SessionHost, signal?: AbortSignal): Promise<SharedLoginStatus> {
+    return request(
+      `/shared-logins/${encodeURIComponent(agent)}`,
+      { signal },
+      transportForHost(host),
+    );
+  },
+
+  // switchSharedLogin moves every sharing session to the waiting account.
+  switchSharedLogin(agent: string, host?: SessionHost): Promise<SharedLoginStatus> {
+    return request(
+      `/shared-logins/${encodeURIComponent(agent)}/switch`,
+      { method: 'POST' },
+      transportForHost(host),
+    );
+  },
+
+  // saveLoginSettings sets the node's default login mode or its API key. An empty key removes it.
+  saveLoginSettings(
+    agent: string,
+    settings: { default_login_mode?: LoginMode; api_key?: string },
+  ): Promise<SharedLoginStatus> {
+    return request(`/shared-logins/${encodeURIComponent(agent)}`, {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    });
+  },
+
+  // keepSharedLogin keeps the shared account. The waiting one is not asked about again.
+  keepSharedLogin(agent: string, host?: SessionHost): Promise<SharedLoginStatus> {
+    return request(
+      `/shared-logins/${encodeURIComponent(agent)}/keep`,
+      { method: 'POST' },
+      transportForHost(host),
+    );
+  },
+
   // testLLMProxy asks this node to make one request to the configured proxy, so the UI can report
   // whether it is reachable from here.
   testLLMProxy(): Promise<{ result: string }> {
@@ -554,14 +594,15 @@ export const api = {
     );
   },
 
-  // setSessionUseLLMProxy turns the node's LLM proxy on or off for one session, restarting its agent.
-  setSessionUseLLMProxy(id: string, use: boolean, host?: SessionHost): Promise<Session> {
+  // setSessionLoginMode changes how one session logs in. A change to or from the API key or the LLM
+  // proxy restarts its agent.
+  setSessionLoginMode(id: string, mode: LoginMode, host?: SessionHost): Promise<Session> {
     return request(
       `/sessions/${encodeURIComponent(id)}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ use_llm_proxy: use }),
+        body: JSON.stringify({ login_mode: mode }),
       },
       transportForHost(host),
     );

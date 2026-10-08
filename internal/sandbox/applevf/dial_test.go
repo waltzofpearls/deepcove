@@ -4,22 +4,31 @@ import (
 	"context"
 	"errors"
 	"net"
-	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// stuckConnect never answers, the way Virtualization.framework behaves when nothing listens on the port.
-// Its goroutines are released at the end of the test so they do not follow us into the next one.
-func stuckConnect(t *testing.T) connectFunc {
+// stuckGuest never answers a connect, like Virtualization.framework with nothing listening. It counts
+// the connects still waiting, which is every goroutine a dial leaves behind.
+type stuckGuest struct {
+	release chan struct{}
+	waiting atomic.Int32
+}
+
+func newStuckGuest(t *testing.T) *stuckGuest {
 	t.Helper()
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	return func(uint32) (net.Conn, error) {
-		<-release
-		return nil, errors.New("released")
-	}
+	guest := &stuckGuest{release: make(chan struct{})}
+	t.Cleanup(func() { close(guest.release) })
+	return guest
+}
+
+func (g *stuckGuest) connect(uint32) (net.Conn, error) {
+	g.waiting.Add(1)
+	defer g.waiting.Add(-1)
+	<-g.release
+	return nil, errors.New("released")
 }
 
 func shortCtx(t *testing.T) context.Context {
@@ -32,9 +41,9 @@ func shortCtx(t *testing.T) context.Context {
 // The bug this exists for: a guest that stopped listening used to cost two goroutines per dial, for as
 // long as the process lived, with nothing to stop the pile growing.
 func TestDialBoundsAGuestThatNeverAnswers(t *testing.T) {
-	d := newDialer(stuckConnect(t), nil)
+	guest := newStuckGuest(t)
+	d := newDialer(guest.connect, nil)
 
-	before := runtime.NumGoroutine()
 	for range maxPendingDials * 4 {
 		if _, err := d.Dial(shortCtx(t), 1024); err == nil {
 			t.Fatal("a guest that never answers should not produce a connection")
@@ -44,15 +53,20 @@ func TestDialBoundsAGuestThatNeverAnswers(t *testing.T) {
 	if got := d.Pending(); got != maxPendingDials {
 		t.Errorf("pending = %d, want %d", got, maxPendingDials)
 	}
-	// Goroutines are the whole point: the count must stop growing, not merely grow slower.
-	if grew := runtime.NumGoroutine() - before; grew > maxPendingDials {
-		t.Errorf("%d goroutines were left behind, want at most %d", grew, maxPendingDials)
+	// Counted where each goroutine waits, so goroutines from elsewhere in the test binary cannot tip it.
+	// The last ones may not have reached the guest yet.
+	deadline := time.Now().Add(time.Second)
+	for guest.waiting.Load() < maxPendingDials && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := guest.waiting.Load(); got != maxPendingDials {
+		t.Errorf("%d dials are stuck waiting on the guest, want exactly %d", got, maxPendingDials)
 	}
 }
 
 // Once the cap is reached a dial has to fail immediately, rather than waiting out its own timeout.
 func TestDialRefusesWithoutWaiting(t *testing.T) {
-	d := newDialer(stuckConnect(t), nil)
+	d := newDialer(newStuckGuest(t).connect, nil)
 	for range maxPendingDials {
 		_, _ = d.Dial(shortCtx(t), 1024)
 	}
@@ -142,7 +156,7 @@ func TestDialWarnsOnce(t *testing.T) {
 		warnings++
 	})
 
-	d := newDialer(stuckConnect(t), logger)
+	d := newDialer(newStuckGuest(t).connect, logger)
 	for range maxPendingDials * 3 {
 		_, _ = d.Dial(shortCtx(t), 1024)
 	}

@@ -23,7 +23,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/applevf"
@@ -56,8 +55,6 @@ func run() error {
 	execCmd := flag.String("exec", "", "after boot, run this command in the guest over vsock and print the result")
 	execTTY := flag.Bool("exec-tty", false, "run the --exec command on a pseudo terminal")
 	execStdin := flag.String("exec-stdin", "", "feed this file to the --exec command's stdin, closing it at EOF")
-	credsFile := flag.String("creds", "", "JSON file backing the credential broker (enables it)")
-	agent := flag.String("agent", "", "agent name whose credentials the guest brokers with the host")
 	flag.Parse()
 
 	if *kernel == "" {
@@ -82,9 +79,7 @@ func run() error {
 		CPUCount:     *cpu,
 		MemoryBytes:  *memMiB << 20,
 		OverlayBytes: int64(*diskMiB) << 20,
-		CredStore:    credStore(*credsFile),
 		Entrypoint:   []string{"/bin/sh", "-c", *launch},
-		Agent:        *agent,
 	})
 	if err != nil {
 		return err
@@ -167,12 +162,4 @@ func copyPrefixed(tag string, r io.ReadCloser) {
 	for sc.Scan() {
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", tag, sc.Text())
 	}
-}
-
-// credStore enables the credential broker when a backing file is given.
-func credStore(path string) credbroker.Store {
-	if path == "" {
-		return nil
-	}
-	return newFileStore(path)
 }

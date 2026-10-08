@@ -29,7 +29,7 @@ func (r *fakeRepo) MarkStoppedBecause(context.Context, string, string, StopReaso
 }
 func (r *fakeRepo) UpdateActivity(context.Context, string, string, time.Time) error { return nil }
 func (r *fakeRepo) Rename(context.Context, string, string, string, time.Time) error { return nil }
-func (r *fakeRepo) UpdateUseLLMProxy(context.Context, string, string, bool, time.Time) error {
+func (r *fakeRepo) UpdateLoginMode(context.Context, string, string, LoginMode, time.Time) error {
 	return nil
 }
 func (r *fakeRepo) UpdateResources(context.Context, string, string, Resources, time.Time) error {

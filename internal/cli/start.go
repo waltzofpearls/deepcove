@@ -22,6 +22,7 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/connect"
 	"github.com/waltzofpearls/deepcove/internal/db"
 	"github.com/waltzofpearls/deepcove/internal/session"
+	"github.com/waltzofpearls/deepcove/internal/sharedlogin"
 	"github.com/waltzofpearls/deepcove/internal/tailnet"
 	"github.com/waltzofpearls/deepcove/internal/ui"
 	"golang.org/x/sync/errgroup"
@@ -126,7 +127,17 @@ func cmdStart(ctx context.Context, args []string) error {
 	}
 	sessionSvc.SetTailnetClient(tailnetClient)
 
-	runtimes := registerRuntimes(sessionSvc, cfg, session.NewCredentialStore(sqlDB), logger, tailnetClient)
+	// The user's own agent logins, for the sessions that share them. Only this node refreshes them.
+	sharedLoginStore := session.NewSharedLoginStore(sqlDB)
+	logins := sharedlogin.NewKeeper(sharedLoginStore, map[string]sharedlogin.Provider{
+		"claude": sharedlogin.ClaudeProvider{
+			Client:     &http.Client{Timeout: 30 * time.Second},
+			TokenURL:   sharedlogin.ClaudeTokenURL,
+			ProfileURL: sharedlogin.ClaudeProfileURL,
+		},
+	})
+	sessionSvc.SetSharedLogins(logins, sharedLoginStore)
+	runtimes := registerRuntimes(sessionSvc, cfg, logins, logger, tailnetClient)
 	defer runtimes.close()
 	// Defers unwind in reverse, so this runs before the runtimes and the database close. Terminal
 	// streams survive the HTTP drain (their connection is hijacked) and need both to clean up.

@@ -88,7 +88,7 @@ func TestWaitReadyReportsTheConsole(t *testing.T) {
 func TestServeConfigAnswersTheGuest(t *testing.T) {
 	m := newFakeMachine()
 	g := NewGuest(m, nil)
-	want := guestcfg.Config{Entrypoint: []string{"/bin/sh"}, Agent: "claude"}
+	want := guestcfg.Config{Entrypoint: []string{"/bin/sh"}}
 	if err := g.ServeConfig(want); err != nil {
 		t.Fatalf("ServeConfig: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestServeConfigAnswersTheGuest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if got.Agent != want.Agent || len(got.Entrypoint) != 1 || got.Entrypoint[0] != want.Entrypoint[0] {
+	if len(got.Entrypoint) != 1 || got.Entrypoint[0] != want.Entrypoint[0] {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }

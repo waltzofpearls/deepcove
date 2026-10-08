@@ -23,8 +23,8 @@ type Backend interface {
 
 // Machine is one running guest, and is all this package needs from a hypervisor.
 //
-// Both directions of vsock are here because both are used: the host dials the guest for exec, control
-// and config, and the guest dials the host for credentials and the LLM proxy.
+// Both directions of vsock are here because both are used: the host dials the guest for exec and
+// control, and the guest dials the host for its config, the shared login and the LLM proxy.
 type Machine interface {
 	// Dial opens a connection to a service the guest is listening on.
 	Dial(ctx context.Context, port uint32) (net.Conn, error)

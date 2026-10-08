@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -10,6 +11,8 @@ import (
 	"testing/fstest"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
+
+	"github.com/waltzofpearls/deepcove"
 )
 
 // fakeMigrations builds an in-memory migration filesystem rooted at
@@ -230,5 +233,43 @@ func TestSessionSandboxIDMigration(t *testing.T) {
 	// 0016 dropped them all: a table this small never needed one, and a lost index hides every row.
 	if indexes != 0 {
 		t.Errorf("%d indexes on sessions, want none", indexes)
+	}
+}
+
+func TestSessionLoginModeMigration(t *testing.T) {
+	database := onDisk(t)
+	before := fstest.MapFS{}
+	names, err := listMigrations(deepcove.Migrations(), migrationsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name < "0019" {
+			body, _ := fs.ReadFile(deepcove.Migrations(), migrationsDir+"/"+name)
+			before[migrationsDir+"/"+name] = &fstest.MapFile{Data: body}
+		}
+	}
+	if err := migrate(database, before, migrationsDir); err != nil {
+		t.Fatalf("migrate to 0018: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO sessions (id, name, agent, image, owner_email, runtime, use_llm_proxy) VALUES
+		('proxied', 'a', 'claude', '', 'local', 'applevf', true),
+		('no-sandbox', 'b', 'claude', '', 'local', 'sandboxless', false),
+		('vm', 'c', 'claude', '', 'local', 'applevf', false)`); err != nil {
+		t.Fatalf("insert sessions: %v", err)
+	}
+
+	if err := Migrate(database); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	want := map[string]string{"proxied": "llm_proxy", "no-sandbox": "in_session", "vm": "shared"}
+	for id, mode := range want {
+		var got string
+		if err := database.QueryRow(`SELECT login_mode FROM sessions WHERE id = ?`, id).Scan(&got); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if got != mode {
+			t.Errorf("%s login_mode = %q, want %q", id, got, mode)
+		}
 	}
 }

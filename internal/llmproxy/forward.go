@@ -1,4 +1,5 @@
-// Package llmproxy carries a sandbox's LLM traffic to the gateway on the host's behalf.
+// Package llmproxy carries a sandbox's LLM traffic to the gateway on the host's behalf, or to the
+// provider with the user's API key, which the host adds so the key never enters the sandbox.
 //
 // The sandbox cannot call the gateway itself: it lives on the tailnet, which netguard blackholes. So the
 // guest hands over the whole connection on vsock and the host makes the call, which also gives the
@@ -49,13 +50,20 @@ func sessionFrom(h http.Header) string {
 // LLMEndpoint is what a sandbox uses instead of the provider's URL.
 func LLMEndpoint() string { return fmt.Sprintf("http://127.0.0.1:%d", LLMRequestPort) }
 
+// AnthropicAPIURL is where a session that logs in with the user's API key is sent.
+const AnthropicAPIURL = "https://api.anthropic.com"
+
 // errNoProxy is what a request meets when this node has no proxy address configured.
 var errNoProxy = errors.New("no llm proxy is configured on this node")
 
 // Forwarder sends a guest's requests on to the proxy.
 type Forwarder struct {
 	proxyURL func() string
-	client   func() *http.Client
+	// apiKeyFor is the user's API key for a session that uses it, empty for any other.
+	apiKeyFor func(sessionID string) (string, error)
+	// providerURL is where a request carrying the API key goes. AnthropicAPIURL outside tests.
+	providerURL string
+	client      func() *http.Client
 	// onError records what the agent was told, so the same failure is visible on the host. Nil is quiet.
 	onError func(error)
 	// onRequest is told which session made each request, so a machine several sessions share can be
@@ -64,26 +72,36 @@ type Forwarder struct {
 	proxy     *httputil.ReverseProxy
 }
 
-// NewForwarder builds the forwarder. proxyURL and client are read per request rather than kept: the
-// proxy's address changes in the UI, and the tailnet client only exists once this node has signed in.
+// NewForwarder builds the forwarder. proxyURL, apiKeyFor and client are read per request, since all
+// three can change while a VM runs.
 func NewForwarder(
 	proxyURL func() string,
+	apiKeyFor func(sessionID string) (string, error),
 	client func() *http.Client,
 	onError func(error),
 	onRequest func(sessionID, method, path string),
 ) *Forwarder {
-	f := &Forwarder{proxyURL: proxyURL, client: client, onError: onError, onRequest: onRequest}
+	f := &Forwarder{
+		proxyURL: proxyURL, apiKeyFor: apiKeyFor, providerURL: AnthropicAPIURL,
+		client: client, onError: onError, onRequest: onRequest,
+	}
 	f.proxy = &httputil.ReverseProxy{
 		// Rewrite, not Director: it adds no X-Forwarded-For, so the proxy learns nothing about the
 		// sandbox behind this. Any that arrived are dropped for the same reason.
 		Rewrite: func(r *httputil.ProxyRequest) {
 			// Resolved once per request and carried on the context, so one request cannot see two
 			// different addresses.
-			u := upstreamFrom(r.In.Context())
-			r.SetURL(u)
-			r.Out.Host = u.Host
-			// The session id is for this machine, not for the proxy, so it goes no further.
-			r.Out.Header.Set("Authorization", "Bearer deepcove")
+			to := routeFrom(r.In.Context())
+			r.SetURL(to.url)
+			r.Out.Host = to.url.Host
+			// The session id is for this machine, not for the proxy or the provider, so it goes no further.
+			if to.apiKey != "" {
+				r.Out.Header.Del("Authorization")
+				r.Out.Header.Set("X-Api-Key", to.apiKey)
+			} else {
+				r.Out.Header.Set("Authorization", "Bearer deepcove")
+				r.Out.Header.Del("X-Api-Key")
+			}
 			for _, h := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Forwarded"} {
 				r.Out.Header.Del(h)
 			}
@@ -93,7 +111,7 @@ func NewForwarder(
 		// The default handler writes a bare 502 with an empty body, which reaches the agent as an
 		// unexplained failure. Say which address failed and why.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			f.fail(w, fmt.Errorf("%s: %w", upstreamFrom(r.Context()), err))
+			f.fail(w, fmt.Errorf("%s: %w", routeFrom(r.Context()).url, err))
 		},
 	}
 	return f
@@ -115,10 +133,10 @@ func (f *Forwarder) current() (*url.URL, error) {
 	return u, nil
 }
 
-// roundTrip sends the request the way this node can reach the proxy: over the tailnet when this node has
-// signed in, and over its ordinary network when it has not.
+// roundTrip reaches the proxy over the tailnet once this node has signed in. The provider is on the
+// internet, so a request with the API key always takes the ordinary network.
 func (f *Forwarder) roundTrip(r *http.Request) (*http.Response, error) {
-	if f.client != nil {
+	if routeFrom(r.Context()).apiKey == "" && f.client != nil {
 		if c := f.client(); c != nil && c.Transport != nil {
 			return c.Transport.RoundTrip(r)
 		}
@@ -129,15 +147,16 @@ func (f *Forwarder) roundTrip(r *http.Request) (*http.Response, error) {
 // handler answers one request. No proxy configured is an error the agent can read, not a hang.
 func (f *Forwarder) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, err := f.current()
+		sessionID := sessionFrom(r.Header)
+		to, err := f.route(sessionID)
 		if err != nil {
 			f.fail(w, err)
 			return
 		}
 		if f.onRequest != nil {
-			f.onRequest(sessionFrom(r.Header), r.Method, r.URL.Path)
+			f.onRequest(sessionID, r.Method, r.URL.Path)
 		}
-		f.proxy.ServeHTTP(w, r.WithContext(withUpstream(r.Context(), u)))
+		f.proxy.ServeHTTP(w, r.WithContext(withRoute(r.Context(), to)))
 	})
 }
 
@@ -162,16 +181,38 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	})
 }
 
-// upstreamKey carries the resolved address from the handler to the rewrite.
-type upstreamKey struct{}
-
-func withUpstream(ctx context.Context, u *url.URL) context.Context {
-	return context.WithValue(ctx, upstreamKey{}, u)
+// route is where one request goes, with the API key when it goes to the provider.
+type route struct {
+	url    *url.URL
+	apiKey string
 }
 
-func upstreamFrom(ctx context.Context) *url.URL {
-	u, _ := ctx.Value(upstreamKey{}).(*url.URL)
-	return u
+// route picks the provider for a session that logs in with the API key, and the proxy for any other.
+func (f *Forwarder) route(sessionID string) (route, error) {
+	if f.apiKeyFor != nil && sessionID != "" {
+		key, err := f.apiKeyFor(sessionID)
+		if err != nil {
+			return route{}, err
+		}
+		if key != "" {
+			provider, err := url.Parse(f.providerURL)
+			return route{url: provider, apiKey: key}, err
+		}
+	}
+	proxy, err := f.current()
+	return route{url: proxy}, err
+}
+
+// routeKey carries the resolved route from the handler to the rewrite.
+type routeKey struct{}
+
+func withRoute(ctx context.Context, to route) context.Context {
+	return context.WithValue(ctx, routeKey{}, to)
+}
+
+func routeFrom(ctx context.Context) route {
+	to, _ := ctx.Value(routeKey{}).(route)
+	return to
 }
 
 // roundTripperFunc lets a method stand in as a Transport.

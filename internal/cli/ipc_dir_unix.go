@@ -41,8 +41,7 @@ func runtimeDir(uid int, name string) string {
 	return filepath.Join("/run/user", strconv.Itoa(uid), name)
 }
 
-// One of these sockets hands out a session's credentials, and another is a shell, so the directory is
-// the whole of their protection.
+// One of these sockets is a shell, so the directory is the whole of its protection.
 const ipcDirMode = 0o700
 
 // requirePrivateToUs refuses a directory another user owns, and tightens one of ours that is open to

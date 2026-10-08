@@ -24,6 +24,7 @@ function sess(host?: SessionHost): Session {
     env: null,
     mounts: null,
     setup_script: '',
+    login_mode: 'shared',
     created_at: '',
     updated_at: '',
     last_activity_at: '',

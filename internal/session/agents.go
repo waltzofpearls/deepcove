@@ -26,13 +26,30 @@ var claudeSandboxlessLaunch string
 // A runtime with a guest installs the agent inside it, and one without a guest installs it on the
 // machine. The two need different commands, so each has its own half.
 type AgentSpec struct {
-	Name        string        `json:"name"`
-	DisplayName string        `json:"display_name"`
-	Sandboxed   SandboxedSpec `json:"sandboxed"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	// LoginModes are the ways this agent may be logged in, safest first. Each vendor sets its own rules,
+	// so a mode is listed only after checking that vendor's terms.
+	LoginModes []LoginMode   `json:"login_modes"`
+	Sandboxed  SandboxedSpec `json:"sandboxed"`
 	// Sandboxless stays on the node. It is a command to run on the machine, and the create form has
 	// nothing to show from it: it says "not installed yet" from the preflight instead.
 	Sandboxless SandboxlessSpec `json:"-"`
 }
+
+// LoginMode is one way an agent gets logged in.
+type LoginMode string
+
+const (
+	// LoginInSession is the agent's own login flow, run inside the session. Every agent allows it.
+	LoginInSession LoginMode = "in_session"
+	// LoginShared is the user's own login, kept by deepcove and handed to each session that shares it.
+	LoginShared LoginMode = "shared"
+	// LoginWithAPIKey uses the user's own API key, which deepcove keeps and adds to each request.
+	LoginWithAPIKey LoginMode = "api_key"
+	// LoginWithLLMProxy sends requests to the node's LLM proxy, which holds the credential.
+	LoginWithLLMProxy LoginMode = "llm_proxy"
+)
 
 // SandboxedSpec is how this agent is built into a guest and started there.
 type SandboxedSpec struct {
@@ -78,6 +95,7 @@ var agents = map[string]AgentSpec{
 	"claude": {
 		Name:        "claude",
 		DisplayName: "Claude Code",
+		LoginModes:  []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey, LoginWithLLMProxy},
 		Sandboxed: SandboxedSpec{
 			DefaultImage:  "alpine:3.20",
 			OfficialImage: "ghcr.io/waltzofpearls/deepcove-claude:latest",
