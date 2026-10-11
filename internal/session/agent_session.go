@@ -21,13 +21,40 @@ import (
 // held exactly one session.
 func tmuxSessionName(sessionID string) string { return "deepcove-" + sessionID }
 
+// lockAgent lets one caller at a time start, stop or restart a session's agent, so an attach cannot
+// start one in the middle of a login change.
+func (s *Service) lockAgent(ctx context.Context, sessionID string) (unlock func(), err error) {
+	unlock, err = s.agentLocks.lock(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session: wait for the agent of %s: %w", sessionID, err)
+	}
+	return unlock, nil
+}
+
 // startAgentSession starts the agent for one session, in its own tmux session and working directory.
 //
 // Idempotent: an existing tmux session is left alone, which makes Start safe to repeat.
 func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir string) error {
+	unlock, err := s.lockAgent(ctx, sess.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.startAgentSessionLocked(ctx, sess, workdir)
+}
+
+// startAgentSessionLocked is startAgentSession for a caller already holding lockAgent.
+func (s *Service) startAgentSessionLocked(ctx context.Context, sess *Session, workdir string) error {
+	current, err := s.Get(ctx, sess.ID)
 	// A stop before the agent exists kills nothing, so starting it now would undo the stop.
-	if current, err := s.Get(ctx, sess.ID); err == nil && current.Status == StatusStopped {
+	if err == nil && current.Status == StatusStopped {
 		return fmt.Errorf("session: not starting the agent, %s is stopped", sess.ID)
+	}
+	// A start that waited for setup can hold a mode read before a login change.
+	if err == nil && current.LoginMode != sess.LoginMode {
+		fresh := *sess
+		fresh.LoginMode = current.LoginMode
+		sess = &fresh
 	}
 	name := tmuxSessionName(sess.ID)
 	if _, err := s.execTmux(ctx, sess, "has-session", "-t", name); err == nil {
@@ -73,22 +100,47 @@ func (s *Service) startAgentSession(ctx context.Context, sess *Session, workdir 
 	return nil
 }
 
+// stopAgentSessionLocked stops a session's agent. Only tmux saying the session is gone counts, since
+// anything else may leave the old agent running.
+func (s *Service) stopAgentSessionLocked(ctx context.Context, sess *Session) error {
+	name := tmuxSessionName(sess.ID)
+	// Its own result proves nothing: it fails both when there was no agent and when tmux was not reached.
+	_, _ = s.execTmux(ctx, sess, "kill-session", "-t", name)
+	_, err := s.execTmux(ctx, sess, "has-session", "-t", name)
+	if err == nil {
+		return fmt.Errorf("session: the agent of %s is still running", sess.ID)
+	}
+	var tmuxSaidNo *tmuxExitError
+	if errors.As(err, &tmuxSaidNo) {
+		return nil
+	}
+	return fmt.Errorf("session: could not tell whether the agent of %s stopped: %w", sess.ID, err)
+}
+
 // agentLaunchCommand starts one session's agent with the environment that belongs to the session rather
 // than to the machine. Two sessions on one machine can differ because of this.
 func (s *Service) agentLaunchCommand(sess *Session, runtime sandbox.Sandbox) ([]string, error) {
-	proxyURL := s.LLMProxyURL()
-	proxied := sess.UseLLMProxy && proxyURL != ""
+	// The host forwards these, adding the user's API key on the way out so the key never enters the VM.
+	baseURL := ""
+	switch sess.LoginMode {
+	case LoginWithLLMProxy:
+		baseURL = llmProxyEndpoint(runtime, s.LLMProxyURL())
+	case LoginWithAPIKey:
+		if forwarder, ok := runtime.(sandbox.LLMForwarder); ok {
+			baseURL = forwarder.LLMEndpoint()
+		}
+	}
 	// env's options have to come before any assignment, or env reads them as the command to run.
 	//
 	// Cleared either way. Off has to mean off, whatever the machine, the image or a setup script left
 	// behind, and a machine built before this setting existed still holds the address on its init.
 	argv := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL"}
 	argv = append(argv, "DEEPCOVE_SESSION_ID="+sess.ID)
-	if proxied {
+	if baseURL != "" {
 		argv = append(argv,
-			"ANTHROPIC_BASE_URL="+llmProxyEndpoint(runtime, proxyURL),
+			"ANTHROPIC_BASE_URL="+baseURL,
 			// Carries the session id, which is how the host tells apart sessions sharing a machine. The
-			// proxy never sees it: it is replaced on the way out.
+			// proxy and the provider never see it: it is replaced on the way out.
 			"ANTHROPIC_AUTH_TOKEN="+llmproxy.AuthToken(sess.ID))
 	}
 	provisioner, ok := runtime.(sandbox.AgentProvisioner)

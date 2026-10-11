@@ -20,8 +20,7 @@ const shutdownTimeout = 10 * time.Second
 // Shutdown asks the guest to power itself off and waits for it to go away.
 //
 // This goes through the control service rather than the hypervisor's own stop request: the Kata guest
-// kernel has no gpio-keys driver, so a virtual power button is silently ignored inside the guest. It
-// also gives the guest a chance to hand back refreshed credentials before it halts.
+// kernel has no gpio-keys driver, so a virtual power button is silently ignored inside the guest.
 func (g *Guest) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), controlDialTimeout)
 	defer cancel()

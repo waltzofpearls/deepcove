@@ -12,11 +12,11 @@ import (
 	"sync"
 
 	"github.com/waltzofpearls/deepcove/internal/config"
-	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 	"github.com/waltzofpearls/deepcove/internal/service"
 	"github.com/waltzofpearls/deepcove/internal/session"
+	"github.com/waltzofpearls/deepcove/internal/sharedlogin"
 	"github.com/waltzofpearls/deepcove/internal/vmassets"
 )
 
@@ -80,7 +80,7 @@ func (rs *runtimeSet) snapshot() []runtimeEntry {
 // Each runtime is BUILT by its own constructor and REGISTERED here, so the list of what a node provides
 // reads in one place and every runtime joins it the same way. Which one becomes the default is decided
 // afterwards by the caller, from the session package's preference order.
-func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker.Store, logger *slog.Logger, tailnetClient func() *http.Client) *runtimeSet {
+func registerRuntimes(svc *session.Service, cfg *config.Config, logins *sharedlogin.Keeper, logger *slog.Logger, tailnetClient func() *http.Client) *runtimeSet {
 	roots := shareRoots(cfg)
 	// The service checks a workspace VM's folder against the same list, so a folder it may not share is
 	// refused when you pick it rather than when the machine is built.
@@ -93,7 +93,7 @@ func registerRuntimes(svc *session.Service, cfg *config.Config, store credbroker
 		svc:           svc,
 		cfg:           cfg,
 		shareRoots:    roots,
-		creds:         store,
+		sharedLogin:   logins,
 		logger:        logger,
 		tailnetClient: tailnetClient,
 	}
@@ -140,7 +140,7 @@ type runtimeDeps struct {
 	svc           *session.Service
 	cfg           *config.Config
 	shareRoots    sandbox.ShareRoots
-	creds         credbroker.Store
+	sharedLogin   *sharedlogin.Keeper
 	logger        *slog.Logger
 	tailnetClient func() *http.Client
 }
@@ -149,12 +149,13 @@ type runtimeDeps struct {
 // everything above it is this.
 func (deps runtimeDeps) vmDriver(name string, backend vm.Backend, kernel, guestInit vmAsset) (*vm.Driver, error) {
 	return vm.NewDriver(backend, kernel.path, guestInit.path, deps.cfg.DataDir,
-		vm.WithCredentialStore(deps.creds),
 		vm.WithLogger(deps.logger),
 		vm.WithShareRoots(deps.shareRoots),
 		vm.WithNetworkAllow(deps.cfg.AllowSandboxHosts...),
 		vm.WithTailnetClient(deps.tailnetClient),
 		vm.WithLLMProxyURL(deps.svc.LLMProxyURL),
+		vm.WithAPIKeys(deps.svc.APIKeyFor),
+		vm.WithSharedLogin(deps.sharedLogin),
 		vm.WithOnSilentGuestStopped(func(sandboxID sandbox.ID) {
 			deps.svc.MarkSandboxStopped(name, sandboxID)
 		}))

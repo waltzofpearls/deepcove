@@ -2,6 +2,7 @@ package llmproxy
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -21,7 +22,7 @@ func serveOverPipe(t *testing.T, upstream string, client *http.Client) net.Conn 
 // serveOverPipeFunc is the same, for tests that change the address while the connection is open.
 func serveOverPipeFunc(t *testing.T, upstream func() string, client *http.Client) net.Conn {
 	t.Helper()
-	forwarder := NewForwarder(upstream, func() *http.Client { return client }, nil, nil)
+	forwarder := NewForwarder(upstream, nil, func() *http.Client { return client }, nil, nil)
 	guest, host := net.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -207,6 +208,7 @@ func TestForwarderReportsAnUnreachableProxy(t *testing.T) {
 	var logged []error
 	forwarder := NewForwarder(
 		func() string { return deadURL },
+		nil,
 		func() *http.Client { return nil },
 		func(err error) { logged = append(logged, err) },
 		nil,
@@ -245,6 +247,7 @@ func TestForwarderAttributesRequestsToASession(t *testing.T) {
 	var seen []string
 	forwarder := NewForwarder(
 		func() string { return upstream.URL },
+		nil,
 		func() *http.Client { return nil },
 		nil,
 		func(sessionID, method, path string) { seen = append(seen, sessionID+" "+method+" "+path) },
@@ -275,5 +278,73 @@ func TestForwarderAttributesRequestsToASession(t *testing.T) {
 	}
 	if len(gotAuth) != 1 || strings.Contains(gotAuth[0], "session-42") {
 		t.Errorf("the proxy saw %q; the session id must not leave this machine", gotAuth)
+	}
+}
+
+func TestForwarder_route(t *testing.T) {
+	type seen struct{ server, auth, apiKey string }
+	var got []seen
+	serverNamed := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = append(got, seen{name, r.Header.Get("Authorization"), r.Header.Get("X-Api-Key")})
+		}))
+	}
+	proxy, provider := serverNamed("proxy"), serverNamed("provider")
+	defer proxy.Close()
+	defer provider.Close()
+	keys := map[string]string{"with-key": "sk-ant-1234"}
+
+	cases := []struct {
+		name       string
+		sessionID  string
+		sentAPIKey string
+		wantStatus int
+		want       seen
+	}{
+		{name: "a session with the API key goes to the provider with it", sessionID: "with-key", wantStatus: http.StatusOK, want: seen{"provider", "", "sk-ant-1234"}},
+		{name: "any other session goes to the proxy", sessionID: "without", wantStatus: http.StatusOK, want: seen{"proxy", "Bearer deepcove", ""}},
+		{name: "a key the agent sends never reaches the proxy", sessionID: "without", sentAPIKey: "sk-from-the-guest", wantStatus: http.StatusOK, want: seen{"proxy", "Bearer deepcove", ""}},
+		{name: "a session whose key cannot be read is told why", sessionID: "broken", wantStatus: http.StatusBadGateway},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got = nil
+			forwarder := NewForwarder(
+				func() string { return proxy.URL },
+				func(sessionID string) (string, error) {
+					if sessionID == "broken" {
+						return "", errors.New("no API key is saved")
+					}
+					return keys[sessionID], nil
+				},
+				func() *http.Client { return nil },
+				nil, nil,
+			)
+			forwarder.providerURL = provider.URL
+			guest, host := net.Pipe()
+			go func() { _ = forwarder.Serve(host) }()
+			defer func() { _ = guest.Close() }()
+			_ = guest.SetDeadline(time.Now().Add(5 * time.Second))
+
+			req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:9100/v1/messages", nil)
+			req.Header.Set("Authorization", "Bearer "+AuthToken(tc.sessionID))
+			if tc.sentAPIKey != "" {
+				req.Header.Set("X-Api-Key", tc.sentAPIKey)
+			}
+			if err := req.Write(guest); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(guest), req)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantStatus == http.StatusOK && (len(got) != 1 || got[0] != tc.want) {
+				t.Errorf("upstream saw %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }

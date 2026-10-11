@@ -67,7 +67,7 @@ func TestMachineEnvironmentCarriesNoAgentCredentials(t *testing.T) {
 	svc, fake, _, _ := newTestService(t)
 	svc.SetLLMProxyURL("http://100.75.35.244:9000")
 
-	sess := &Session{ID: "s1", Name: "n", Agent: "claude", Image: "img", UseLLMProxy: true}
+	sess := &Session{ID: "s1", Name: "n", Agent: "claude", Image: "img", LoginMode: LoginWithLLMProxy}
 	agent, err := resolveAgent("claude")
 	if err != nil {
 		t.Fatalf("resolveAgent: %v", err)
@@ -92,7 +92,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 		name     string
 		proxyURL string
 		runtime  sandbox.Sandbox
-		use      bool
+		mode     LoginMode
 		want     []string
 	}{
 		{
@@ -107,7 +107,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 			name:     "a forwarding runtime points the agent at the local hop",
 			proxyURL: "http://100.75.35.244:9000",
 			runtime:  forwarding,
-			use:      true,
+			mode:     LoginWithLLMProxy,
 			want: []string{
 				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
 				"DEEPCOVE_SESSION_ID=s1",
@@ -117,7 +117,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 		{
 			name:     "without forwarding the agent calls the proxy itself",
 			proxyURL: "http://100.75.35.244:9000",
-			use:      true,
+			mode:     LoginWithLLMProxy,
 			want: []string{
 				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
 				"DEEPCOVE_SESSION_ID=s1",
@@ -127,7 +127,25 @@ func TestAgentLaunchCommand(t *testing.T) {
 		{
 			name:    "asking for a proxy the node does not have leaves the agent on its own login",
 			runtime: forwarding,
-			use:     true,
+			mode:    LoginWithLLMProxy,
+			want: []string{
+				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
+				"DEEPCOVE_SESSION_ID=s1", sandbox.SandboxedAgentLaunchPath,
+			},
+		},
+		{
+			name:    "the API key goes through the local hop, which adds the key on the host",
+			runtime: forwarding,
+			mode:    LoginWithAPIKey,
+			want: []string{
+				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
+				"DEEPCOVE_SESSION_ID=s1",
+				"ANTHROPIC_BASE_URL=http://127.0.0.1:9100", "ANTHROPIC_AUTH_TOKEN=deepcove-s1", sandbox.SandboxedAgentLaunchPath,
+			},
+		},
+		{
+			name: "no hop to add the API key leaves the agent on its own login",
+			mode: LoginWithAPIKey,
 			want: []string{
 				"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL",
 				"DEEPCOVE_SESSION_ID=s1", sandbox.SandboxedAgentLaunchPath,
@@ -142,7 +160,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 			if runtime == nil {
 				runtime = fake
 			}
-			sess := &Session{ID: "s1", UseLLMProxy: tc.use}
+			sess := &Session{ID: "s1", LoginMode: tc.mode}
 			got, err := svc.agentLaunchCommand(sess, runtime)
 			if err != nil {
 				t.Fatalf("agentLaunchCommand: %v", err)
@@ -287,129 +305,6 @@ func TestLLMProxyURLIsSafeUnderConcurrentUse(t *testing.T) {
 	wg.Wait()
 }
 
-func TestCreateDefaultsTheProxyOff(t *testing.T) {
-	ctx := context.Background()
-	yes := true
-	no := false
-	cases := []struct {
-		name string
-		ask  *bool
-		want bool
-	}{
-		{name: "omitted", ask: nil, want: false},
-		{name: "asked for", ask: &yes, want: true},
-		{name: "refused", ask: &no, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			svc, _, _, _ := newTestService(t)
-			svc.SetLLMProxyURL("http://100.75.35.244:9000")
-			sess, err := svc.Create(ctx, CreateRequest{Agent: "claude", UseLLMProxy: tc.ask})
-			if err != nil {
-				t.Fatalf("create: %v", err)
-			}
-			if sess.UseLLMProxy != tc.want {
-				t.Errorf("UseLLMProxy = %v, want %v", sess.UseLLMProxy, tc.want)
-			}
-			// It has to survive the round trip, or a restart would silently change the answer.
-			reloaded, err := svc.Get(ctx, sess.ID)
-			if err != nil {
-				t.Fatalf("get: %v", err)
-			}
-			if reloaded.UseLLMProxy != tc.want {
-				t.Errorf("persisted UseLLMProxy = %v, want %v", reloaded.UseLLMProxy, tc.want)
-			}
-		})
-	}
-}
-
-func TestSetUseLLMProxy(t *testing.T) {
-	ctx := context.Background()
-	svc, _, _, _ := newTestService(t)
-	svc.SetLLMProxyURL("http://100.75.35.244:9000")
-
-	sess, err := svc.Create(ctx, CreateRequest{Agent: "claude"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if sess.UseLLMProxy {
-		t.Fatal("a new session should not use the proxy")
-	}
-
-	updated, err := svc.SetUseLLMProxy(ctx, sess.ID, true)
-	if err != nil {
-		t.Fatalf("turn on: %v", err)
-	}
-	if !updated.UseLLMProxy {
-		t.Error("the returned session still says off")
-	}
-	reloaded, err := svc.Get(ctx, sess.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if !reloaded.UseLLMProxy {
-		t.Error("the change did not persist")
-	}
-
-	if _, err := svc.SetUseLLMProxy(ctx, sess.ID, false); err != nil {
-		t.Fatalf("turn off: %v", err)
-	}
-	off, err := svc.Get(ctx, sess.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if off.UseLLMProxy {
-		t.Error("turning it off did not persist")
-	}
-}
-
-func TestPatchSessionUseLLMProxy(t *testing.T) {
-	ctx := context.Background()
-	svc, _, _, _ := newTestService(t)
-	svc.SetLLMProxyURL("http://100.75.35.244:9000")
-	sess, err := svc.Create(ctx, CreateRequest{Agent: "claude", Name: "keep-me"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	svc.AttachRoutes(mux)
-	patch := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sess.ID, strings.NewReader(body))
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-		return w
-	}
-
-	// A patch carrying only this field must not disturb the name, which used to be required.
-	w := patch(`{"use_llm_proxy": true}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status %d, body %s", w.Code, w.Body)
-	}
-	var got Session
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !got.UseLLMProxy {
-		t.Error("use_llm_proxy did not turn on")
-	}
-	if got.Name != "keep-me" {
-		t.Errorf("name = %q, want it untouched", got.Name)
-	}
-
-	// And renaming on its own still works.
-	if w := patch(`{"name": "renamed"}`); w.Code != http.StatusOK {
-		t.Fatalf("rename status %d, body %s", w.Code, w.Body)
-	}
-	after, err := svc.Get(ctx, sess.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if after.Name != "renamed" || !after.UseLLMProxy {
-		t.Errorf("after rename: name %q, use_llm_proxy %v", after.Name, after.UseLLMProxy)
-	}
-}
-
 func TestEditMountsRefusesAWorkspaceSession(t *testing.T) {
 	svc, lister := workspaceService(t)
 	sess := onWorkspace(t, svc, "shared-one", "")
@@ -423,45 +318,6 @@ func TestEditMountsRefusesAWorkspaceSession(t *testing.T) {
 	// The machine other sessions are using must still be there.
 	if after := lister.liveCount(); after != before {
 		t.Errorf("live sandboxes went from %d to %d", before, after)
-	}
-}
-
-// The agent is killed before it is started again, so a failed start would leave the session with none.
-// It has to end up running, on the setting it had before.
-func TestSetUseLLMProxyPutsTheAgentBackWhenTheRestartFails(t *testing.T) {
-	ctx := context.Background()
-	svc, fake, _, _ := newTestService(t)
-	svc.SetLLMProxyStore(NewDuckDBLLMProxyStore(nil))
-	svc.SetLLMProxyURL("http://100.75.35.244:9000")
-	sess := mustRunning(t, svc)
-
-	// kill, then a start that fails at new-session, then the start that puts it back.
-	fake.execResponses = []execResponse{
-		{exit: 0},            // kill-session
-		{exit: 1},            // has-session: nothing running
-		{exit: 0},            // mkdir
-		{err: errTmuxBroken}, // new-session fails
-		{exit: 1},            // has-session again, for the restart
-		{exit: 0},            // mkdir
-		{exit: 0},            // new-session succeeds
-		{exit: 0},            // set-option
-	}
-	fake.execCalls = nil
-
-	if _, err := svc.SetUseLLMProxy(ctx, sess.ID, true); err == nil {
-		t.Fatal("want an error, got nil")
-	}
-	// The setting went back, so the row matches the agent that is actually running.
-	after, err := svc.Get(ctx, sess.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if after.UseLLMProxy {
-		t.Error("the session still says it uses the proxy, but its agent was started without it")
-	}
-	if len(fake.execCalls) != 8 {
-		t.Errorf("made %d exec calls, want the failed start and the one that recovered: %v",
-			len(fake.execCalls), fake.execCalls)
 	}
 }
 

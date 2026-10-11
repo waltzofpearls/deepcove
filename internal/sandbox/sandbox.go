@@ -146,9 +146,8 @@ type AgentProvisioner interface {
 
 // Agent is which coding agent a sandbox hosts, and for a runtime with no guest, how to put it there.
 //
-// Name is all a guest runtime needs: it brokers the agent's login with the host under that name, since
-// two guests cannot share one login disk. The rest is for a runtime that installs the agent on the
-// machine itself.
+// Name is all a guest runtime needs, since its image brings the agent. The rest is for a runtime that
+// installs the agent on the machine itself.
 type Agent struct {
 	Name string
 	// Binary is what to look for on PATH and in the agent home.

@@ -266,10 +266,20 @@ func (s *Service) execTmux(ctx context.Context, sess *Session, args ...string) (
 		return nil, fmt.Errorf("read tmux stderr: %w", stderrErr)
 	}
 	if exit != 0 {
-		return nil, fmt.Errorf("tmux %s exit %d: %s",
-			args[0], exit, strings.TrimSpace(string(stderrBuf)))
+		return nil, &tmuxExitError{command: args[0], code: exit, stderr: strings.TrimSpace(string(stderrBuf))}
 	}
 	return stdoutBuf, nil
+}
+
+// tmuxExitError is tmux answering with a non-zero exit, as opposed to not being reached at all.
+type tmuxExitError struct {
+	command string
+	code    int
+	stderr  string
+}
+
+func (e *tmuxExitError) Error() string {
+	return fmt.Sprintf("tmux %s exit %d: %s", e.command, e.code, e.stderr)
 }
 
 // tmuxFailure explains a failed tmux call. Until setup has installed tmux and the host has started the

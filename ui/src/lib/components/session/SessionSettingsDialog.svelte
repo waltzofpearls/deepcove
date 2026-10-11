@@ -1,9 +1,7 @@
 <script lang="ts">
-  // One session: what it is, and the two things you can change about it. Switches apply as you flip
-  // them; folders recreate the machine, so they commit on their own button.
+  // One session: what it is, and what you can change about it. Each change saves with its own button.
   import { Dialog, DialogContent, DialogHeader, DialogTitle } from '$lib/components/ui/dialog';
   import { untrack } from 'svelte';
-  import { Switch } from '$lib/components/ui/switch';
   import { Button } from '$lib/components/ui/button';
   import { api } from '$lib/api/client';
   import { sessions } from '$lib/stores/sessions.svelte';
@@ -12,6 +10,8 @@
   import SharedFolderEditor from './SharedFolderEditor.svelte';
   import WorkspaceVMDialog from './WorkspaceVMDialog.svelte';
   import VMSizePicker from './VMSizePicker.svelte';
+  import LoginModePicker from './LoginModePicker.svelte';
+  import { changesAgentEnv, loginChoices } from '$lib/util/loginMode';
   import {
     describeVMSize,
     formatRunningSize,
@@ -20,7 +20,14 @@
   } from '$lib/util/vmSize';
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
   import { preflight } from '$lib/stores/preflight.svelte';
-  import type { SandboxView, Session, SessionHost, WorkspaceVM } from '$lib/api/types';
+  import type {
+    LoginMode,
+    SandboxView,
+    Session,
+    SessionHost,
+    SharedLoginStatus,
+    WorkspaceVM,
+  } from '$lib/api/types';
 
   let {
     open = $bindable(false),
@@ -57,24 +64,16 @@
     return () => ac.abort();
   });
 
-  // Kept locally so the row follows the click without waiting for the session list to refresh. Seeded
-  // on open, and keyed on the id: the dialog outlives each use, and the session object itself churns.
-  let useProxy = $state(false);
-  let saving = $state(false);
-  let saveError = $state<string | null>(null);
   const sessionId = $derived(session.id);
-  $effect(() => {
-    if (!open) return;
-    sessionId;
-    untrack(() => {
-      useProxy = session.use_llm_proxy ?? false;
-      saveError = null;
-    });
-  });
 
   // The same question the new session dialog asks, so it names the proxy here too.
   let llmProxyUrl = $state('');
+  // The login picker waits for this, or it would show without the proxy until the answer came.
+  let llmProxyChecked = $state(false);
   $effect(() => {
+    // Cleared first: the proxy belongs to the node, and a node that does not answer has none to offer.
+    llmProxyUrl = '';
+    llmProxyChecked = false;
     if (!open) return;
     void hostKey;
     const ac = new AbortController();
@@ -83,28 +82,85 @@
         untrack(() => host),
         ac.signal,
       )
-      .then((p) => (llmProxyUrl = p.url ?? ''))
-      .catch(() => {});
+      .then((p) => {
+        if (!ac.signal.aborted) llmProxyUrl = p.url ?? '';
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!ac.signal.aborted) llmProxyChecked = true;
+      });
     return () => ac.abort();
   });
 
-  async function toggleProxy(next: boolean) {
-    saving = true;
-    saveError = null;
+  // No guest, so there is nothing to mount into and no shared folder to edit.
+  const onThisMachine = $derived(session.runtime === RUNTIME_SANDBOXLESS);
+  // The picked mode, saved by its button. Keyed on the id: the dialog outlives each use.
+  let loginMode = $state<LoginMode>('in_session');
+  let savingLogin = $state(false);
+  let loginError = $state<string | null>(null);
+  $effect(() => {
+    if (!open) return;
+    sessionId;
+    untrack(() => {
+      loginMode = session.login_mode;
+      loginError = null;
+    });
+  });
+  // What this node offers: its saved API key, and what the agent allows. Per node, like the proxy.
+  let loginSetup = $state<SharedLoginStatus | null>(null);
+  let agentModes = $state<LoginMode[]>([]);
+  $effect(() => {
+    loginSetup = null;
+    if (!open) return;
+    void hostKey;
+    const currentAgent = session.agent;
+    const ac = new AbortController();
+    api
+      .sharedLogin(
+        currentAgent,
+        untrack(() => host),
+        ac.signal,
+      )
+      .then((status) => {
+        if (!ac.signal.aborted) loginSetup = status;
+      })
+      .catch(() => {});
+    api
+      .listAgents()
+      .then(
+        (agents) => (agentModes = agents.find((a) => a.name === currentAgent)?.login_modes ?? []),
+      )
+      .catch(() => {});
+    return () => ac.abort();
+  });
+  const loginChoicesHere = $derived(
+    loginSetup && llmProxyChecked
+      ? loginChoices(
+          agentModes,
+          session.on_workspace_vm ? 'workspace_vm' : onThisMachine ? 'no_sandbox' : 'session_vm',
+          {
+            proxyUrl: llmProxyUrl,
+            hasApiKey: loginSetup.has_api_key,
+            apiKeyEnding: loginSetup.api_key_ending,
+          },
+        )
+      : [],
+  );
+
+  async function saveLogin() {
+    savingLogin = true;
+    loginError = null;
     try {
-      const updated = await api.setSessionUseLLMProxy(session.id, next, host);
-      session = updated;
-      useProxy = updated.use_llm_proxy ?? next;
+      session = await api.setSessionLoginMode(session.id, loginMode, host);
+      loginMode = session.login_mode;
       void sessions.refresh();
     } catch (e) {
-      saveError = e instanceof Error ? e.message : String(e);
+      loginError = e instanceof Error ? e.message : String(e);
     } finally {
-      saving = false;
+      savingLogin = false;
     }
   }
 
-  // No guest, so there is nothing to mount into and no shared folder to edit.
-  const onThisMachine = $derived(session.runtime === RUNTIME_SANDBOXLESS);
   // What this session runs on. Session VM and Workspace VM are VM words, so a runtime without one says
   // its own name, and a session with no sandbox runs on the machine itself.
   const machine = $derived.by(() => {
@@ -117,10 +173,6 @@
     const kind = session.on_workspace_vm ? 'Workspace VM' : 'Session VM';
     return `${kind} · ${runtimeLabel(session.runtime)}`;
   });
-  // The agent runs as the user deepcove runs as, so it reads that user's own login.
-  const loginNote = $derived(
-    onThisMachine ? 'the login already on this machine' : "this session's own login",
-  );
   const size = $derived(
     session.on_workspace_vm
       ? `${describeVMSize(workspaceVM?.resources, preflight.runtimes?.workspace_vm_sizes) || 'runtime defaults'}, shared by every session on this VM`
@@ -166,6 +218,11 @@
   const sizeChanged = $derived(Boolean(pickedSize) && pickedSize !== session.resources?.size);
   // Starting counts as running: a restart passes through it, and the buttons must not change under you.
   const running = $derived(session.status === 'running' || session.status === 'starting');
+  const loginChanged = $derived(loginMode !== session.login_mode);
+  // Only a running agent restarts, and only for a change it reads at start.
+  const loginSaveRestarts = $derived(
+    loginChanged && running && changesAgentEnv(session.login_mode, loginMode),
+  );
 
   async function saveAndRestart() {
     await applySize('restart now', () => api.resizeSessionVM(session.id, pickedSize, host));
@@ -319,28 +376,31 @@
       <dd class="font-mono text-xs break-all">{session.id}</dd>
     </dl>
 
-    <div class="flex items-start justify-between gap-4 border-t border-border pt-4">
-      <button
-        type="button"
-        disabled={saving}
-        onclick={() => toggleProxy(!useProxy)}
-        class="space-y-1 text-left"
-      >
-        <span class="block text-sm font-medium">Use the LLM proxy</span>
-        <span class="block text-xs leading-relaxed text-muted-foreground">
-          {#if llmProxyUrl}<span class="font-mono">{llmProxyUrl}</span>{:else}The proxy{/if} supplies
-          the key. When it's off, the agent uses {loginNote}. Changing this restarts the agent.
-        </span>
-        {#if saveError}<span class="block text-xs text-destructive">{saveError}</span>{/if}
-      </button>
-      <Switch
-        checked={useProxy}
-        disabled={saving}
-        onCheckedChange={toggleProxy}
-        class="mt-0.5 shrink-0"
-        aria-label="Use the LLM proxy"
-      />
-    </div>
+    {#if loginChoicesHere.length > 1}
+      <div class="space-y-2 border-t border-border pt-4">
+        <LoginModePicker
+          choices={loginChoicesHere}
+          value={loginMode}
+          disabled={savingLogin}
+          onpick={(mode) => (loginMode = mode)}
+        />
+        {#if loginSaveRestarts}
+          <p class="text-xs text-muted-foreground">
+            Saving restarts the agent, so it picks up the new login.
+          </p>
+        {/if}
+        {#if loginError}<p class="text-xs text-destructive">{loginError}</p>{/if}
+        <div class="flex items-center justify-end">
+          <Button size="sm" disabled={savingLogin || !loginChanged} onclick={saveLogin}>
+            {#if loginSaveRestarts}
+              {savingLogin ? 'Restarting agent…' : 'Save and restart agent'}
+            {:else}
+              {savingLogin ? 'Saving…' : 'Save login'}
+            {/if}
+          </Button>
+        </div>
+      </div>
+    {/if}
 
     {#if resizable && sizeCards.length}
       <div class="space-y-3 border-t border-border pt-4">

@@ -71,40 +71,6 @@ func (s *Service) setLLMProxyURL(rawURL string) {
 	s.llmProxyURL = rawURL
 }
 
-// SetUseLLMProxy turns the proxy on or off for one session and restarts its agent, since that is when
-// the setting is read. Other sessions on the same machine are untouched.
-func (s *Service) SetUseLLMProxy(ctx context.Context, id string, use bool) (*Session, error) {
-	sess, err := s.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if sess.UseLLMProxy == use {
-		return sess, nil
-	}
-	if err := s.repo.UpdateUseLLMProxy(ctx, placeholderOwner, id, use, time.Now().UTC()); err != nil {
-		return nil, err
-	}
-	sess.UseLLMProxy = use
-	if sess.Status == StatusRunning {
-		// The agent reads this once, at launch, so it has to be restarted. Nothing about the machine
-		// changes.
-		_, _ = s.execTmux(ctx, sess, "kill-session", "-t", tmuxSessionName(sess.ID))
-		if err := s.startAgentSession(ctx, sess, s.sessionWorkDir(sess)); err != nil {
-			// The old agent is already gone, so a session left with none is the one outcome to avoid:
-			// put the setting back and start it the way it was.
-			sess.UseLLMProxy = !use
-			if rerr := s.repo.UpdateUseLLMProxy(ctx, placeholderOwner, id, !use, time.Now().UTC()); rerr != nil {
-				s.logger.Error("could not undo the llm proxy change", "id", id, "err", rerr)
-			}
-			if rerr := s.startAgentSession(ctx, sess, s.sessionWorkDir(sess)); rerr != nil {
-				return nil, fmt.Errorf("session: the agent did not restart: %w", errors.Join(err, rerr))
-			}
-			return nil, fmt.Errorf("session: could not switch the llm proxy, the agent was restarted unchanged: %w", err)
-		}
-	}
-	return sess, nil
-}
-
 // SetTailnetClient wires the tailnet client, the same one the VM runtime forwards with.
 func (s *Service) SetTailnetClient(client func() *http.Client) { s.tailnetClient = client }
 

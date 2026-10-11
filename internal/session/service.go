@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
+	"github.com/waltzofpearls/deepcove/internal/sharedlogin"
 )
 
 // toSandboxResources converts the session's human facing units to the byte counts the sandbox layer
@@ -104,7 +105,15 @@ type Service struct {
 	llmProxyStore LLMProxyStore
 	// tailnetClient reaches a proxy that lives on the tailnet, for the reachability check. A function:
 	// this node may sign in long after the service is built.
-	tailnetClient func() *http.Client
+	tailnetClient    func() *http.Client
+	sharedLogins     *sharedlogin.Keeper
+	sharedLoginStore *SharedLoginStore
+	// creatingLoginModes answers the guest's login check while a new session's row is not saved yet.
+	creatingLoginModes sync.Map
+	agentLocks         keyedLock
+	// sharedLoginWaitLimit and sharedLoginWaitEvery are fields so tests can shorten the wait.
+	sharedLoginWaitLimit time.Duration
+	sharedLoginWaitEvery time.Duration
 
 	// previewCache holds the most recent successful capture-pane
 	// snapshot per session id. We serve it back when:
@@ -159,6 +168,9 @@ func NewService(repo SessionRepository, logger *slog.Logger) *Service {
 		runtimes:     map[string]sandbox.Sandbox{},
 		previewCache: newPreviewCache(previewCacheMaxEntries),
 		background:   func(f func()) { go f() },
+		// The guest asks for the login every 10 seconds, and writing it takes moments.
+		sharedLoginWaitLimit: 15 * time.Second,
+		sharedLoginWaitEvery: 500 * time.Millisecond,
 	}
 }
 
@@ -209,7 +221,6 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		Mounts:         req.Mounts,
 		SetupScript:    req.SetupScript,
 		Resources:      req.Resources,
-		UseLLMProxy:    req.UseLLMProxy != nil && *req.UseLLMProxy,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		LastActivityAt: now,
@@ -251,6 +262,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		return nil, ErrRuntimeUnavailable{Runtime: sess.Runtime, Reason: reason}
 	}
 
+	if sess.LoginMode, err = s.loginModeOrDefault(req.LoginMode, agent, runtime, req.OnWorkspaceVM); err != nil {
+		return nil, err
+	}
+
 	// A runtime with no guest boots nothing, so the row must not name an image the session never uses.
 	if workDirIsOnThisMachine(runtime) {
 		if unused := unusedOnThisMachine(req); unused != "" {
@@ -289,6 +304,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		}
 		sess.SandboxID = string(sandboxID)
 
+		s.creatingLoginModes.Store(sess.ID, sess.LoginMode)
+		defer s.creatingLoginModes.Delete(sess.ID)
 		if err := runtime.Start(ctx, sandboxID); err != nil {
 			_ = runtime.Destroy(context.Background(), sandboxID)
 			return nil, fmt.Errorf("session: start sandbox: %w", err)
@@ -496,6 +513,12 @@ func (s *Service) Start(ctx context.Context, id string) error {
 // and updates the row. Idempotent: stopping an
 // already-stopped session is a no-op success.
 func (s *Service) Stop(ctx context.Context, id string) error {
+	// Held until the row says stopped, or a login change could start the agent again in between.
+	unlock, err := s.lockAgent(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	sess, err := s.Get(ctx, id)
 	if err != nil {
 		return err
@@ -527,6 +550,12 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 // Destroy stops the sandbox (if running), removes it and the session's own storage, and removes the
 // row. Any user-mounted folder is the user's own host dir and is never touched.
 func (s *Service) Destroy(ctx context.Context, id string) error {
+	// Held until the row is gone, or a login change could start an agent nothing will ever stop.
+	unlock, err := s.lockAgent(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	sess, err := s.Get(ctx, id)
 	if err != nil {
 		return err
@@ -567,6 +596,12 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 // survive. Everything else in the guest (installed packages, /etc edits, an unshared /workspace) does
 // NOT survive. A shared folder lives on the host, so its contents are unaffected. Accepts 0..n mounts.
 func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRequest) (*Session, error) {
+	// Held while the old machine goes and the new one comes, since that ends the agent too.
+	unlock, err := s.lockAgent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	sess, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err

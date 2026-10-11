@@ -151,13 +151,3 @@ func overlayCapLabel(bytes int64) string {
 	}
 	return strconv.FormatInt(bytes>>20, 10) + "MiB"
 }
-
-// Config is what the guest resolves for itself at boot, from the configuration the HOST serves over
-// vsock. It is not read from the image: an earlier design baked a launch script and an agent name into
-// the rootfs, but the host now supplies both, so those files stopped being written and everything that
-// read them was dead.
-type Config struct {
-	// Agent names which credential bundle to broker with the host. Empty means this session brokers
-	// nothing, which is the work profile case where the gateway supplies credentials instead.
-	Agent string
-}

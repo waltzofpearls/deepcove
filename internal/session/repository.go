@@ -53,8 +53,8 @@ type SessionRepository interface {
 	// updated_at. The sandbox changes; the row, above all its id and name, is preserved.
 	UpdateMountsAndSandbox(ctx context.Context, owner, id string, mounts []MountRequest, sandboxID string, now time.Time) error
 
-	// UpdateUseLLMProxy records whether this session's agent uses the node's LLM proxy.
-	UpdateUseLLMProxy(ctx context.Context, owner, id string, use bool, now time.Time) error
+	// UpdateLoginMode records how this session's agent logs in.
+	UpdateLoginMode(ctx context.Context, owner, id string, mode LoginMode, now time.Time) error
 
 	// UpdateResources replaces the session's size.
 	UpdateResources(ctx context.Context, owner, id string, resources Resources, now time.Time) error
@@ -106,12 +106,12 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 		return fmt.Errorf("session: marshal resources: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources, sandbox_id, on_workspace_vm, use_llm_proxy, work_dir, created_at, updated_at, last_activity_at)
+		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources, sandbox_id, on_workspace_vm, login_mode, work_dir, created_at, updated_at, last_activity_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
 		string(sess.Status), string(mountsJSON), string(envJSON), sess.SetupScript, sess.Runtime, string(resourcesJSON), sess.SandboxID,
-		sess.OnWorkspaceVM, sess.UseLLMProxy, sess.WorkDir,
+		sess.OnWorkspaceVM, string(sess.LoginMode), sess.WorkDir,
 		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
 	)
 	if err != nil {
@@ -123,7 +123,7 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*Session, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, name, agent, image, owner_email, status, stop_reason, mounts, env, setup_script, runtime, resources,
-		       sandbox_id, on_workspace_vm, use_llm_proxy, work_dir, created_at, updated_at, last_activity_at
+		       sandbox_id, on_workspace_vm, login_mode, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, owner)
 	sess, err := scanRow(row)
@@ -139,7 +139,7 @@ func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*S
 func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includeAll bool) ([]*Session, error) {
 	query := `
 		SELECT id, name, agent, image, owner_email, status, stop_reason, mounts, env, setup_script, runtime, resources,
-		       sandbox_id, on_workspace_vm, use_llm_proxy, work_dir, created_at, updated_at, last_activity_at
+		       sandbox_id, on_workspace_vm, login_mode, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
 	`
@@ -230,13 +230,13 @@ func (r *duckdbSessionRepository) Rename(ctx context.Context, owner, id, name st
 	return rowsAffectedOrNotFound(res)
 }
 
-func (r *duckdbSessionRepository) UpdateUseLLMProxy(ctx context.Context, owner, id string, use bool, now time.Time) error {
+func (r *duckdbSessionRepository) UpdateLoginMode(ctx context.Context, owner, id string, mode LoginMode, now time.Time) error {
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE sessions SET use_llm_proxy = ?, updated_at = ?
+		`UPDATE sessions SET login_mode = ?, updated_at = ?
 		 WHERE id = ? AND owner_email = ?`,
-		use, now, id, owner)
+		string(mode), now, id, owner)
 	if err != nil {
-		return fmt.Errorf("session: update use_llm_proxy: %w", err)
+		return fmt.Errorf("session: update login_mode: %w", err)
 	}
 	return rowsAffectedOrNotFound(res)
 }
@@ -302,7 +302,7 @@ func scanRow(r rowScanner) (*Session, error) {
 		resourcesJSON  sql.NullString
 		sandboxID      sql.NullString
 		onWorkspaceVM  sql.NullBool
-		useLLMProxy    sql.NullBool
+		loginMode      sql.NullString
 		workDir        sql.NullString
 		status         string
 		stopReason     sql.NullString
@@ -311,7 +311,7 @@ func scanRow(r rowScanner) (*Session, error) {
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
 		&status, &stopReason, &mountsJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &sandboxID,
-		&onWorkspaceVM, &useLLMProxy, &workDir,
+		&onWorkspaceVM, &loginMode, &workDir,
 		&sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
 		return nil, err
@@ -345,7 +345,7 @@ func scanRow(r rowScanner) (*Session, error) {
 		sess.SandboxID = sandboxID.String
 	}
 	sess.OnWorkspaceVM = onWorkspaceVM.Valid && onWorkspaceVM.Bool
-	sess.UseLLMProxy = useLLMProxy.Valid && useLLMProxy.Bool
+	sess.LoginMode = LoginMode(loginMode.String)
 	if workDir.Valid {
 		sess.WorkDir = workDir.String
 	}

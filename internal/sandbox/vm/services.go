@@ -6,18 +6,17 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 	"github.com/waltzofpearls/deepcove/internal/llmproxy"
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
+	"github.com/waltzofpearls/deepcove/internal/sharedlogin"
 )
 
-// ServeCredentials runs the host side credential broker for this VM: the guest dials in at boot to fetch
-// its stored login and again at shutdown to hand back whatever the agent refreshed.
-//
-// Unlike exec and control, the host listens here, because the guest is the side that needs something.
-func (g *Guest) ServeCredentials(store credbroker.Store, agent string) error {
-	return g.serve("credential broker", credbroker.Port, func(conn net.Conn) {
-		_ = credbroker.Serve(conn, store, agent)
+// ServeSharedLogin hands this VM the user's shared login for agent, and takes one it makes itself.
+// sandboxID names this VM, so another account's prompt shows on its session.
+func (g *Guest) ServeSharedLogin(keeper *sharedlogin.Keeper, agent, sessionID string, sandboxID sandbox.ID) error {
+	return g.serve("shared login", sharedlogin.Port, func(conn net.Conn) {
+		_ = sharedlogin.Serve(conn, keeper, agent, sessionID, string(sandboxID))
 	})
 }
 
@@ -33,8 +32,8 @@ func (g *Guest) ServeConfig(cfg guestcfg.Config) error {
 //
 // Every VM gets one, whether or not a proxy is configured right now: the address is read per request, so
 // setting one later reaches a machine that is already running.
-func (g *Guest) ServeLLMForward(proxyURL func() string, client func() *http.Client) error {
-	forwarder := llmproxy.NewForwarder(proxyURL, client, func(err error) {
+func (g *Guest) ServeLLMForward(proxyURL func() string, apiKeyFor func(sessionID string) (string, error), client func() *http.Client) error {
+	forwarder := llmproxy.NewForwarder(proxyURL, apiKeyFor, client, func(err error) {
 		g.logger.Warn("llm proxy request failed", "err", err)
 	}, func(sessionID, method, path string) {
 		g.logger.Info("llm proxy request", "session", sessionID, "method", method, "path", path)

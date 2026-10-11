@@ -1,14 +1,14 @@
-// Package guestcfg hands a session VM its per boot configuration: the entrypoint the guest should run,
-// and which agent's credentials it brokers.
+// Package guestcfg hands a session VM its per boot configuration: above all, the entrypoint the guest
+// should run.
 //
 // This exists because the base image is cached per image digest and shared by every session using that
 // image, while the entrypoint is per session (it carries the session name, the setup script, and the
 // agent launch command). Baking it into the image would either break the cache or give every session the
 // same command, so the guest asks for it instead.
 //
-// Like credbroker, the HOST listens and the guest dials, because the guest is the side that needs
-// something at boot. The host runs one listener per VM, so a connection already identifies the session
-// and the guest never has to name itself.
+// The HOST listens and the guest dials, because the guest is the side that needs something at boot. The
+// host runs one listener per VM, so a connection already identifies the session and the guest never has
+// to name itself.
 package guestcfg
 
 import (
@@ -31,8 +31,6 @@ type Config struct {
 	// Entrypoint is the argv the guest runs to start the session. It performs the agent setup and writes
 	// the agent's launch script.
 	Entrypoint []string `json:"entrypoint"`
-	// Agent names the credential bundle this session brokers with the host. Empty brokers nothing.
-	Agent string `json:"agent"`
 	// Env is the session environment, merged from the agent registry and the create request.
 	Env map[string]string `json:"env,omitempty"`
 	// OverlayBytes caps the session's writable layer. Zero leaves it uncapped, which is tmpfs's default
@@ -57,6 +55,8 @@ type Config struct {
 	// LLMRequestPort is the local port the guest offers for LLM requests, spliced to the host over
 	// vsock. Zero means the session calls the provider itself.
 	LLMRequestPort int `json:"llm_request_port,omitempty"`
+	// SharedLoginAgent is the agent whose shared login this guest keeps up to date. Empty means its own login.
+	SharedLoginAgent string `json:"shared_login_agent,omitempty"`
 }
 
 // Mount is one virtio-fs share: the tag the host announced, and where the guest should mount it.

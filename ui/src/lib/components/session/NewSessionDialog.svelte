@@ -23,14 +23,18 @@
   import HostPathField from './HostPathField.svelte';
   import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import VMSizePicker from './VMSizePicker.svelte';
+  import LoginModePicker from './LoginModePicker.svelte';
+  import { loginChoices, type LoginPlace } from '$lib/util/loginMode';
   import { shellQuote } from '$lib/util/shell';
   import { pathInsideFolder } from '$lib/util/path';
   import type {
     Agent,
+    LoginMode,
     MountRequest,
     NodeInfo,
     RuntimesInfo,
     SessionResources,
+    SharedLoginStatus,
     WorkspaceVM,
   } from '$lib/api/types';
   import {
@@ -248,10 +252,6 @@
   // No sandbox means no image and no size caps, and the folder is a real folder on that machine rather
   // than something mounted into a guest.
   const onSandboxless = $derived(effectiveRuntime === RUNTIME_SANDBOXLESS);
-  // The agent runs as the user deepcove runs as, so it reads that user's own login.
-  const loginNote = $derived(
-    onSandboxless ? 'the login already on this machine' : "this session's own login",
-  );
   // Where that runtime puts the folder it makes, so the form can show it before the session exists.
   const sandboxlessRoot = $derived(runtimes?.workspace_roots?.[effectiveRuntime] ?? '');
   // Off means deepcove makes the folder and owns it. On means you pick one, and it is never deleted.
@@ -514,20 +514,72 @@
 
   // The image the form is asking for, whichever strategy is selected. Shared by a private session's
   // payload and by the workspace VM it may be creating, since a machine has exactly one image.
-  // Only worth asking when this node has a proxy at all.
+  // The LLM proxy is offered only when this node has one.
   let llmProxyUrl = $state('');
-  let useLLMProxy = $state(false);
+  // The picker waits for this, or an LLM proxy default would be sent as the session's own login.
+  let llmProxyChecked = $state(false);
   $effect(() => {
     selectedHostKey; // the setting belongs to the node the session will be created on
     const host = untrack(() => selectedHost);
     llmProxyUrl = '';
+    llmProxyChecked = false;
     if (!open) return;
     const ac = new AbortController();
     api
       .llmProxy(host, ac.signal)
-      .then((p) => (llmProxyUrl = p.url ?? ''))
+      .then((p) => {
+        if (!ac.signal.aborted) llmProxyUrl = p.url ?? '';
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!ac.signal.aborted) llmProxyChecked = true;
+      });
+    return () => ac.abort();
+  });
+
+  // Seeded from the default of the node the session will be created on, whenever the agent or the node
+  // changes.
+  let loginMode = $state<LoginMode>('shared');
+  let loginSetup = $state<SharedLoginStatus | null>(null);
+  $effect(() => {
+    selectedHostKey;
+    const host = untrack(() => selectedHost);
+    const currentAgent = agent;
+    loginSetup = null;
+    if (!open || !currentAgent) return;
+    const ac = new AbortController();
+    api
+      .sharedLogin(currentAgent, host, ac.signal)
+      .then((status) => {
+        // A node picked since then has its own answer coming.
+        if (ac.signal.aborted) return;
+        loginSetup = status;
+        loginMode = status.default_login_mode;
+      })
       .catch(() => {});
     return () => ac.abort();
+  });
+  const loginPlace = $derived<LoginPlace>(
+    onWorkspace ? 'workspace_vm' : onSandboxless ? 'no_sandbox' : 'session_vm',
+  );
+  // Until both answers are in, no mode is sent and the node uses its default.
+  const loginChoicesHere = $derived(
+    loginSetup && llmProxyChecked && selectedAgent
+      ? loginChoices(selectedAgent.login_modes, loginPlace, {
+          proxyUrl: llmProxyUrl,
+          hasApiKey: loginSetup.has_api_key,
+          apiKeyEnding: loginSetup.api_key_ending,
+        })
+      : [],
+  );
+  // A default this session cannot use becomes its own login, which is what the node does too.
+  const pickedLogin = $derived.by(() => {
+    const usable = loginChoicesHere.filter((choice) => !choice.unavailable);
+    return (
+      usable.find((choice) => choice.mode === loginMode)?.mode ??
+      usable.find((choice) => choice.mode === 'in_session')?.mode ??
+      usable[0]?.mode
+    );
   });
 
   function chosenImage(): string | undefined {
@@ -546,7 +598,7 @@
         node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
         on_workspace_vm: true,
         work_dir: workspaceFolderName || undefined,
-        use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
+        login_mode: pickedLogin,
         mounts: [],
       };
     }
@@ -557,7 +609,7 @@
         node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
         runtime: effectiveRuntime,
         work_dir: ownFolder ? workDir.trim() : undefined,
-        use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
+        login_mode: pickedLogin,
         mounts: [],
       };
     }
@@ -570,7 +622,7 @@
       node_id?: string;
       runtime?: string;
       resources?: SessionResources;
-      use_llm_proxy?: boolean;
+      login_mode?: LoginMode;
     } = {
       agent,
       // Send a runtime only while the picker is on screen, which includes a lone No sandbox; otherwise
@@ -578,7 +630,7 @@
       runtime: showRuntimePicker ? effectiveRuntime || undefined : undefined,
       resources: showsSizeControls ? { size: vmSize } : undefined,
       name: name.trim() || undefined,
-      use_llm_proxy: llmProxyUrl && useLLMProxy ? true : undefined,
+      login_mode: pickedLogin,
       // Only send a target when there's a real choice; on a single node the backend creates here.
       node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
       mounts: mounts
@@ -1265,25 +1317,12 @@
         </div>
       {/if}
 
-      {#if llmProxyUrl}
-        <div class="flex items-start justify-between gap-4">
-          <button
-            type="button"
-            onclick={() => (useLLMProxy = !useLLMProxy)}
-            class="space-y-1 text-left"
-          >
-            <span class="block text-sm font-medium">Use the LLM proxy</span>
-            <span class="block text-xs leading-relaxed text-muted-foreground">
-              <span class="font-mono">{llmProxyUrl}</span>
-              supplies the key. When it's off, the agent uses {loginNote}.
-            </span>
-          </button>
-          <Switch
-            bind:checked={useLLMProxy}
-            class="mt-0.5 shrink-0"
-            aria-label="Use the LLM proxy"
-          />
-        </div>
+      {#if loginChoicesHere.length > 1 && pickedLogin}
+        <LoginModePicker
+          choices={loginChoicesHere}
+          value={pickedLogin}
+          onpick={(mode) => (loginMode = mode)}
+        />
       {/if}
 
       <div class="flex items-center justify-end gap-2">

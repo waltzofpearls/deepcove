@@ -28,8 +28,7 @@ func Run() error {
 	// Built before anything is launched: it is both the record of this init's children and the only
 	// thing allowed to wait on them, so nothing may start a process before it exists.
 	children := newProcessTable()
-	cfg, err := bringUp(children)
-	if err != nil {
+	if err := bringUp(children); err != nil {
 		logf("ERROR: %v", err)
 		logf("dropping to a console shell; the guest stays up so you can investigate")
 		holdConsole(children)
@@ -37,7 +36,7 @@ func Run() error {
 	}
 	logf("session entrypoint started; the host starts the agent once setup finishes")
 	serveExec(children)
-	serveControl(cfg)
+	serveControl()
 	go followHardwareClock()
 	children.reapForever()
 	return nil
@@ -66,15 +65,10 @@ func serveExec(children *processTable) {
 // serveControl starts the vsock control service, which is how the host asks the guest to shut down. The
 // Kata kernel has no gpio-keys driver, so Apple VF's RequestStop never reaches the guest and this is the
 // only clean way to halt it.
-func serveControl(cfg Config) {
+func serveControl() {
 	handler := guestctl.Handler{
 		Shutdown: func() error {
 			logf("shutdown requested by the host")
-			// Hand back whatever the agent refreshed before the machine goes away. A failure here must
-			// not block the shutdown, or a broken broker would leave VMs running.
-			if err := returnCredentials(cfg); err != nil {
-				logf("WARNING: could not return credentials: %v", err)
-			}
 			return poweroff()
 		},
 	}
@@ -91,13 +85,13 @@ func serveControl(cfg Config) {
 
 // bringUp is the boot sequence proper: pseudo filesystems, the overlay root, the pivot, then the session's
 // setup.
-func bringUp(children *processTable) (Config, error) {
+func bringUp(children *processTable) error {
 	// Set init's own environment first. exec.Command resolves a bare binary name against the CURRENT
 	// process's PATH (not cmd.Env), so this has to happen before anything is launched, and children then
 	// inherit it for free.
 	for k, v := range defaultEnv() {
 		if err := os.Setenv(k, v); err != nil {
-			return Config{}, fmt.Errorf("set %s: %w", k, err)
+			return fmt.Errorf("set %s: %w", k, err)
 		}
 	}
 	// The vsock services are the only way into a VM, and their accept loops fail once this process runs
@@ -106,7 +100,7 @@ func bringUp(children *processTable) (Config, error) {
 		logf("WARNING: could not raise the open file limit: %v", err)
 	}
 	if err := mountPseudo(); err != nil {
-		return Config{}, err
+		return err
 	}
 	logf("pseudo filesystems mounted")
 
@@ -114,13 +108,8 @@ func bringUp(children *processTable) (Config, error) {
 	// size cap. vsock only needs /dev, which is mounted above, so this works well before networking.
 	hostCfg, err := fetchConfig()
 	if err != nil {
-		return Config{}, fmt.Errorf("fetch session config: %w", err)
+		return fmt.Errorf("fetch session config: %w", err)
 	}
-	// The single place the guest's own config is resolved. It used to be built by main from files baked
-	// into the image and then mutated HERE, on a by-value copy, so the caller kept the stale one: that is
-	// why the shutdown credential handback saw an empty agent and quietly did nothing.
-	cfg := Config{Agent: hostCfg.Agent}
-
 	// The session's environment goes on THIS process, not just the entrypoint's: deepcove starts the
 	// agent over the exec channel, and those children inherit from init. Setting it only on the
 	// entrypoint left the agent without ANTHROPIC_BASE_URL, LANG and the rest.
@@ -131,20 +120,20 @@ func bringUp(children *processTable) (Config, error) {
 	}
 
 	if err := setupOverlayRoot(hostCfg.OverlayBytes); err != nil {
-		return Config{}, err
+		return err
 	}
 	logf("overlay root assembled (writable layer cap: %s)", overlayCapLabel(hostCfg.OverlayBytes))
 	if err := pivotInto(newRoot); err != nil {
-		return Config{}, err
+		return err
 	}
 	// Re-mount the pseudo filesystems inside the new root; the pivot left them behind on the old root.
 	if err := mountPseudo(); err != nil {
-		return Config{}, err
+		return err
 	}
 	logf("pivoted into overlay root")
 
-	// Networking and credentials are both best effort: a session without either is degraded but still
-	// usable, and failing the boot over them would cost the console and exec needed to diagnose it.
+	// Networking is best effort: a session without it is degraded but still usable, and failing the boot
+	// over it would cost the console and exec needed to diagnose it.
 	if err := setupNetwork(); err != nil {
 		logf("WARNING: network setup failed, the session has no network: %v", err)
 	} else if warnings, err := applyNetGuard(hostCfg.NetworkAllow); err != nil {
@@ -180,14 +169,10 @@ func bringUp(children *processTable) (Config, error) {
 		}
 	}
 
-	if err := fetchCredentials(cfg); err != nil {
-		logf("WARNING: could not restore credentials: %v", err)
-	}
-	// Keep the host in step with logins that happen inside this VM, so a session created later starts
-	// already authenticated instead of prompting again.
-	go watchCredentials(cfg)
+	// Before the entrypoint, which starts the agent, so it finds the shared login already there.
+	keepSharedLogin(hostCfg.SharedLoginAgent)
 
-	return cfg, runEntrypoint(children, hostCfg)
+	return runEntrypoint(children, hostCfg)
 }
 
 // mountHome mounts the session's persistent home when the disk already carries a filesystem.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 
-	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -25,14 +24,9 @@ type SmokeSpec struct {
 	// Entrypoint is what the guest runs once booted, standing in for the entrypoint the session layer
 	// would normally supply. Empty falls back to an interactive shell.
 	Entrypoint []string
-	// Agent names the credential bundle the guest brokers, if any.
-	Agent string
 	// OverlayBytes caps the guest's writable layer, the same knob a session's disk resource sets. Zero
 	// leaves it at the tmpfs default of half the guest's RAM.
 	OverlayBytes int64
-	// CredStore, when set, runs the host side credential broker for this VM so the guest can fetch its
-	// stored login at boot and hand back a refreshed one at shutdown.
-	CredStore credbroker.Store
 }
 
 // SmokeMachine is the running VM handle the smoke harness drives: read/write the console, run a command
@@ -67,17 +61,10 @@ func BootSmoke(s SmokeSpec) (SmokeMachine, error) {
 	// The guest asks the host for its entrypoint at boot, so serve one before it gets that far.
 	if err := m.ServeConfig(guestcfg.Config{
 		Entrypoint:   s.Entrypoint,
-		Agent:        s.Agent,
 		OverlayBytes: s.OverlayBytes,
 	}); err != nil {
 		_ = m.Stop()
 		return nil, err
-	}
-	if s.CredStore != nil {
-		if err := m.ServeCredentials(s.CredStore, s.Agent); err != nil {
-			_ = m.Stop()
-			return nil, err
-		}
 	}
 	return m, nil
 }

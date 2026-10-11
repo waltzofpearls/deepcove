@@ -16,11 +16,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/waltzofpearls/deepcove/internal/credbroker"
 	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
 	"github.com/waltzofpearls/deepcove/internal/llmproxy"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
+	"github.com/waltzofpearls/deepcove/internal/sharedlogin"
 )
 
 // Driver implements sandbox.Sandbox by running each session in its own virtual machine. The hypervisor
@@ -38,7 +38,6 @@ type Driver struct {
 	logs      string
 	kernel    string
 	guestInit string
-	creds     credbroker.Store
 	logger    *slog.Logger
 	// shareRoots bounds which host folders may be shared into a VM. Empty Allowed means none may be.
 	shareRoots sandbox.ShareRoots
@@ -55,11 +54,16 @@ type Driver struct {
 	// that are already running. Nil, or an empty answer, makes the forwarder refuse with an error the
 	// agent can read.
 	llmProxyURL func() string
+	// apiKeyFor is the user's API key for a session on a VM that uses it. Asked per request.
+	apiKeyFor func(sandboxID sandbox.ID, sessionID string) (string, error)
 
 	silentGuestCheckEvery time.Duration
 	silentGuestLimit      time.Duration
 	// onSilentGuestStopped hears about a VM the driver stopped on its own, so the session can say so.
 	onSilentGuestStopped func(sandbox.ID)
+
+	// sharedLogin keeps the user's own agent logins for the sessions that share them. Nil shares none.
+	sharedLogin *sharedlogin.Keeper
 
 	mu        sync.Mutex
 	sandboxes map[sandbox.ID]*sandboxState
@@ -106,13 +110,25 @@ func WithLLMProxyURL(current func() string) Option {
 	return func(d *Driver) { d.llmProxyURL = current }
 }
 
+// WithAPIKeys gives the driver the user's API key for each session that uses it. Read per request.
+func WithAPIKeys(apiKeyFor func(sandboxID sandbox.ID, sessionID string) (string, error)) Option {
+	return func(d *Driver) { d.apiKeyFor = apiKeyFor }
+}
+
+// apiKeysOn answers for the sessions on one VM, so a request naming a session elsewhere gets no key.
+func (d *Driver) apiKeysOn(sandboxID sandbox.ID) func(sessionID string) (string, error) {
+	if d.apiKeyFor == nil {
+		return nil
+	}
+	return func(sessionID string) (string, error) { return d.apiKeyFor(sandboxID, sessionID) }
+}
+
 // LLMEndpoint implements sandbox.LLMForwarder.
 func (d *Driver) LLMEndpoint() string { return llmproxy.LLMEndpoint() }
 
-// WithCredentialStore enables the credential broker, which lets sessions of the same agent share one
-// login without sharing a disk. Without it a session starts with no stored credentials.
-func WithCredentialStore(store credbroker.Store) Option {
-	return func(d *Driver) { d.creds = store }
+// WithSharedLogin lets sessions that share their login get it from keeper.
+func WithSharedLogin(keeper *sharedlogin.Keeper) Option {
+	return func(d *Driver) { d.sharedLogin = keeper }
 }
 
 // WithOnSilentGuestStopped is told about each VM the driver stopped because its guest went silent.
@@ -209,8 +225,7 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.
 	return handle, nil
 }
 
-// Start boots the VM for a created sandbox and, when a credential store is configured, begins serving the
-// guest's credential requests.
+// Start boots the VM for a created sandbox.
 func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 	state, err := d.lookup(sandboxID)
 	if err != nil {
@@ -254,7 +269,7 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		CPUCount:     cpuCount(state.spec.Resources),
 		MemoryBytes:  memory,
 		Shares:       shares,
-		HostPorts:    []uint32{llmproxy.HostVSockPort, guestcfg.Port, credbroker.Port},
+		HostPorts:    []uint32{llmproxy.HostVSockPort, guestcfg.Port, sharedlogin.Port},
 	})
 	if err != nil {
 		return err
@@ -267,27 +282,31 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 	d.mu.Unlock()
 
 	homeDevice, swapDevice := guestDevices(home, swap)
-	if err := guest.ServeLLMForward(d.llmProxyURL, d.tailnetClient); err != nil {
+	if err := guest.ServeLLMForward(d.llmProxyURL, d.apiKeysOn(sandboxID), d.tailnetClient); err != nil {
 		return d.abandon(state, guest, err)
 	}
-	// The guest asks for both of these at boot, so they have to be listening before it gets that far.
-	if err := guest.ServeConfig(guestcfg.Config{
-		Entrypoint:     state.spec.Cmd,
-		Agent:          state.spec.Agent.Name,
-		Env:            state.spec.Env,
-		OverlayBytes:   state.spec.Resources.Disk,
-		Mounts:         guestMounts,
-		HomeDevice:     homeDevice,
-		SwapDevice:     swapDevice,
-		NetworkAllow:   d.networkAllow,
-		LLMRequestPort: llmproxy.LLMRequestPort,
-	}); err != nil {
-		return d.abandon(state, guest, err)
-	}
-	if d.creds != nil {
-		if err := guest.ServeCredentials(d.creds, state.spec.Agent.Name); err != nil {
+	sharedLoginAgent := ""
+	// Served whether or not the session shares now: the keeper asks on every request, so the switch
+	// works without a restart.
+	if d.sharedLogin != nil && d.sharedLogin.CanShare(state.spec.Agent.Name) {
+		sharedLoginAgent = state.spec.Agent.Name
+		if err := guest.ServeSharedLogin(d.sharedLogin, sharedLoginAgent, state.spec.SessionID, sandboxID); err != nil {
 			return d.abandon(state, guest, err)
 		}
+	}
+	// The guest asks for these at boot, so they have to be listening before it gets that far.
+	if err := guest.ServeConfig(guestcfg.Config{
+		Entrypoint:       state.spec.Cmd,
+		Env:              state.spec.Env,
+		OverlayBytes:     state.spec.Resources.Disk,
+		Mounts:           guestMounts,
+		HomeDevice:       homeDevice,
+		SwapDevice:       swapDevice,
+		NetworkAllow:     d.networkAllow,
+		LLMRequestPort:   llmproxy.LLMRequestPort,
+		SharedLoginAgent: sharedLoginAgent,
+	}); err != nil {
+		return d.abandon(state, guest, err)
 	}
 
 	// Drain the console before waiting: it is an OS pipe, so an undrained one eventually blocks the
@@ -460,8 +479,8 @@ func (d *Driver) liveCountLocked() int {
 // (30s) or the connection dies before the error can be written and the user sees an empty reply.
 const bootTimeout = 20 * time.Second
 
-// Stop asks the guest to power itself off, which also gives it the chance to hand back refreshed
-// credentials. Stopping an already stopped sandbox is not an error.
+// Stop asks the guest to power itself off, so it can flush its disks first. Stopping an already stopped
+// sandbox is not an error.
 func (d *Driver) Stop(_ context.Context, sandboxID sandbox.ID) error {
 	state, err := d.lookup(sandboxID)
 	if err != nil {

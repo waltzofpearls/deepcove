@@ -9,6 +9,10 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 )
 
+// hostContextID is the well known vsock address of the host, which the guest dials to reach the
+// services the host runs for it.
+const hostContextID uint32 = 2
+
 // fetchConfig asks the host for this session's configuration. It is fatal if it fails: without an
 // entrypoint the guest has nothing to run, and a session that silently starts the wrong thing is worse
 // than one that reports the problem.

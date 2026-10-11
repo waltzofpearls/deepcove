@@ -4,6 +4,7 @@
   import { sessions } from '$lib/stores/sessions.svelte';
   import { api } from '$lib/api/client';
   import TailnetConnect from '$lib/components/TailnetConnect.svelte';
+  import ClaudeLoginCard from '$lib/components/ClaudeLoginCard.svelte';
   import { Button } from '$lib/components/ui/button';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -211,6 +212,8 @@
 
     <!-- Access -->
     <TailnetConnect />
+
+    <ClaudeLoginCard />
 
     <section class="space-y-3 rounded-xl border border-border bg-card p-4">
       <div class="flex items-center gap-1.5">

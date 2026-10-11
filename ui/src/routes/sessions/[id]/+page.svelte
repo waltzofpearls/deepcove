@@ -27,6 +27,7 @@
   import SessionTags from '$lib/components/session/SessionTags.svelte';
   import SessionSettingsDialog from '$lib/components/session/SessionSettingsDialog.svelte';
   import SessionFolderNote from '$lib/components/session/SessionFolderNote.svelte';
+  import OtherAccountBanner from '$lib/components/session/OtherAccountBanner.svelte';
   import ModeToggle, { type SessionMode } from '$lib/components/session/ModeToggle.svelte';
   import { createConverter, FULLVIEW_FONT_SIZE } from '$lib/components/session/ansiToHtml';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -638,6 +639,10 @@
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>
+
+  {#if session}
+    <OtherAccountBanner {session} {host} />
+  {/if}
 
   <!-- Transient action-error banner. Action failures (start/stop/
        destroy) used to be swallowed because the only error region
