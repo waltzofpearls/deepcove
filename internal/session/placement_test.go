@@ -615,7 +615,7 @@ func TestWorkspaceVMSpec_RefusesAGuestRootInsideTheAgentHome(t *testing.T) {
 	}
 	saved := &WorkspaceVM{HostRoot: "/Users/me/code", GuestRoot: "/root/code", Image: "img"}
 
-	if _, err := workspaceVMSpec(saved, agent); !errors.Is(err, ErrInvalidInput) {
+	if _, err := workspaceVMSpec(saved, agent, workspaceVMSizes(0, 0)); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("error = %v, want the saved guest root refused", err)
 	}
 }

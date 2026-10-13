@@ -5,6 +5,7 @@ import {
   runsAtSize,
   sessionVMSizeCards,
   workspaceVMSizeCards,
+  workspaceVMSizeOrDefault,
 } from './vmSize';
 
 describe('sessionVMSizeCards', () => {
@@ -13,35 +14,65 @@ describe('sessionVMSizeCards', () => {
     {
       name: 'says how many fit',
       choice: { ...medium, fits_on_this_host: 6 },
-      want: { titleNote: 'fits 6 on this machine', tooBigForThisMachine: undefined },
+      want: 'fits 6 on this machine',
     },
     {
-      name: 'greys out a size that does not fit at all',
+      name: 'warns about a size that does not fit, and still offers it',
       choice: { ...medium, fits_on_this_host: 0 },
-      want: { titleNote: 'too big for this machine', tooBigForThisMachine: true },
+      want: 'may run out of memory on this machine',
     },
     {
       name: 'says nothing when the machine could not be measured',
       choice: medium,
-      want: { titleNote: undefined, tooBigForThisMachine: undefined },
+      want: undefined,
     },
   ];
   for (const tc of cases) {
     it(tc.name, () => {
       const [card] = sessionVMSizeCards([tc.choice]);
-      expect(card.titleNote).toBe(tc.want.titleNote);
-      expect(card.tooBigForThisMachine).toBe(tc.want.tooBigForThisMachine);
+      expect(card.titleNote).toBe(tc.want);
     });
   }
 });
 
 describe('workspaceVMSizeCards', () => {
-  it('says about how many agents it runs', () => {
-    const [card] = workspaceVMSizeCards([
-      { name: 'small', cpu: 2, memory_mb: 4096, agents_it_runs: 3 },
-    ]);
-    expect(card.titleNote).toBe('runs about 3 agents');
-  });
+  const cases = [
+    { name: 'several agents', agents: 3, want: 'runs about 3 agents' },
+    { name: 'one agent', agents: 1, want: 'runs about 1 agent' },
+  ];
+  for (const tc of cases) {
+    it(tc.name, () => {
+      const [card] = workspaceVMSizeCards([
+        { name: 'small', cpu: 1, memory_mb: 1024, agents_it_runs: tc.agents },
+      ]);
+      expect(card.titleNote).toBe(tc.want);
+    });
+  }
+});
+
+describe('workspaceVMSizeOrDefault', () => {
+  const card = (name: string) => ({ name, cpu: 1, memoryMB: 2048 });
+  const cases = [
+    {
+      name: 'keeps a size the machine has',
+      cards: [card('small'), card('large')],
+      picked: 'small',
+      want: 'small',
+    },
+    {
+      name: 'falls back to medium',
+      cards: [card('small'), card('medium')],
+      picked: 'large',
+      want: 'medium',
+    },
+    { name: 'else the biggest', cards: [card('large')], picked: 'medium', want: 'large' },
+    { name: 'leaves it alone with no sizes', cards: [], picked: 'medium', want: 'medium' },
+  ];
+  for (const tc of cases) {
+    it(tc.name, () => {
+      expect(workspaceVMSizeOrDefault(tc.cards, tc.picked)).toBe(tc.want);
+    });
+  }
 });
 
 describe('runsAtSize', () => {
@@ -68,6 +99,11 @@ describe('describeVMSize', () => {
       want: '2 CPU · 4 GB',
     },
     { name: 'nothing saved', resources: undefined, want: '' },
+    {
+      name: 'a size whose numbers are not known yet',
+      resources: { size: 'large' },
+      want: 'Large',
+    },
   ];
   for (const tc of cases) {
     it(tc.name, () => {

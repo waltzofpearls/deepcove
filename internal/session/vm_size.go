@@ -26,22 +26,71 @@ var SessionVMSizes = []VMSize{
 	{Name: VMSizeLarge, CPU: 2, MemoryMB: 4 << 10},
 }
 
-// WorkspaceVMSizes are the sizes the workspace VM can have. It runs many agents at once, so its sizes
-// are bigger.
-var WorkspaceVMSizes = []VMSize{
-	{Name: VMSizeSmall, CPU: 2, MemoryMB: 4 << 10},
-	{Name: VMSizeMedium, CPU: 4, MemoryMB: 8 << 10},
-	{Name: VMSizeLarge, CPU: 8, MemoryMB: 16 << 10},
+// workspaceVMSizeShares says how much of the host's spare memory each workspace VM size takes, and the
+// most it takes. A machine with plenty of memory gets 4, 8 and 16 GB.
+var workspaceVMSizeShares = []struct {
+	name    string
+	divisor int64
+	maxGB   int64
+}{
+	{VMSizeSmall, 4, 4},
+	{VMSizeMedium, 2, 8},
+	{VMSizeLarge, 1, 16},
 }
 
-const (
-	// hostMemoryKeptBackMB is left for the host itself: macOS, the browser, deepcove.
-	hostMemoryKeptBackMB = 4 << 10
-	// workspaceSystemMemoryMB is what the workspace VM's own system uses before any agent starts.
-	workspaceSystemMemoryMB = 1 << 10
-	// memoryPerAgentMB is what one agent needs. Claude Code uses about 700 MB.
-	memoryPerAgentMB = 1 << 10
-)
+// smallestScaledWorkspaceVMGB drops a scaled size too small to be worth a choice of its own.
+const smallestScaledWorkspaceVMGB = 2
+
+// hostWorkspaceVMSizes are the workspace VM sizes this host can have.
+func hostWorkspaceVMSizes() []VMSize {
+	return workspaceVMSizes(hostMemoryMB(), hostMemoryKeptBackMB)
+}
+
+// workspaceVMSizes are the sizes the workspace VM can have on a host with hostMemoryMB, scaled to what
+// the host can spare. Under 1 GB there is none, and up to 2 GB there is one. Unknown memory gets the
+// full sizes.
+func workspaceVMSizes(hostMemoryMB, keptBackMB int64) []VMSize {
+	if hostMemoryMB <= 0 {
+		var sizes []VMSize
+		for _, share := range workspaceVMSizeShares {
+			sizes = append(sizes, workspaceVMSize(share.name, share.maxGB))
+		}
+		return sizes
+	}
+	if hostMemoryMB < 1<<10 {
+		return nil
+	}
+	spareMB := hostMemoryMB - keptBackMB
+	onlySize := []VMSize{workspaceVMSize(VMSizeSmall, max(spareMB>>10, 1))}
+	if hostMemoryMB < 2<<10 {
+		return onlySize
+	}
+	var sizes []VMSize
+	for _, share := range workspaceVMSizeShares {
+		memoryGB := min((spareMB/share.divisor)>>10, share.maxGB)
+		if memoryGB < smallestScaledWorkspaceVMGB {
+			continue
+		}
+		sizes = append(sizes, workspaceVMSize(share.name, memoryGB))
+	}
+	if len(sizes) == 0 {
+		return onlySize
+	}
+	return sizes
+}
+
+// workspaceVMSize gives a size 1 CPU for every 2 GB of memory.
+func workspaceVMSize(name string, memoryGB int64) VMSize {
+	return VMSize{Name: name, CPU: int(max(memoryGB/2, 1)), MemoryMB: memoryGB << 10}
+}
+
+// defaultWorkspaceVMSize is the usual default when the host has it, else the biggest size it has.
+func defaultWorkspaceVMSize(sizes []VMSize) string {
+	if _, ok := findVMSize(sizes, DefaultVMSize); ok || len(sizes) == 0 {
+		return DefaultVMSize
+	}
+	return sizes[len(sizes)-1].Name
+}
 
 // SessionVMSizeChoice is a session VM size with how many of it fit on this host. FitsOnThisHost is
 // absent when the host's memory could not be measured.
@@ -61,7 +110,7 @@ func sessionVMSizeChoices(hostMemoryMB int64) []SessionVMSizeChoice {
 	for _, size := range SessionVMSizes {
 		choice := SessionVMSizeChoice{VMSize: size}
 		if hostMemoryMB > 0 {
-			fits := sessionVMsThatFit(size, hostMemoryMB)
+			fits := sessionVMsThatFit(size, hostMemoryMB, hostMemoryKeptBackMB)
 			choice.FitsOnThisHost = &fits
 		}
 		choices = append(choices, choice)
@@ -69,24 +118,25 @@ func sessionVMSizeChoices(hostMemoryMB int64) []SessionVMSizeChoice {
 	return choices
 }
 
-func workspaceVMSizeChoices() []WorkspaceVMSizeChoice {
-	choices := make([]WorkspaceVMSizeChoice, 0, len(WorkspaceVMSizes))
-	for _, size := range WorkspaceVMSizes {
+func workspaceVMSizeChoices(sizes []VMSize) []WorkspaceVMSizeChoice {
+	choices := make([]WorkspaceVMSizeChoice, 0, len(sizes))
+	for _, size := range sizes {
 		choices = append(choices, WorkspaceVMSizeChoice{VMSize: size, AgentsItRuns: agentsThatFit(size)})
 	}
 	return choices
 }
 
-func sessionVMsThatFit(size VMSize, hostMemoryMB int64) int {
-	spareMB := hostMemoryMB - hostMemoryKeptBackMB
+func sessionVMsThatFit(size VMSize, hostMemoryMB, keptBackMB int64) int {
+	spareMB := hostMemoryMB - keptBackMB
 	if spareMB <= 0 {
 		return 0
 	}
 	return int(spareMB / size.MemoryMB)
 }
 
+// agentsThatFit is about one agent per GB. Claude Code uses about 700 MB, and the rest is the VM's own.
 func agentsThatFit(size VMSize) int {
-	return int((size.MemoryMB - workspaceSystemMemoryMB) / memoryPerAgentMB)
+	return int(max(size.MemoryMB>>10, 1))
 }
 
 func findVMSize(sizes []VMSize, name string) (VMSize, bool) {

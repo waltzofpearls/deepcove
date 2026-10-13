@@ -349,9 +349,6 @@
   let pickedVMSize = $state('');
   const vmSize = $derived(pickedVMSize || runtimes?.default_vm_size || DEFAULT_VM_SIZE);
   const sessionVMSizes = $derived(sessionVMSizeCards(runtimes?.session_vm_sizes ?? []));
-  const pickedSizeTooBig = $derived(
-    sessionVMSizes.find((card) => card.name === vmSize)?.tooBigForThisMachine ?? false,
-  );
 
   // Resolve the home dir of the node the session will run on, then seed the default folder row with it.
   // Follows the node picker: your Mac's home is not a path that exists on a droplet.
@@ -990,6 +987,8 @@
             bind:hostRoot={workspaceHostRoot}
             bind:guestRoot={workspaceGuestRoot}
             bind:size={workspaceSize}
+            sizes={runtimes?.workspace_vm_sizes}
+            host={selectedHost}
           />
         </div>
       {:else if onWorkspace}
@@ -1340,7 +1339,7 @@
             !runtimeKnown ||
             (onSandboxless && ownFolder && !workDir.trim()) ||
             (onWorkspace && workspaceFolderName === null) ||
-            (showsSizeControls && pickedSizeTooBig) ||
+            (creatingWorkspaceVM && runtimes?.workspace_vm_sizes?.length === 0) ||
             (showsImageControls &&
               imageStrategy === 'official' &&
               !selectedAgent?.sandboxed.official_image) ||

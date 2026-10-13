@@ -3,7 +3,7 @@
   import { Dialog, DialogContent, DialogHeader, DialogTitle } from '$lib/components/ui/dialog';
   import { untrack } from 'svelte';
   import { Button } from '$lib/components/ui/button';
-  import { api } from '$lib/api/client';
+  import { api, preflightTimeoutMs } from '$lib/api/client';
   import { sessions } from '$lib/stores/sessions.svelte';
   import { bootsVMs, runtimeLabel, RUNTIME_SANDBOXLESS } from '$lib/util/runtime';
   import { shortId } from '$lib/format';
@@ -12,16 +12,11 @@
   import VMSizePicker from './VMSizePicker.svelte';
   import LoginModePicker from './LoginModePicker.svelte';
   import { changesAgentEnv, loginChoices } from '$lib/util/loginMode';
-  import {
-    describeVMSize,
-    formatRunningSize,
-    sessionVMSizeCards,
-    type VMSizeCard,
-  } from '$lib/util/vmSize';
+  import { describeVMSize, formatRunningSize, sessionVMSizeCards } from '$lib/util/vmSize';
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
-  import { preflight } from '$lib/stores/preflight.svelte';
   import type {
     LoginMode,
+    RuntimesInfo,
     SandboxView,
     Session,
     SessionHost,
@@ -173,33 +168,43 @@
     const kind = session.on_workspace_vm ? 'Workspace VM' : 'Session VM';
     return `${kind} · ${runtimeLabel(session.runtime)}`;
   });
+  // The sizes the session's own node offers. They scale with that machine's memory, and "fits N"
+  // counts that machine, not this one.
+  let nodeRuntimes = $state<RuntimesInfo | null>(null);
+  $effect(() => {
+    if (!open) return;
+    void hostKey;
+    nodeRuntimes = null;
+    // The WASM transport ignores the abort, so a late answer for another node is dropped here instead.
+    let cancelled = false;
+    const ac = new AbortController();
+    api
+      .preflight(
+        untrack(() => host),
+        ac.signal,
+        preflightTimeoutMs,
+      )
+      .then((p) => {
+        if (!cancelled) nodeRuntimes = p.runtimes;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+  });
+  const sizeCards = $derived(sessionVMSizeCards(nodeRuntimes?.session_vm_sizes ?? []));
+
   const size = $derived(
     session.on_workspace_vm
-      ? `${describeVMSize(workspaceVM?.resources, preflight.runtimes?.workspace_vm_sizes) || 'runtime defaults'}, shared by every session on this VM`
-      : describeVMSize(session.resources, preflight.runtimes?.session_vm_sizes) ||
-          'runtime defaults',
+      ? `${describeVMSize(workspaceVM?.resources, nodeRuntimes?.workspace_vm_sizes) || 'runtime defaults'}, shared by every session on this VM`
+      : describeVMSize(session.resources, nodeRuntimes?.session_vm_sizes) || 'runtime defaults',
   );
 
   // Only a session's own VM can change size. The workspace VM is sized from its own dialog.
   const resizable = $derived(
     !session.on_workspace_vm && !onThisMachine && bootsVMs(session.runtime),
   );
-
-  // The sizes the session's own node offers, so "fits N" counts that machine, not this one.
-  let sizeCards = $state<VMSizeCard[]>([]);
-  $effect(() => {
-    if (!open || !resizable) return;
-    void hostKey;
-    const ac = new AbortController();
-    api
-      .preflight(
-        untrack(() => host),
-        ac.signal,
-      )
-      .then((p) => (sizeCards = sessionVMSizeCards(p.runtimes.session_vm_sizes ?? [])))
-      .catch(() => {});
-    return () => ac.abort();
-  });
 
   let pickedSize = $state('');
   // Which size save is running, so only its own button says so.
@@ -286,7 +291,7 @@
       sizeAwaitingRestart(
         runningSandbox?.resources,
         session.resources,
-        preflight.runtimes?.session_vm_sizes,
+        nodeRuntimes?.session_vm_sizes,
       ),
   );
 
@@ -297,7 +302,7 @@
       (sizeAwaitingRestart(
         runningSandbox.resources,
         workspaceVM.resources,
-        preflight.runtimes?.workspace_vm_sizes,
+        nodeRuntimes?.workspace_vm_sizes,
       ) ||
         folderAwaitingRestart(
           runningSandbox.mounts,
@@ -419,7 +424,7 @@
               <div class="font-medium">The new size is saved but not in use yet.</div>
               <p class="text-xs text-muted-foreground">
                 The VM still runs with {formatRunningSize(runningSandbox.resources)}. It switches to
-                {describeVMSize(session.resources, preflight.runtimes?.session_vm_sizes)} when it restarts.
+                {describeVMSize(session.resources, nodeRuntimes?.session_vm_sizes)} when it restarts.
                 Restarting interrupts this session.
               </p>
             </div>

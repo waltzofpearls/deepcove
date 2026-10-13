@@ -2,6 +2,7 @@ package cloudhv
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"strings"
@@ -16,9 +17,15 @@ import (
 // `--sandbox none` because the namespace sandbox needs privileges we do not want to require, and the
 // isolation that matters is the VM's, not the daemon's.
 func startVirtiofsd(binary, socket string, share vm.Share) (*vmproc.Process, error) {
+	sharedDir, workDir := share.HostPath, ""
+	if share.Folder != nil {
+		// Started inside the folder deepcove opened and checked, so a link swapped into the path since
+		// then changes nothing.
+		sharedDir, workDir = ".", fmt.Sprintf("/proc/self/fd/%d", share.Folder.Fd())
+	}
 	argv := []string{
 		"--socket-path", socket,
-		"--shared-dir", share.HostPath,
+		"--shared-dir", sharedDir,
 		"--tag", share.Tag,
 		"--sandbox", "none",
 		"--cache", "auto",
@@ -26,7 +33,7 @@ func startVirtiofsd(binary, socket string, share vm.Share) (*vmproc.Process, err
 	if share.ReadOnly {
 		argv = append(argv, "--readonly")
 	}
-	virtiofsd, err := vmproc.Start("virtiofsd for "+share.Tag, binary, argv)
+	virtiofsd, err := vmproc.StartIn("virtiofsd for "+share.Tag, binary, workDir, argv)
 	if err != nil {
 		return nil, err
 	}

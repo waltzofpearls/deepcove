@@ -89,6 +89,7 @@ func (s *Service) runtimeWorkspaceRoots() map[string]string {
 }
 
 func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
+	memoryMB := hostMemoryMB()
 	writeJSON(w, http.StatusOK, PreflightResponse{
 		Runtimes: RuntimesInfo{
 			Available:   s.Runtimes(),
@@ -96,8 +97,8 @@ func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 			Unavailable: s.unavailableRuntimes(r.Context()),
 			Missing:     s.MissingRuntimes(),
 
-			SessionVMSizes:   sessionVMSizeChoices(hostMemoryMB()),
-			WorkspaceVMSizes: workspaceVMSizeChoices(),
+			SessionVMSizes:   sessionVMSizeChoices(memoryMB),
+			WorkspaceVMSizes: workspaceVMSizeChoices(workspaceVMSizes(memoryMB, hostMemoryKeptBackMB)),
 			DefaultVMSize:    DefaultVMSize,
 			WorkspaceRoots:   s.runtimeWorkspaceRoots(),
 			AgentsToInstall:  s.runtimeAgentsToInstall(),

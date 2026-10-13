@@ -3,7 +3,7 @@ module github.com/waltzofpearls/deepcove
 go 1.26.4
 
 require (
-	github.com/Code-Hex/vz/v3 v3.7.1
+	github.com/Code-Hex/vz/v3 v3.8.0
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/google/go-containerregistry v0.21.7

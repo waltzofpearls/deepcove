@@ -251,6 +251,11 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 	}()
 
 	shares, guestMounts := hostShares(spec.Mounts)
+	shares, closeSharedFolders, err := openSharedFolders(shares, d.shareRoots)
+	if err != nil {
+		return err
+	}
+	defer closeSharedFolders()
 	home, err := d.homeDisk(state.spec)
 	if err != nil {
 		return err

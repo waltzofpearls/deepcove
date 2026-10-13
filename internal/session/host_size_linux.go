@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// hostMemoryKeptBackMB is left for a Linux host: about 600 MB for the system and deepcove on a server,
+// and the rest for each VM's helpers.
+const hostMemoryKeptBackMB = 1 << 10
+
 // hostMemoryMB reads the machine's physical memory from /proc/meminfo, whose MemTotal is in kB.
 func hostMemoryMB() int64 {
 	data, err := os.ReadFile("/proc/meminfo")

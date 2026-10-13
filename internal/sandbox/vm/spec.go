@@ -1,6 +1,9 @@
 package vm
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // Spec is the hypervisor independent description of one session VM. A Backend turns it into whatever
 // its own configuration looks like, so the spec and the kernel command line can be built and tested on
@@ -38,6 +41,11 @@ type Share struct {
 	Tag      string
 	HostPath string
 	ReadOnly bool
+	// Folder is HostPath already opened and checked, where the backend can use it. Nil otherwise.
+	Folder *os.File `json:"-"`
+	// FolderID is the folder deepcove checked. A backend that opens shares by path opens it by this id,
+	// so a path changed since the check cannot point the VM somewhere else.
+	FolderID FolderID
 }
 
 func (s Spec) Validate() error {

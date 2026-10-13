@@ -325,7 +325,9 @@
               </button>
               <Button
                 onclick={createWorkspaceVM}
-                disabled={savingWorkspace || !looksLikePath(workspaceHostRoot)}
+                disabled={savingWorkspace ||
+                  preflight.runtimes?.workspace_vm_sizes?.length === 0 ||
+                  !looksLikePath(workspaceHostRoot)}
               >
                 {savingWorkspace ? 'Creating…' : 'Create it'}
               </Button>

@@ -29,7 +29,7 @@
   <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label={title}>
     {#each cards as card (card.name)}
       <label
-        class="cursor-pointer rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+        class="cursor-pointer rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
         class:border-primary={card.name === selected}
         class:bg-accent={card.name === selected}
       >
@@ -39,7 +39,6 @@
           name={groupName}
           value={card.name}
           checked={card.name === selected}
-          disabled={card.tooBigForThisMachine}
           onchange={() => onselect(card.name)}
         />
         <div class="font-medium capitalize">{card.name}</div>
