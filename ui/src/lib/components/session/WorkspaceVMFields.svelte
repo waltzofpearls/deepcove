@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SessionHost } from '$lib/api/types';
+  import type { SessionHost, WorkspaceVMSizeChoice } from '$lib/api/types';
   // The workspace VM's own settings: the folder it shares, where that folder appears inside the VM, and
   // how big the machine is. Used by the new-session dialog, the Nodes page and the setup wizard, so
   // the three never drift into asking for the same thing differently.
@@ -9,21 +9,36 @@
   import { preflight } from '$lib/stores/preflight.svelte';
   import { looksLikePath } from '$lib/util/path';
   import VMSizePicker from './VMSizePicker.svelte';
-  import { DEFAULT_VM_SIZE, workspaceVMSizeCards } from '$lib/util/vmSize';
+  import {
+    DEFAULT_VM_SIZE,
+    workspaceVMSizeCards,
+    workspaceVMSizeOrDefault,
+  } from '$lib/util/vmSize';
 
   let {
     hostRoot = $bindable(''),
     guestRoot = $bindable('/workspace'),
     size = $bindable(DEFAULT_VM_SIZE),
     host,
+    sizes,
   }: {
     hostRoot?: string;
     guestRoot?: string;
     size?: string;
     host?: SessionHost;
+    // The sizes the machine the VM goes on can have. This node's when not given and host is this node.
+    sizes?: WorkspaceVMSizeChoice[];
   } = $props();
 
-  const sizeCards = $derived(workspaceVMSizeCards(preflight.runtimes?.workspace_vm_sizes ?? []));
+  const sizeChoices = $derived(
+    sizes ?? (host ? undefined : preflight.runtimes?.workspace_vm_sizes),
+  );
+  const sizeCards = $derived(workspaceVMSizeCards(sizeChoices ?? []));
+  // Sizes scale with the machine, so the default or a size picked elsewhere may not exist here.
+  $effect(() => {
+    const fitted = workspaceVMSizeOrDefault(sizeCards, size);
+    if (fitted !== size) size = fitted;
+  });
 
   const hostRootTyped = $derived(hostRoot.trim().length > 0);
 </script>
@@ -48,9 +63,17 @@
   </p>
 </div>
 
-<VMSizePicker
-  title="Workspace VM size"
-  cards={sizeCards}
-  selected={size}
-  onselect={(name) => (size = name)}
-/>
+{#if sizeChoices === undefined}
+  <!-- Still asking the machine what it can run. -->
+{:else if sizeChoices.length === 0}
+  <p class="text-sm text-muted-foreground">
+    This machine has too little memory for a workspace VM. Use a session VM, or No sandbox.
+  </p>
+{:else}
+  <VMSizePicker
+    title="Workspace VM size"
+    cards={sizeCards}
+    selected={size}
+    onselect={(name) => (size = name)}
+  />
+{/if}

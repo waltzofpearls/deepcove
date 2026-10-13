@@ -13,12 +13,11 @@
   import { Button } from '$lib/components/ui/button';
   import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import { Label } from '$lib/components/ui/label';
-  import { api } from '$lib/api/client';
+  import { api, preflightTimeoutMs } from '$lib/api/client';
   import { looksLikePath, withoutTrailingSlash } from '$lib/util/path';
-  import { preflight } from '$lib/stores/preflight.svelte';
   import { DEFAULT_VM_SIZE, describeVMSize, formatRunningSize } from '$lib/util/vmSize';
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
-  import type { SandboxView, WorkspaceVM } from '$lib/api/types';
+  import type { RuntimesInfo, SandboxView, WorkspaceVM } from '$lib/api/types';
 
   let {
     open = $bindable(false),
@@ -31,6 +30,37 @@
     host?: SessionHost;
     onsaved?: () => void;
   } = $props();
+
+  // The sizes the VM's own machine can have, asked on open: they scale with that machine's memory.
+  let nodeRuntimes = $state<RuntimesInfo | null>(null);
+  let sizesError = $state(false);
+  $effect(() => {
+    if (!open) return;
+    nodeRuntimes = null;
+    sizesError = false;
+    // The WASM transport ignores the abort, so a late answer from an earlier open is dropped here.
+    let cancelled = false;
+    const ac = new AbortController();
+    api
+      .preflight(
+        untrack(() => host),
+        ac.signal,
+        preflightTimeoutMs,
+      )
+      .then((p) => {
+        if (!cancelled) nodeRuntimes = p.runtimes;
+      })
+      .catch(() => {
+        if (!cancelled) sizesError = true;
+      });
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+  });
+  const sizeChoices = $derived(nodeRuntimes?.workspace_vm_sizes);
+  // Nothing to save until the machine says which sizes it has, and none when it has none.
+  const sizesReady = $derived((sizeChoices?.length ?? 0) > 0);
 
   let hostRoot = $state('');
   let guestRoot = $state('/workspace');
@@ -74,11 +104,7 @@
   const offerRestart = $derived(changed && Boolean(runningSandbox));
 
   const sizeWaiting = $derived(
-    sizeAwaitingRestart(
-      runningSandbox?.resources,
-      savedVM?.resources,
-      preflight.runtimes?.workspace_vm_sizes,
-    ),
+    sizeAwaitingRestart(runningSandbox?.resources, savedVM?.resources, sizeChoices),
   );
   const folderWaiting = $derived(
     savedVM !== null &&
@@ -208,7 +234,7 @@
     </DialogHeader>
 
     <div class="space-y-4">
-      <WorkspaceVMFields bind:hostRoot bind:guestRoot bind:size {host} />
+      <WorkspaceVMFields bind:hostRoot bind:guestRoot bind:size {host} sizes={sizeChoices} />
       <div class="space-y-2">
         <Label for="workspace-setup">Setup script</Label>
         <textarea
@@ -237,7 +263,7 @@
             <p class="text-xs text-muted-foreground">
               {#if sizeWaiting}
                 The VM still runs with {formatRunningSize(runningSandbox.resources)}, not
-                {describeVMSize(savedVM.resources, preflight.runtimes?.workspace_vm_sizes)}.
+                {describeVMSize(savedVM.resources, sizeChoices)}.
               {/if}
               {#if folderWaiting}
                 It still shares {runningSandbox.mounts?.[0]?.host_path}, not {savedVM.host_root}.
@@ -250,6 +276,12 @@
           </Button>
         </div>
       {/if}
+      {#if sizesError}
+        <p class="text-xs text-destructive">
+          Couldn't reach {host?.hostname ?? 'this machine'} to read its VM sizes. Close this and open
+          it again to retry.
+        </p>
+      {/if}
       {#if offerRestart}
         <p class="text-xs text-muted-foreground">
           A change takes effect when the VM restarts. Restarting interrupts {sessionsToInterrupt} on this
@@ -258,19 +290,27 @@
       {/if}
       <div class="flex items-center gap-2">
         {#if offerRestart}
-          <Button size="sm" onclick={saveAndRestart} disabled={busy || !looksLikePath(hostRoot)}>
+          <Button
+            size="sm"
+            onclick={saveAndRestart}
+            disabled={busy || !sizesReady || !looksLikePath(hostRoot)}
+          >
             {restarting ? 'Restarting…' : saving ? 'Saving…' : 'Save and restart'}
           </Button>
           <Button
             size="sm"
             variant="secondary"
             onclick={saveForLater}
-            disabled={busy || !looksLikePath(hostRoot)}
+            disabled={busy || !sizesReady || !looksLikePath(hostRoot)}
           >
             Save, restart later
           </Button>
         {:else}
-          <Button size="sm" onclick={save} disabled={busy || !looksLikePath(hostRoot)}>
+          <Button
+            size="sm"
+            onclick={save}
+            disabled={busy || !sizesReady || !looksLikePath(hostRoot)}
+          >
             {saving ? 'Saving…' : 'Save'}
           </Button>
         {/if}

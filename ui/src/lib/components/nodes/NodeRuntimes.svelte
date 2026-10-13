@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api } from '$lib/api/client';
+  import { untrack } from 'svelte';
+  import { api, preflightTimeoutMs } from '$lib/api/client';
   import { usePolling } from '$lib/polling';
   import { preferences } from '$lib/stores/preferences.svelte';
   import { sessions } from '$lib/stores/sessions.svelte';
@@ -32,6 +33,7 @@
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
   import type {
     NodeInfo,
+    RuntimesInfo,
     RuntimeView,
     SandboxView,
     SessionHost,
@@ -57,6 +59,32 @@
   // This node's workspace VM, or null when it has none. Polled with the runtimes so the card and the
   // sandbox rows never disagree about whether it exists.
   let workspaceVM = $state<WorkspaceVM | null>(null);
+
+  // This node's own VM sizes, which scale with its memory. Asked once per node: they change only with
+  // the machine. Keyed on the node's id, since the page hands over a new host object on every poll.
+  let nodeRuntimes = $state<RuntimesInfo | null>(null);
+  const hostKey = $derived(host?.stable_node_id ?? '');
+  $effect(() => {
+    void hostKey;
+    nodeRuntimes = null;
+    // The WASM transport ignores the abort, so a late answer for the last node is dropped here instead.
+    let cancelled = false;
+    const ac = new AbortController();
+    api
+      .preflight(
+        untrack(() => host),
+        ac.signal,
+        preflightTimeoutMs,
+      )
+      .then((p) => {
+        if (!cancelled) nodeRuntimes = p.runtimes;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+  });
 
   async function load(signal?: AbortSignal) {
     try {
@@ -203,11 +231,8 @@
     return sess?.resources;
   }
 
-  // The size lists are the same on every node, so this node's answer fits any row.
   function sizesFor(s: SandboxView): VMSize[] | undefined {
-    return s.is_workspace_vm
-      ? preflight.runtimes?.workspace_vm_sizes
-      : preflight.runtimes?.session_vm_sizes;
+    return s.is_workspace_vm ? nodeRuntimes?.workspace_vm_sizes : nodeRuntimes?.session_vm_sizes;
   }
 
   function savedSize(s: SandboxView): string {
@@ -405,10 +430,8 @@
                     {workspaceVM.host_root} → {workspaceVM.guest_root}
                   </div>
                   <div class="mt-0.5 text-xs text-muted-foreground">
-                    {describeVMSize(
-                      workspaceVM.resources,
-                      preflight.runtimes?.workspace_vm_sizes,
-                    ) || 'runtime defaults'}
+                    {describeVMSize(workspaceVM.resources, nodeRuntimes?.workspace_vm_sizes) ||
+                      'runtime defaults'}
                   </div>
                   {#if workspaceVM.image}
                     <div class="truncate text-xs text-muted-foreground">{workspaceVM.image}</div>

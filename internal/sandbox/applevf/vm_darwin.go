@@ -320,7 +320,7 @@ func (m *machine) socketDevice() (*vz.VirtioSocketDevice, error) {
 func sharedDirectories(spec vm.Spec) ([]vz.DirectorySharingDeviceConfiguration, error) {
 	out := make([]vz.DirectorySharingDeviceConfiguration, 0, len(spec.Shares))
 	for _, s := range spec.Shares {
-		dir, err := vz.NewSharedDirectory(s.HostPath, s.ReadOnly)
+		dir, err := vz.NewSharedDirectory(folderByID(s.FolderID), s.ReadOnly)
 		if err != nil {
 			return nil, fmt.Errorf("share %s: %w", s.HostPath, err)
 		}
@@ -336,4 +336,10 @@ func sharedDirectories(spec vm.Spec) ([]vz.DirectorySharingDeviceConfiguration, 
 		out = append(out, device)
 	}
 	return out, nil
+}
+
+// folderByID is a path macOS resolves by the folder's id, not its name. Apple's VM opens it a moment
+// after deepcove's check, and this way gets that same folder even if the name now points elsewhere.
+func folderByID(id vm.FolderID) string {
+	return fmt.Sprintf("/.vol/%d/%d", id.Dev, id.Ino)
 }

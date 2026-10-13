@@ -84,7 +84,7 @@ func (s *Service) savedSpecFor(ctx context.Context, sandboxID string) (sandbox.S
 			if err != nil {
 				return sandbox.SandboxSpec{}, fmt.Errorf("session: %w", err)
 			}
-			return workspaceVMSpec(vm, agent)
+			return workspaceVMSpec(vm, agent, hostWorkspaceVMSizes())
 		}
 	}
 

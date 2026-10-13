@@ -26,7 +26,13 @@ type Process struct {
 
 // Start runs binary and reaps it in the background.
 func Start(name, binary string, argv []string) (*Process, error) {
+	return StartIn(name, binary, "", argv)
+}
+
+// StartIn is Start with the process started in workDir. Empty keeps deepcove's own.
+func StartIn(name, binary, workDir string, argv []string) (*Process, error) {
 	cmd := exec.Command(binary, argv...)
+	cmd.Dir = workDir
 	// Its own process group, so stopping it takes anything it started with it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// The process's own diagnostics, which are not the guest console.

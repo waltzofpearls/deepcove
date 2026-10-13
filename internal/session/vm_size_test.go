@@ -3,40 +3,112 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/waltzofpearls/deepcove/internal/db"
 )
 
 func TestSessionVMsThatFit(t *testing.T) {
+	const macKeptBackMB, linuxKeptBackMB = 4 << 10, 1 << 10
 	cases := []struct {
 		name         string
 		size         string
 		hostMemoryMB int64
+		keptBackMB   int64
 		want         int
 	}{
-		{"16 GB Mac, small", VMSizeSmall, 16 << 10, 12},
-		{"16 GB Mac, medium", VMSizeMedium, 16 << 10, 6},
-		{"16 GB Mac, large", VMSizeLarge, 16 << 10, 3},
-		{"32 GB Mac, medium", VMSizeMedium, 32 << 10, 14},
-		{"a host smaller than what it keeps back", VMSizeSmall, 2 << 10, 0},
+		{"16 GB Mac, small", VMSizeSmall, 16 << 10, macKeptBackMB, 12},
+		{"16 GB Mac, medium", VMSizeMedium, 16 << 10, macKeptBackMB, 6},
+		{"16 GB Mac, large", VMSizeLarge, 16 << 10, macKeptBackMB, 3},
+		{"32 GB Mac, medium", VMSizeMedium, 32 << 10, macKeptBackMB, 14},
+		{"4 GB Linux server, small", VMSizeSmall, 3915, linuxKeptBackMB, 2},
+		{"4 GB Linux server, medium", VMSizeMedium, 3915, linuxKeptBackMB, 1},
+		{"4 GB Linux server, large", VMSizeLarge, 3915, linuxKeptBackMB, 0},
+		{"a host smaller than what it keeps back", VMSizeSmall, 2 << 10, macKeptBackMB, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			size, _ := findVMSize(SessionVMSizes, tc.size)
-			if got := sessionVMsThatFit(size, tc.hostMemoryMB); got != tc.want {
+			if got := sessionVMsThatFit(size, tc.hostMemoryMB, tc.keptBackMB); got != tc.want {
 				t.Errorf("sessionVMsThatFit = %d, want %d", got, tc.want)
 			}
 		})
 	}
 }
 
+func TestWorkspaceVMSizes(t *testing.T) {
+	const macKeptBackMB, linuxKeptBackMB = 4 << 10, 1 << 10
+	cases := []struct {
+		name         string
+		hostMemoryMB int64
+		keptBackMB   int64
+		want         []VMSize
+	}{
+		{"memory unknown", 0, linuxKeptBackMB, []VMSize{
+			{Name: VMSizeSmall, CPU: 2, MemoryMB: 4 << 10},
+			{Name: VMSizeMedium, CPU: 4, MemoryMB: 8 << 10},
+			{Name: VMSizeLarge, CPU: 8, MemoryMB: 16 << 10},
+		}},
+		{"512 MB Linux", 512, linuxKeptBackMB, nil},
+		{"2 GB Linux", 1946, linuxKeptBackMB, []VMSize{{Name: VMSizeSmall, CPU: 1, MemoryMB: 1 << 10}}},
+		{"2.5 GB Linux, no scaled size big enough", 2560, linuxKeptBackMB, []VMSize{
+			{Name: VMSizeSmall, CPU: 1, MemoryMB: 1 << 10},
+		}},
+		{"4 GB Linux", 3915, linuxKeptBackMB, []VMSize{{Name: VMSizeLarge, CPU: 1, MemoryMB: 2 << 10}}},
+		{"16 GB Mac", 16 << 10, macKeptBackMB, []VMSize{
+			{Name: VMSizeSmall, CPU: 1, MemoryMB: 3 << 10},
+			{Name: VMSizeMedium, CPU: 3, MemoryMB: 6 << 10},
+			{Name: VMSizeLarge, CPU: 6, MemoryMB: 12 << 10},
+		}},
+		{"32 GB Mac, capped", 32 << 10, macKeptBackMB, []VMSize{
+			{Name: VMSizeSmall, CPU: 2, MemoryMB: 4 << 10},
+			{Name: VMSizeMedium, CPU: 4, MemoryMB: 8 << 10},
+			{Name: VMSizeLarge, CPU: 8, MemoryMB: 16 << 10},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := workspaceVMSizes(tc.hostMemoryMB, tc.keptBackMB); !slices.Equal(got, tc.want) {
+				t.Errorf("workspaceVMSizes = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultWorkspaceVMSize(t *testing.T) {
+	cases := []struct {
+		name  string
+		sizes []VMSize
+		want  string
+	}{
+		{"has the usual default", workspaceVMSizes(32<<10, 4<<10), VMSizeMedium},
+		{"lacks it, takes the biggest", workspaceVMSizes(3915, 1<<10), VMSizeLarge},
+		{"only one size", workspaceVMSizes(1946, 1<<10), VMSizeSmall},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := defaultWorkspaceVMSize(tc.sizes); got != tc.want {
+				t.Errorf("defaultWorkspaceVMSize = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAgentsThatFit(t *testing.T) {
-	want := map[string]int{VMSizeSmall: 3, VMSizeMedium: 7, VMSizeLarge: 15}
-	for _, size := range WorkspaceVMSizes {
-		t.Run(size.Name, func(t *testing.T) {
-			if got := agentsThatFit(size); got != want[size.Name] {
-				t.Errorf("agentsThatFit = %d, want %d", got, want[size.Name])
+	cases := []struct {
+		memoryMB int64
+		want     int
+	}{
+		{1 << 10, 1},
+		{2 << 10, 2},
+		{16 << 10, 16},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprint(tc.memoryMB), func(t *testing.T) {
+			if got := agentsThatFit(VMSize{MemoryMB: tc.memoryMB}); got != tc.want {
+				t.Errorf("agentsThatFit = %d, want %d", got, tc.want)
 			}
 		})
 	}
@@ -133,15 +205,36 @@ func TestService_SaveWorkspaceVM_Size(t *testing.T) {
 	}
 }
 
+func TestWorkspaceVMSpec_RefusesAMachineWithNoSize(t *testing.T) {
+	agent, _ := resolveAgent(defaultAgent)
+	vm := &WorkspaceVM{HostRoot: t.TempDir(), GuestRoot: "/workspace", Resources: Resources{Size: VMSizeMedium}}
+	if _, err := workspaceVMSpec(vm, agent, workspaceVMSizes(512, 1<<10)); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("error = %v, want a machine too small for a workspace VM refused", err)
+	}
+}
+
 func TestWorkspaceVMSpec_BootsWithTheNamedSize(t *testing.T) {
 	agent, _ := resolveAgent(defaultAgent)
-	vm := &WorkspaceVM{HostRoot: t.TempDir(), GuestRoot: "/workspace", Resources: Resources{Size: VMSizeLarge}}
-	spec, err := workspaceVMSpec(vm, agent)
-	if err != nil {
-		t.Fatalf("workspaceVMSpec: %v", err)
+	cases := []struct {
+		name      string
+		hostSizes []VMSize
+		saved     string
+		want      string
+	}{
+		{"a size this host has", workspaceVMSizes(32<<10, 4<<10), VMSizeSmall, VMSizeSmall},
+		{"a size only a bigger host has boots as the default", workspaceVMSizes(3915, 1<<10), VMSizeMedium, VMSizeLarge},
 	}
-	large, _ := findVMSize(WorkspaceVMSizes, VMSizeLarge)
-	if spec.Resources.Memory != large.MemoryMB<<20 || spec.Resources.CPU != float64(large.CPU) {
-		t.Errorf("booted with %+v, want large's %d CPU and %d MB", spec.Resources, large.CPU, large.MemoryMB)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := &WorkspaceVM{HostRoot: t.TempDir(), GuestRoot: "/workspace", Resources: Resources{Size: tc.saved}}
+			spec, err := workspaceVMSpec(vm, agent, tc.hostSizes)
+			if err != nil {
+				t.Fatalf("workspaceVMSpec: %v", err)
+			}
+			want, _ := findVMSize(tc.hostSizes, tc.want)
+			if spec.Resources.Memory != want.MemoryMB<<20 || spec.Resources.CPU != float64(want.CPU) {
+				t.Errorf("booted with %+v, want %s's %d CPU and %d MB", spec.Resources, tc.want, want.CPU, want.MemoryMB)
+			}
+		})
 	}
 }

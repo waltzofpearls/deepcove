@@ -205,11 +205,15 @@ func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (
 	if err := req.Resources.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)
 	}
-	if err := validateVMSize(req.Resources, WorkspaceVMSizes); err != nil {
+	sizes := hostWorkspaceVMSizes()
+	if len(sizes) == 0 {
+		return nil, fmt.Errorf("%w: this machine has too little memory for a workspace VM, use a session VM", ErrInvalidInput)
+	}
+	if err := validateVMSize(req.Resources, sizes); err != nil {
 		return nil, err
 	}
 	if !req.Resources.Asked() {
-		req.Resources = Resources{Size: DefaultVMSize}
+		req.Resources = Resources{Size: defaultWorkspaceVMSize(sizes)}
 	}
 	agent, err := resolveAgent(defaultAgent)
 	if err != nil {
@@ -273,7 +277,7 @@ func (s *Service) EnsureWorkspaceVM(ctx context.Context) (*WorkspaceVM, error) {
 		return nil, fmt.Errorf("session: %w", err)
 	}
 
-	spec, err := workspaceVMSpec(vm, agent)
+	spec, err := workspaceVMSpec(vm, agent, hostWorkspaceVMSizes())
 	if err != nil {
 		return nil, err
 	}
@@ -401,9 +405,18 @@ func (s *Service) startOnWorkspaceVM(ctx context.Context, sess *Session) error {
 // workspaceVMSpec describes the shared machine to the driver: the host root shared at its guest root, and
 // storage keyed to the machine rather than to a session. The guest root is checked again here, not just
 // when it was saved, since every build and restart comes through this.
-func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec) (sandbox.SandboxSpec, error) {
+//
+// sizes are this host's. A saved size it does not have, picked on a bigger machine, boots as its default.
+func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec, sizes []VMSize) (sandbox.SandboxSpec, error) {
 	if _, err := validateGuestRoot(vm.GuestRoot); err != nil {
 		return sandbox.SandboxSpec{}, err
+	}
+	if len(sizes) == 0 {
+		return sandbox.SandboxSpec{}, fmt.Errorf("%w: this machine has too little memory for a workspace VM", ErrInvalidInput)
+	}
+	resources := vm.Resources
+	if _, ok := findVMSize(sizes, resources.Size); resources.Size != "" && !ok {
+		resources.Size = defaultWorkspaceVMSize(sizes)
 	}
 	return newSandboxSpec(sandboxRequest{
 		ID:        workspaceVMHomeDiskID,
@@ -411,7 +424,7 @@ func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec) (sandbox.SandboxSpec, err
 		Agent:     agent,
 		Image:     vm.Image,
 		Setup:     vm.SetupScript,
-		Resources: vm.Resources.withSizeApplied(WorkspaceVMSizes),
+		Resources: resources.withSizeApplied(sizes),
 		Mounts:    []sandbox.Mount{{Source: vm.HostRoot, Target: vm.GuestRoot}},
 		WorkDir:   vm.GuestRoot,
 	}), nil
