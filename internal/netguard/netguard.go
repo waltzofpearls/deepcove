@@ -81,8 +81,9 @@ func Refuses(addr netip.Addr, allowed, hostNetworks []netip.Prefix) bool {
 	return blockedBits >= 0 && longestMatch(allowed, addr) < blockedBits
 }
 
-// HostNetworks are the networks this machine's interfaces sit on, its LAN included. Loopback is left out:
-// Refuses covers it, and a route for it would break the loopback of the network it is installed in.
+// HostNetworks are the networks this machine's interfaces sit on, its LAN included. Loopback addresses are
+// left out: Refuses covers them, and a route for one would break the loopback of the network it goes in.
+// Other addresses on the loopback interface count, since a host can serve on them.
 //
 // An error means the list may be short, so the caller must not start a VM's network with it.
 func HostNetworks() ([]netip.Prefix, error) {
@@ -92,9 +93,6 @@ func HostNetworks() ([]netip.Prefix, error) {
 	}
 	var networks []netip.Prefix
 	for _, iface := range interfaces {
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
 		addrs, err := iface.Addrs()
 		if err != nil {
 			return nil, fmt.Errorf("netguard: list the addresses of %s: %w", iface.Name, err)
@@ -105,7 +103,7 @@ func HostNetworks() ([]netip.Prefix, error) {
 				continue
 			}
 			ip, ok := netip.AddrFromSlice(ipNet.IP)
-			if !ok || ip.IsLinkLocalUnicast() {
+			if !ok || ip.Unmap().IsLoopback() || ip.IsLinkLocalUnicast() {
 				continue
 			}
 			ones, _ := ipNet.Mask.Size()

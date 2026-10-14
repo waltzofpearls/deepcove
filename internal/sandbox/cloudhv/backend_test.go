@@ -1,6 +1,7 @@
 package cloudhv
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +44,9 @@ func testBackend(t *testing.T) (Backend, string) {
 		Virtiofsd:       recordingStub(t, dir, "vfsd"),
 		Passt:           recordingStub(t, dir, "passt"),
 		Self:            "/usr/local/bin/deepcove",
-		IPCDir:          filepath.Join(dir, "ipc"),
+		// The stub passt runs no guard, so there is nothing to watch for.
+		watchHostNetworks: func(string, []netip.Prefix, func()) (func(), error) { return func() {}, nil },
+		IPCDir:            filepath.Join(dir, "ipc"),
 	}, dir
 }
 

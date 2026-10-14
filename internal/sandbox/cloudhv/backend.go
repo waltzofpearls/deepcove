@@ -41,8 +41,10 @@ type Backend struct {
 	CloudHypervisor string
 	Virtiofsd       string
 	Passt           string
-	// Self is this deepcove binary. It sets up the private network passt runs in, then becomes passt.
+	// Self is this deepcove binary. It guards the private network passt runs in, for as long as passt runs.
 	Self string
+	// watchHostNetworks starts the watch for networks the host joins. Nil is the real one; tests swap it.
+	watchHostNetworks hostNetworkWatcher
 	// IPCDir holds one directory per running VM, each with the sockets and the console FIFO its
 	// processes talk over. Keep it short: a socket path has a length limit.
 	IPCDir string
@@ -65,7 +67,9 @@ func (b Backend) Boot(spec vm.Spec) (vm.Machine, error) {
 		console: filepath.Join(ipcDir, "console"),
 	}
 	var helpers []*vmproc.Process
+	stopWatching := func() {}
 	fail := func(err error) (vm.Machine, error) {
+		stopWatching()
 		return nil, errors.Join(err, stopAll(helpers), os.RemoveAll(ipcDir))
 	}
 
@@ -80,19 +84,24 @@ func (b Backend) Boot(spec vm.Spec) (vm.Machine, error) {
 	}
 	if b.Passt != "" {
 		socket := filepath.Join(ipcDir, "net.sock")
-		helper, err := startPasst(b.Self, b.Passt, socket, passtRunAsArgs(), spec.NetworkAllow)
+		watch := b.watchHostNetworks
+		if watch == nil {
+			watch = watchHostNetworks
+		}
+		helper, stop, err := startPasst(b.Self, b.Passt, socket, passtRunAsArgs(), spec.NetworkAllow, watch)
 		if err != nil {
 			return fail(err)
 		}
 		helpers = append(helpers, helper)
 		p.netSocket = socket
+		stopWatching = stop
 	}
 
 	proc, err := launch(b.CloudHypervisor, spec, p)
 	if err != nil {
 		return fail(err)
 	}
-	return &machine{process: proc, helpers: helpers, ipcDir: ipcDir}, nil
+	return &machine{process: proc, helpers: helpers, ipcDir: ipcDir, stopWatching: stopWatching}, nil
 }
 
 // RequireKVM reports whether this host can run VMs at all.
