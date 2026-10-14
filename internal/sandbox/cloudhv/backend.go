@@ -41,6 +41,8 @@ type Backend struct {
 	CloudHypervisor string
 	Virtiofsd       string
 	Passt           string
+	// Self is this deepcove binary. It sets up the private network passt runs in, then becomes passt.
+	Self string
 	// IPCDir holds one directory per running VM, each with the sockets and the console FIFO its
 	// processes talk over. Keep it short: a socket path has a length limit.
 	IPCDir string
@@ -78,7 +80,7 @@ func (b Backend) Boot(spec vm.Spec) (vm.Machine, error) {
 	}
 	if b.Passt != "" {
 		socket := filepath.Join(ipcDir, "net.sock")
-		helper, err := startPasst(b.Passt, socket, passtRunAsArgs(), hostNameservers("/etc/resolv.conf"))
+		helper, err := startPasst(b.Self, b.Passt, socket, passtRunAsArgs(), spec.NetworkAllow)
 		if err != nil {
 			return fail(err)
 		}
@@ -136,6 +138,10 @@ func (b Backend) validate() error {
 		if path == "" {
 			return fmt.Errorf("cloudhv: no %s configured: %w", name, sandbox.ErrNotSupported)
 		}
+	}
+	// passt is started through deepcove itself, which guards its network first.
+	if b.Passt != "" && b.Self == "" {
+		return fmt.Errorf("cloudhv: passt is configured but not the deepcove binary that guards it: %w", sandbox.ErrNotSupported)
 	}
 	return nil
 }

@@ -34,6 +34,9 @@ type Spec struct {
 	// HostPorts are the vsock ports the host serves the guest on. A backend that runs the VM in another
 	// process listens on these for the guest from the start.
 	HostPorts []uint32
+	// NetworkAllow are private addresses the guest may still reach. The backend lets them through the
+	// network it runs on the host, as the guest does in its own routes.
+	NetworkAllow []string
 }
 
 // Share is one host directory shared into the guest.

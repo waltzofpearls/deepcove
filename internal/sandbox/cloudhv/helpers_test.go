@@ -1,14 +1,47 @@
 package cloudhv
 
 import (
-	"os"
-	"path/filepath"
+	"net/netip"
 	"slices"
 	"testing"
 )
 
+func TestPastaArgs(t *testing.T) {
+	guard := guardNetworkArgs([]string{"100.95.206.36"}, []netip.Prefix{netip.MustParsePrefix("2001:db8:5::/64")})
+	args := pastaArgs("/bin/deepcove", guard, "/opt/passt", []string{"--socket", "/run/net.sock"})
+	// Each of these carries the guest back to the host if it is left out.
+	for _, flag := range []string{"--no-map-gw", "--config-net"} {
+		if !slices.Contains(args, flag) {
+			t.Errorf("args = %v, want %s", args, flag)
+		}
+	}
+	for _, flag := range []struct {
+		name string
+		want []string
+	}{
+		{name: "-T", want: []string{"none"}},
+		{name: "-U", want: []string{"none"}},
+		{name: "-a", want: []string{pastaAddress}},
+		{name: "--dns-forward", want: []string{pastaDNS}},
+		{name: "--block", want: []string{"2001:db8:5::/64"}},
+		{name: "--allow", want: []string{"100.95.206.36"}},
+	} {
+		if got := valuesOf(args, flag.name); !slices.Equal(got, flag.want) {
+			t.Errorf("%s = %v, want %v", flag.name, got, flag.want)
+		}
+	}
+	command := args[slices.Index(args, "--")+1:]
+	if !slices.Equal(command[:3], []string{"/bin/deepcove", "vm", "guard-network"}) {
+		t.Errorf("pasta runs %v, want deepcove's guard-network first", command)
+	}
+	passt := command[slices.Index(command, "--")+1:]
+	if !slices.Equal(passt, []string{"/opt/passt", "--socket", "/run/net.sock"}) {
+		t.Errorf("then %v, want passt with its own args", passt)
+	}
+}
+
 func TestPasstArgs(t *testing.T) {
-	args := passtArgs("/run/passt.sock", []string{"--runas", "1000"}, []string{"127.0.0.53", "fd00::1"})
+	args := passtArgs("/run/passt.sock", []string{"--runas", "1000"})
 	if !slices.Contains(args, "--no-map-gw") {
 		t.Errorf("args = %v, want --no-map-gw", args)
 	}
@@ -21,7 +54,7 @@ func TestPasstArgs(t *testing.T) {
 		{name: "-g", want: []string{passtGuestGateway}},
 		{name: "-D", want: []string{passtDNSv4, passtDNSv6}},
 		{name: "--dns-forward", want: []string{passtDNSv4, passtDNSv6}},
-		{name: "--dns-host", want: []string{"127.0.0.53", "fd00::1"}},
+		{name: "--dns-host", want: []string{pastaDNS}},
 	} {
 		if got := valuesOf(args, flag.name); !slices.Equal(got, flag.want) {
 			t.Errorf("%s = %v, want %v", flag.name, got, flag.want)
@@ -29,36 +62,6 @@ func TestPasstArgs(t *testing.T) {
 	}
 	if args[len(args)-1] != "1000" {
 		t.Errorf("args = %v, want the runas flags kept at the end", args)
-	}
-}
-
-func TestHostNameservers(t *testing.T) {
-	cases := []struct {
-		name string
-		conf string
-		want []string
-	}{
-		{name: "systemd-resolved", conf: "nameserver 127.0.0.53\n", want: []string{"127.0.0.53"}},
-		{name: "tailscale first", conf: "nameserver 100.100.100.100\nnameserver 8.8.8.8\n", want: []string{"100.100.100.100"}},
-		{name: "both families", conf: "nameserver 10.0.0.2\nnameserver fd00::1\n", want: []string{"10.0.0.2", "fd00::1"}},
-		{name: "comments and junk skipped", conf: "# x\nsearch lan\nnameserver nope\nnameserver 1.1.1.1\n", want: []string{"1.1.1.1"}},
-		{
-			name: "addresses passt refuses are skipped",
-			conf: "nameserver fe80::1%eth0\nnameserver fe80::2\nnameserver 0.0.0.0\nnameserver ::\nnameserver 9.9.9.9\n",
-			want: []string{"9.9.9.9"},
-		},
-		{name: "nothing", conf: "", want: nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "resolv.conf")
-			if err := os.WriteFile(path, []byte(tc.conf), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if got := hostNameservers(path); !slices.Equal(got, tc.want) {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
 	}
 }
 
