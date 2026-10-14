@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"strings"
+	"path/filepath"
 
+	"github.com/waltzofpearls/deepcove/internal/netguard"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vm"
 	"github.com/waltzofpearls/deepcove/internal/sandbox/vmproc"
 )
@@ -45,8 +46,22 @@ func startVirtiofsd(binary, socket string, share vm.Share) (*vmproc.Process, err
 
 // startPasst gives the guest a network with no privileges on the host. passt creates the socket and the
 // VMM connects to it, which is why the VMM is the client.
-func startPasst(binary, socket string, runAs, nameservers []string) (*vmproc.Process, error) {
-	passt, err := vmproc.Start("passt", binary, passtArgs(socket, runAs, nameservers))
+//
+// passt runs inside a private network that pasta makes, where deepcove has blocked the networks a sandbox
+// must not reach. Every connection the guest opens is made from there, so root in the guest cannot get
+// around the block, as it can with the routes inside the guest. pasta is passt's own binary under its
+// other name, so it is linked rather than shipped.
+func startPasst(self, binary, socket string, runAs, allow []string) (*vmproc.Process, error) {
+	hostNetworks, err := netguard.HostNetworks()
+	if err != nil {
+		return nil, err
+	}
+	pasta := filepath.Join(filepath.Dir(socket), "pasta")
+	if err := os.Symlink(binary, pasta); err != nil {
+		return nil, fmt.Errorf("cloudhv: link pasta: %w", err)
+	}
+	argv := pastaArgs(self, guardNetworkArgs(allow, hostNetworks), binary, passtArgs(socket, runAs))
+	passt, err := vmproc.Start("passt", pasta, argv)
 	if err != nil {
 		return nil, err
 	}
@@ -56,54 +71,61 @@ func startPasst(binary, socket string, runAs, nameservers []string) (*vmproc.Pro
 	return passt, nil
 }
 
+// pastaArgs makes the private network and runs deepcove in it, which blocks networks there and then
+// becomes passt.
+//
+// Without the flags below, pasta would carry the guest back to the host it is kept off: it maps its
+// gateway to the host's own 127.0.0.1 (deepcove's API listens there), forwards ports bound on the host's
+// loopback, and copies the host's addresses, whose LAN route would be more specific than the block.
+func pastaArgs(self string, guard []string, passt string, passtArgv []string) []string {
+	args := []string{"--config-net", "--quiet", "--no-map-gw",
+		"-t", "none", "-u", "none", "-T", "none", "-U", "none",
+		"-a", pastaAddress, "-n", pastaPrefix, "-g", pastaGateway,
+		// The host's DNS server is often on a private address the block drops: a cloud resolver, a home
+		// router, Tailscale. pasta answers this address from the host side, with the host's resolver.
+		"--dns-forward", pastaDNS,
+		"--", self, "vm", "guard-network"}
+	args = append(args, guard...)
+	args = append(args, "--", passt)
+	return append(args, passtArgv...)
+}
+
+// guardNetworkArgs tells deepcove what to block besides the private ranges: the host's own networks,
+// which can be outside them (a LAN's IPv6 prefix), and what the operator allowed.
+func guardNetworkArgs(allow []string, hostNetworks []netip.Prefix) []string {
+	var args []string
+	for _, prefix := range hostNetworks {
+		args = append(args, "--block", prefix.String())
+	}
+	for _, addr := range allow {
+		args = append(args, "--allow", addr)
+	}
+	return args
+}
+
 // passtArgs keeps the guest off the host. passt's defaults would map the gateway to the host's 127.0.0.1
 // (deepcove's own API) and give the guest the host's address (putting the host's network on the guest's
 // subnet). So the guest gets a made-up address on a reserved network instead.
 //
-// DNS: the guest is always told to use the two addresses below, and passt sends what arrives there to the
-// host's own DNS servers. Handing the guest the host's servers directly fails when they are private
-// (Tailscale, a cloud resolver, a home router), since the guest's guard drops private addresses.
-func passtArgs(socket string, runAs, nameservers []string) []string {
+// DNS: the guest is always told to use the two addresses below, and passt sends what arrives there to
+// pasta, which asks the host's resolver.
+func passtArgs(socket string, runAs []string) []string {
 	args := []string{"--vhost-user", "--socket", socket, "--foreground", "--quiet", "--no-map-gw",
 		"-a", passtGuestAddress, "-n", passtGuestPrefix, "-g", passtGuestGateway,
-		"-D", passtDNSv4, "-D", passtDNSv6, "--dns-forward", passtDNSv4, "--dns-forward", passtDNSv6}
-	for _, server := range nameservers {
-		args = append(args, "--dns-host", server)
-	}
+		"-D", passtDNSv4, "-D", passtDNSv6, "--dns-forward", passtDNSv4, "--dns-forward", passtDNSv6,
+		"--dns-host", pastaDNS}
 	return append(args, runAs...)
 }
 
-// hostNameservers returns the host's first IPv4 and first IPv6 DNS server from resolv.conf. passt reads
-// that file itself only when the guest's DNS is left to it, which passtArgs no longer does.
-func hostNameservers(path string) []string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var v4, v6 string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "nameserver" {
-			continue
-		}
-		addr, err := netip.ParseAddr(fields[1])
-		switch {
-		// passt refuses these and then will not start, so no VM could boot.
-		case err != nil, addr.Zone() != "", addr.IsLinkLocalUnicast(), addr.IsUnspecified():
-		case addr.Is4() && v4 == "":
-			v4 = addr.String()
-		case addr.Is6() && v6 == "":
-			v6 = addr.String()
-		}
-	}
-	var servers []string
-	for _, server := range []string{v4, v6} {
-		if server != "" {
-			servers = append(servers, server)
-		}
-	}
-	return servers
-}
+// The private network passt runs in. 198.18.0.0/15 is reserved for benchmarks, so no real machine is on
+// it, and it is not one of the blocked ranges.
+const (
+	pastaAddress = "198.18.0.2"
+	pastaPrefix  = "24"
+	pastaGateway = "198.18.0.1"
+	// pastaDNS is where passt asks for DNS inside that network, and pasta answers.
+	pastaDNS = "192.0.2.53"
+)
 
 // The guest's network. TEST-NET-2 is reserved, so no real machine is on it.
 const (

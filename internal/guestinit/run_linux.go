@@ -14,6 +14,7 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/guestcfg"
 	"github.com/waltzofpearls/deepcove/internal/guestctl"
 	"github.com/waltzofpearls/deepcove/internal/guestexec"
+	"github.com/waltzofpearls/deepcove/internal/netguard"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
@@ -136,7 +137,7 @@ func bringUp(children *processTable) error {
 	// over it would cost the console and exec needed to diagnose it.
 	if err := setupNetwork(); err != nil {
 		logf("WARNING: network setup failed, the session has no network: %v", err)
-	} else if warnings, err := applyNetGuard(hostCfg.NetworkAllow); err != nil {
+	} else if warnings, err := netguard.Apply(hostCfg.NetworkAllow, nil); err != nil {
 		// Fail closed. A session with no network is a bad session; one that can still reach the host's
 		// LAN and tailnet is the thing this prevents, so the interface goes down instead.
 		logf("ERROR: could not restrict the sandbox network, taking it down: %v", err)

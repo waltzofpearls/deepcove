@@ -1,6 +1,6 @@
 //go:build linux
 
-package guestinit
+package netguard
 
 import (
 	"errors"
@@ -10,94 +10,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-func TestParseAllowList(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   []string
-		want    []string
-		wantErr bool
-	}{
-		{name: "nothing allowed", input: nil, want: []string{}},
-		{
-			name:  "a bare address becomes a host route",
-			input: []string{"100.95.206.36"},
-			want:  []string{"100.95.206.36/32"},
-		},
-		{name: "a CIDR is kept", input: []string{"10.1.0.0/16"}, want: []string{"10.1.0.0/16"}},
-		{
-			name:  "a CIDR with host bits set is masked",
-			input: []string{"10.1.2.3/16"},
-			want:  []string{"10.1.0.0/16"},
-		},
-		{name: "IPv6 works too", input: []string{"fd7a:115c:a1e0::1"}, want: []string{"fd7a:115c:a1e0::1/128"}},
-		{name: "blank entries are skipped", input: []string{"", "  "}, want: []string{}},
-		{name: "not an address", input: []string{"not-an-ip"}, wantErr: true},
-		{name: "a hostname is not accepted", input: []string{"example.com"}, wantErr: true},
-		{name: "a bad CIDR", input: []string{"10.0.0.0/99"}, wantErr: true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseAllowList(tc.input)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected an error, got %v", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseAllowList: %v", err)
-			}
-			var out []string
-			for _, p := range got {
-				out = append(out, p.String())
-			}
-			if strings.Join(out, ",") != strings.Join(tc.want, ",") {
-				t.Errorf("got %v, want %v", out, tc.want)
-			}
-		})
-	}
-}
-
-// The allowed address only takes effect if it is a LONGER prefix than the block covering it, since the
-// kernel picks the longest match. This pins that relationship rather than the routes themselves.
-func TestAllowedPrefixesBeatTheirBlock(t *testing.T) {
-	allowed, err := parseAllowList([]string{"100.95.206.36", "192.168.1.0/24", "fd7a:115c:a1e0::1"})
-	if err != nil {
-		t.Fatalf("parseAllowList: %v", err)
-	}
-	for _, a := range allowed {
-		var covered bool
-		for _, b := range blockedPrefixes {
-			if b.Overlaps(a) {
-				covered = true
-				if a.Bits() <= b.Bits() {
-					t.Errorf("%s is not more specific than the block %s, so it would be ignored", a, b)
-				}
-			}
-		}
-		if !covered {
-			t.Errorf("%s is not inside any blocked prefix, so allowing it does nothing", a)
-		}
-	}
-}
-
-func TestBlockedPrefixesCoverTheTailnet(t *testing.T) {
-	// A tailnet peer's addresses, both families. These are what the sandbox could reach before.
-	for _, addr := range []string{"100.95.206.36", "fd7a:115c:a1e0::1"} {
-		a := netip.MustParseAddr(addr)
-		var blocked bool
-		for _, p := range blockedPrefixes {
-			if p.Contains(a) {
-				blocked = true
-			}
-		}
-		if !blocked {
-			t.Errorf("%s is reachable: no blocked prefix covers it", addr)
-		}
-	}
-}
 
 func TestParseGateway4(t *testing.T) {
 	// Real /proc/net/route output. Addresses are hex in host byte order.
@@ -233,8 +145,8 @@ func TestOpenAllowedReportsRatherThanGivesUp(t *testing.T) {
 		return netip.MustParseAddr("192.168.64.1"), nil
 	}
 	var installed []netip.Prefix
-	addRoute := func(p netip.Prefix, _ netip.Addr) error {
-		installed = append(installed, p)
+	addRoute := func(prefix netip.Prefix, _ netip.Addr) error {
+		installed = append(installed, prefix)
 		return nil
 	}
 

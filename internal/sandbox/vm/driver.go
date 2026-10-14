@@ -275,6 +275,7 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		MemoryBytes:  memory,
 		Shares:       shares,
 		HostPorts:    []uint32{llmproxy.HostVSockPort, guestcfg.Port, sharedlogin.Port},
+		NetworkAllow: d.networkAllow,
 	})
 	if err != nil {
 		return err

@@ -66,7 +66,13 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingStartFailed}
 	}
 
+	self, err := os.Executable()
+	if err != nil {
+		deps.logger.Warn("cloud hypervisor runtime unavailable: cannot find this binary", "err", err)
+		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingStartFailed}
+	}
 	backend := cloudhv.Backend{
+		Self:            self,
 		CloudHypervisor: binaries.cloudHypervisor.path,
 		Virtiofsd:       binaries.virtiofsd.path,
 		Passt:           binaries.passt.path,

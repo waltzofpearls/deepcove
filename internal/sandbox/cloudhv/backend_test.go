@@ -42,6 +42,7 @@ func testBackend(t *testing.T) (Backend, string) {
 		CloudHypervisor: recordingStub(t, dir, "chv"),
 		Virtiofsd:       recordingStub(t, dir, "vfsd"),
 		Passt:           recordingStub(t, dir, "passt"),
+		Self:            "/usr/local/bin/deepcove",
 		IPCDir:          filepath.Join(dir, "ipc"),
 	}, dir
 }
@@ -144,6 +145,7 @@ func TestBackendValidate(t *testing.T) {
 		{"no vmm", Backend{Virtiofsd: "/v", IPCDir: "/r"}},
 		{"no virtiofsd", Backend{CloudHypervisor: "/c", IPCDir: "/r"}},
 		{"no ipc dir", Backend{CloudHypervisor: "/c", Virtiofsd: "/v"}},
+		{"passt with no deepcove to guard it", Backend{CloudHypervisor: "/c", Virtiofsd: "/v", Passt: "/p", IPCDir: "/r"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

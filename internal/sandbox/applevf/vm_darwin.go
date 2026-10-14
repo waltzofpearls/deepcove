@@ -60,11 +60,11 @@ func bootVM(spec vm.Spec, logger *slog.Logger) (*machine, error) {
 	}
 	config.SetStorageDevicesVirtualMachineConfiguration(storage)
 
-	nat, err := vz.NewNATNetworkDeviceAttachment()
+	attachment, err := userNetwork(spec.NetworkAllow)
 	if err != nil {
-		return nil, fmt.Errorf("nat attachment: %w", err)
+		return nil, err
 	}
-	network, err := vz.NewVirtioNetworkDeviceConfiguration(nat)
+	network, err := vz.NewVirtioNetworkDeviceConfiguration(attachment)
 	if err != nil {
 		return nil, fmt.Errorf("network device: %w", err)
 	}
