@@ -7,11 +7,36 @@ import (
 	"testing"
 )
 
+func TestInlineScriptHashes(t *testing.T) {
+	cases := []struct {
+		name string
+		html string
+		want []string
+	}{
+		{"one inline script", "<head><script>window.x=1;</script></head>",
+			[]string{"'sha256-g7sq2RbwbLEHSBobiM09D+ctI3iVsKqmfbqIiETF4t4='"}},
+		{"a script with attributes", `<script type="module">window.x=1;</script>`,
+			[]string{"'sha256-g7sq2RbwbLEHSBobiM09D+ctI3iVsKqmfbqIiETF4t4='"}},
+		{"a script loaded from a file", `<script src="/app.js"></script>`, nil},
+		{"no scripts", "<head></head>", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inlineScriptHashes([]byte(tc.html))
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Errorf("inlineScriptHashes = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuild(t *testing.T) {
 	cases := []struct {
 		name string
 		// bundle is the ui/build to start from, file path to contents.
-		bundle   map[string]string
+		bundle map[string]string
+		// headers is web-node/_headers. Empty means one with the mark for the script hashes.
+		headers  string
 		wantWASM string
 		wantErr  string
 	}{
@@ -49,6 +74,15 @@ func TestBuild(t *testing.T) {
 			wantErr: "outside _app/immutable/assets/",
 		},
 		{
+			name: "a headers file with nowhere to put the script hashes",
+			bundle: map[string]string{
+				"index.html":                        "<html><head></head></html>",
+				"_app/immutable/assets/main.x.wasm": "wasm",
+			},
+			headers: "/*\n  X-Frame-Options: DENY\n",
+			wantErr: "no INLINE_SCRIPT_HASHES",
+		},
+		{
 			name: "an index.html with no head",
 			bundle: map[string]string{
 				"index.html": "<html><body></body></html>",
@@ -69,8 +103,11 @@ func TestBuild(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tc.headers == "" {
+				tc.headers = "/*\n  Content-Security-Policy: script-src 'self' INLINE_SCRIPT_HASHES\n"
+			}
 			headers := filepath.Join(t.TempDir(), "_headers")
-			if err := os.WriteFile(headers, []byte("/*\n  X-Frame-Options: DENY\n"), 0o644); err != nil {
+			if err := os.WriteFile(headers, []byte(tc.headers), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			dist := filepath.Join(t.TempDir(), "dist")
@@ -94,15 +131,24 @@ func TestBuild(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dist, "_app", "immutable", "entry", "app.js")); err != nil {
 				t.Errorf("the rest of the bundle was not copied: %v", err)
 			}
-			if _, err := os.Stat(filepath.Join(dist, "_headers")); err != nil {
-				t.Errorf("the headers file was not copied: %v", err)
-			}
-			index, err := os.ReadFile(filepath.Join(dist, "index.html"))
+			indexHTML, err := os.ReadFile(filepath.Join(dist, "index.html"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(index), `"discover":true`) || !strings.Contains(string(index), `"transport":"wasm"`) {
-				t.Errorf("index.html is not set up like the dashboard: %s", index)
+			writtenHeaders, err := os.ReadFile(filepath.Join(dist, "_headers"))
+			if err != nil {
+				t.Fatalf("the headers file was not written: %v", err)
+			}
+			for _, hash := range inlineScriptHashes(indexHTML) {
+				if !strings.Contains(string(writtenHeaders), hash) {
+					t.Errorf("the headers do not allow inline script %s, so the page would not start", hash)
+				}
+			}
+			if strings.Contains(string(writtenHeaders), "INLINE_SCRIPT_HASHES") {
+				t.Error("the mark for the script hashes was left in the headers")
+			}
+			if !strings.Contains(string(indexHTML), `"discover":true`) || !strings.Contains(string(indexHTML), `"transport":"wasm"`) {
+				t.Errorf("index.html is not set up like the dashboard: %s", indexHTML)
 			}
 		})
 	}

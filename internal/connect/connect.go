@@ -72,6 +72,8 @@ type Manager struct {
 	ownerMu        sync.RWMutex      // guards persistedOwner + ownerSaved (the node owner)
 	persistedOwner *tailnet.Identity // node owner from the DuckDB node table
 	ownerSaved     bool
+
+	profilePicture *profilePicture
 }
 
 func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Handler, logger *slog.Logger) *Manager {
@@ -79,13 +81,14 @@ func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Ha
 		logger = slog.Default()
 	}
 	m := &Manager{
-		ctx:         ctx,
-		db:          db,
-		logger:      logger,
-		stateDir:    filepath.Join(dataDir, "tailnet"),
-		enabledFile: filepath.Join(dataDir, "tailnet.enabled"),
-		hostname:    defaultHostname(),
-		handler:     handler,
+		ctx:            ctx,
+		db:             db,
+		logger:         logger,
+		stateDir:       filepath.Join(dataDir, "tailnet"),
+		enabledFile:    filepath.Join(dataDir, "tailnet.enabled"),
+		hostname:       defaultHostname(),
+		handler:        handler,
+		profilePicture: newProfilePicture(),
 	}
 	if db != nil {
 		if owner, err := loadOwner(db); err != nil {
@@ -427,7 +430,7 @@ func (m *Manager) ownerGate(tsNode *tailnet.Node) http.Handler {
 			http.Error(w, "forbidden: not the tsNode owner", http.StatusForbidden)
 			return
 		}
-		m.handler.ServeHTTP(w, r)
+		m.handler.ServeHTTP(w, withCaller(r, id))
 	})
 }
 
@@ -479,6 +482,8 @@ func (m *Manager) ownerOrClaim(stableNodeID string, owner, caller *tailnet.Ident
 func (m *Manager) AttachRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connect", m.handleConnect)
 	mux.HandleFunc("GET /api/connect/status", m.handleStatus)
+	mux.HandleFunc("GET /api/me", m.handleMe)
+	mux.HandleFunc("GET /api/me/profile-picture", m.handleMyProfilePicture)
 	mux.HandleFunc("GET /api/gossip/known", m.handleGossipKnown)
 	mux.HandleFunc("POST /api/connect/disconnect", m.handleDisconnect)
 	mux.HandleFunc("POST /api/connect/reset", m.handleReset)
