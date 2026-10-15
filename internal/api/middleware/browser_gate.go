@@ -7,7 +7,8 @@ import "net/http"
 // The Host header must name this node. That is what defeats DNS rebinding: a site that points its own
 // name at this node's address still sends its own name, and we reject it. Cross-origin requests are
 // then rejected by the standard library's CSRF protection, which reads Sec-Fetch-Site and falls back
-// to comparing Origin with Host.
+// to comparing Origin with Host. It lets every GET through, so crossOriginAPI also refuses those on
+// the API, where a GET opens the terminal's WebSocket.
 //
 // A request with no browser headers passes this gate, which is right for the CLI and for node to node
 // calls; the owner check is what stops a stranger.
@@ -20,6 +21,10 @@ func BrowserGate(next http.Handler, hosts func() []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !hostIsOurs(r.Host, hosts()) {
 			http.Error(w, "forbidden: unexpected Host header", http.StatusForbidden)
+			return
+		}
+		if crossOriginAPI(r) {
+			http.Error(w, "forbidden: cross origin request", http.StatusForbidden)
 			return
 		}
 		crossOrigin.ServeHTTP(w, r)

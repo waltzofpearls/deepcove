@@ -3,49 +3,45 @@
 // with the gate matching its trust model:
 //
 //   - Unix socket: ungated; filesystem permissions are the boundary (CLI).
-//   - Local TCP: LocalGate here (same-machine browser).
+//   - Local TCP: LocalGate here (the same user's browser on this machine).
 //   - Tailnet: owner-gated via WhoIs (in package connect).
 package middleware
 
 import (
-	"crypto/subtle"
+	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/waltzofpearls/deepcove/internal/localpeer"
 )
 
-// LocalTokenCookieBaseName is the base name of the cookie carrying the per-run local access token. The actual
-// cookie name is per-listener (see LocalTokenCookieName): browser cookies are NOT isolated by port, so
-// two `deepcove start` instances on the same loopback host (different ports) would otherwise clobber
-// each other's token cookie and lock one out with 401s.
-const LocalTokenCookieBaseName = "deepcove_token"
-
-// LocalTokenCookieName returns the token cookie name for a bind address, suffixed with the port so
-// multiple instances on one machine (same host, different ports) keep distinct token cookies.
-func LocalTokenCookieName(addr string) string {
-	if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
-		return LocalTokenCookieBaseName + "_" + port
+// LocalConnContext checks once per connection whether it comes from the OS user deepcove runs as, and
+// keeps the answer for LocalGate. Set it as the local server's ConnContext.
+func LocalConnContext(ctx context.Context, conn net.Conn) context.Context {
+	same, err := localpeer.SameUser(conn)
+	if err != nil {
+		slog.Warn("local dashboard: could not tell who is connecting, refusing", "remote", conn.RemoteAddr(), "err", err)
 	}
-	return LocalTokenCookieBaseName
+	return context.WithValue(ctx, sameUserKey{}, same && err == nil)
 }
 
-// LocalGate restricts the local TCP front door (127.0.0.1) to same-machine
-// browser access. Two independent checks, both required for the runtime API:
+type sameUserKey struct{}
+
+// LocalGate restricts the local TCP front door (127.0.0.1) to the browser of the user who runs
+// deepcove. Three checks:
 //
+//   - Same user: a connection from any other OS user on this machine is refused. The kernel says who
+//     owns each connection (see LocalConnContext), so there is no token anyone could take.
 //   - Host allowlist: the request Host must be loopback (localhost / 127.x / ::1) or an explicitly
 //     configured host. This defeats DNS rebinding, where a malicious site points its name at
 //     127.0.0.1: its requests still carry Host: evil.example, which we reject.
-//   - Token cookie: runtime /api/* (and the attach WebSocket) require a cookie whose value matches
-//     the per-run token. Only the SPA served by this listener receives that cookie (seeded below on
-//     non-API responses), and SameSite=Strict keeps cross-site requests from sending it. So a
-//     drive-by web page (or any other local process that never loaded the SPA) can't reach the
-//     runtime API even though the port is open.
+//   - Cross origin: a page from another site, or another port on 127.0.0.1, runs in the same user's
+//     browser and so passes the first check. It may not call the API at all, terminal included.
 //
-// Non-API requests (SPA bundle, static assets, /api/health, future
-// /api/setup/*) are ungated and seed the cookie. The Unix socket (CLI) and the
-// owner-gated tailnet never use this gate.
-func LocalGate(next http.Handler, token, cookieName string, allowedHosts []string) http.Handler {
-	// SameSite ignores the port, so another page on 127.0.0.1 still sends the cookie. This refuses its writes.
+// The Unix socket (CLI) and the owner-gated tailnet never use this gate.
+func LocalGate(next http.Handler, allowedHosts []string) http.Handler {
 	next = http.NewCrossOriginProtection().Handler(next)
 	allow := make(map[string]struct{}, len(allowedHosts))
 	for _, host := range allowedHosts {
@@ -54,52 +50,20 @@ func LocalGate(next http.Handler, token, cookieName string, allowedHosts []strin
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if same, _ := r.Context().Value(sameUserKey{}).(bool); !same {
+			http.Error(w, "forbidden: this deepcove only answers the user who runs it", http.StatusForbidden)
+			return
+		}
 		if !hostAllowed(r.Host, allow) {
 			http.Error(w, "forbidden: unexpected Host header", http.StatusForbidden)
 			return
 		}
-		switch {
-		case isRuntimeAPI(r.URL.Path):
-			if !validToken(r, token, cookieName) {
-				http.Error(w, "unauthorized: missing or invalid local token", http.StatusUnauthorized)
-				return
-			}
-		case !strings.HasPrefix(r.URL.Path, "/api/") && !validToken(r, token, cookieName):
-			// Seed the token on SPA/asset responses (any non-/api path) so the browser carries it on
-			// subsequent runtime calls. /api/health and /api/setup/* are exempt from both the check and
-			// seeding. HttpOnly so an XSS can't read it; SameSite=Strict so cross-site requests don't
-			// send it; no Secure, the local listener is plain http on loopback.
-			http.SetCookie(w, &http.Cookie{
-				Name:     cookieName,
-				Value:    token,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
-			})
+		if crossOriginAPI(r) {
+			http.Error(w, "forbidden: cross origin request", http.StatusForbidden)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func validToken(r *http.Request, token, cookieName string) bool {
-	cookie, err := r.Cookie(cookieName)
-	if err != nil {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) == 1
-}
-
-// isRuntimeAPI reports whether a path is a gated runtime endpoint. Everything
-// under /api/ is gated except the unauthenticated health check and the (future)
-// first-run setup wizard, which must work before the SPA holds a token.
-func isRuntimeAPI(path string) bool {
-	if !strings.HasPrefix(path, "/api/") {
-		return false
-	}
-	if path == "/api/health" || strings.HasPrefix(path, "/api/setup/") {
-		return false
-	}
-	return true
 }
 
 // hostAllowed checks the request Host (sans port) against loopback and the
