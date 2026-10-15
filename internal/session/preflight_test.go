@@ -40,6 +40,7 @@ func TestWriteSandboxError(t *testing.T) {
 		{"sandbox not found", fmt.Errorf("wrap: %w", sandbox.ErrNotFound), http.StatusNotFound, codeNotFound},
 		{"session not found", fmt.Errorf("wrap: %w", ErrNotFound), http.StatusNotFound, codeNotFound},
 		{"conflict", fmt.Errorf("wrap: %w", sandbox.ErrConflict), http.StatusConflict, codeConflict},
+		{"an image that cannot be fetched", fmt.Errorf("wrap: %w", sandbox.ErrImageUnavailable), http.StatusBadGateway, codeImageUnavailable},
 		{"plain input error", fmt.Errorf("bad mount target"), http.StatusBadRequest, codeInvalidInput},
 	}
 	for _, tc := range cases {

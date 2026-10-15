@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { changesAgentEnv, loginChoices, loginFallsBack, type LoginPlace } from './loginMode';
 import type { LoginMode } from '$lib/api/types';
 
-const claude: LoginMode[] = ['in_session', 'shared', 'api_key', 'llm_proxy'];
+const claude = {
+  login_modes: ['in_session', 'shared', 'api_key', 'llm_proxy'] as LoginMode[],
+  login_hint: 'Run /login in this session.',
+};
 
 describe('loginChoices', () => {
   const cases: {
@@ -58,12 +61,25 @@ describe('loginChoices', () => {
   }
 
   it('offers only what the agent allows', () => {
-    const got = loginChoices(['in_session'], 'session_vm', {
+    const got = loginChoices({ login_modes: ['in_session'], login_hint: '' }, 'session_vm', {
       proxyUrl: 'http://proxy:9000',
       hasApiKey: true,
       apiKeyEnding: 'wxyz',
     });
     expect(got.map((choice) => choice.mode)).toEqual(['in_session']);
+  });
+
+  it('tells you how to log in to this agent inside the session', () => {
+    const codex = {
+      login_modes: ['in_session'] as LoginMode[],
+      login_hint: 'Sign in with a device code.',
+    };
+    const got = loginChoices(codex, 'session_vm', {
+      proxyUrl: '',
+      hasApiKey: false,
+      apiKeyEnding: '',
+    });
+    expect(got[0].detail).toBe('Sign in with a device code.');
   });
 });
 

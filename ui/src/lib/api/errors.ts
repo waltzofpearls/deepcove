@@ -26,6 +26,13 @@ export function friendlyError(e: unknown): FriendlyError {
           raw: e.message,
           code: e.code,
         };
+      case 'image_unavailable':
+        return {
+          title: "Couldn't get the image",
+          guidance: 'Check the image name, and that it can be pulled without signing in.',
+          raw: e.message,
+          code: e.code,
+        };
       case 'invalid_input':
         return { title: 'Check the form and try again', raw: e.message, code: e.code };
       case 'conflict':

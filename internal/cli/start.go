@@ -127,13 +127,7 @@ func cmdStart(ctx context.Context, args []string) error {
 
 	// The user's own agent logins, for the sessions that share them. Only this node refreshes them.
 	sharedLoginStore := session.NewSharedLoginStore(sqlDB)
-	logins := sharedlogin.NewKeeper(sharedLoginStore, map[string]sharedlogin.Provider{
-		"claude": sharedlogin.ClaudeProvider{
-			Client:     &http.Client{Timeout: 30 * time.Second},
-			TokenURL:   sharedlogin.ClaudeTokenURL,
-			ProfileURL: sharedlogin.ClaudeProfileURL,
-		},
-	})
+	logins := sharedlogin.NewKeeper(sharedLoginStore, sharedlogin.Providers(&http.Client{Timeout: 30 * time.Second}))
 	sessionSvc.SetSharedLogins(logins, sharedLoginStore)
 	runtimes := registerRuntimes(sessionSvc, cfg, logins, logger, tailnetClient)
 	defer runtimes.close()

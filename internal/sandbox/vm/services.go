@@ -12,11 +12,11 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/sharedlogin"
 )
 
-// ServeSharedLogin hands this VM the user's shared login for agent, and takes one it makes itself.
-// sandboxID names this VM, so another account's prompt shows on its session.
-func (g *Guest) ServeSharedLogin(keeper *sharedlogin.Keeper, agent, sessionID string, sandboxID sandbox.ID) error {
+// ServeSharedLogin hands this VM the user's shared login for each of agents, and takes one it makes
+// itself. sandboxID names this VM, so another account's prompt shows on its session.
+func (g *Guest) ServeSharedLogin(keeper *sharedlogin.Keeper, agents []string, sessionID string, sandboxID sandbox.ID) error {
 	return g.serve("shared login", sharedlogin.Port, func(conn net.Conn) {
-		_ = sharedlogin.Serve(conn, keeper, agent, sessionID, string(sandboxID))
+		_ = sharedlogin.Serve(conn, keeper, agents, sessionID, string(sandboxID))
 	})
 }
 
@@ -32,7 +32,7 @@ func (g *Guest) ServeConfig(cfg guestcfg.Config) error {
 //
 // Every VM gets one, whether or not a proxy is configured right now: the address is read per request, so
 // setting one later reaches a machine that is already running.
-func (g *Guest) ServeLLMForward(proxyURL func() string, apiKeyFor func(sessionID string) (string, error), client func() *http.Client) error {
+func (g *Guest) ServeLLMForward(proxyURL func() string, apiKeyFor func(sessionID string) (llmproxy.APIKey, error), client func() *http.Client) error {
 	forwarder := llmproxy.NewForwarder(proxyURL, apiKeyFor, client, func(err error) {
 		g.logger.Warn("llm proxy request failed", "err", err)
 	}, func(sessionID, method, path string) {

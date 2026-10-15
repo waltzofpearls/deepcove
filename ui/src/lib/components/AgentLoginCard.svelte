@@ -1,12 +1,14 @@
 <script lang="ts">
-  // The Settings card for this node's Claude login: the shared account, the default, and the API key.
+  // The Settings card for one agent's login on this node: the shared account, the default, and the API key.
   import { api } from '$lib/api/client';
   import { preferences } from '$lib/stores/preferences.svelte';
   import { usePolling } from '$lib/polling';
   import OtherAccountChoice from '$lib/components/session/OtherAccountChoice.svelte';
   import { Button } from '$lib/components/ui/button';
   import { loginChoices, loginFallsBack } from '$lib/util/loginMode';
-  import type { LoginMode, SharedLoginStatus } from '$lib/api/types';
+  import type { Agent, LoginMode, SharedLoginStatus } from '$lib/api/types';
+
+  let { agent }: { agent: Agent } = $props();
 
   let status = $state<SharedLoginStatus | null>(null);
   let loadError = $state('');
@@ -15,17 +17,10 @@
   let apiKeyDraft = $state('');
 
   // The default offers what a session VM could use, since that is where most sessions run.
-  let agentModes = $state<LoginMode[]>([]);
   let llmProxyUrl = $state('');
-  $effect(() => {
-    api
-      .listAgents()
-      .then((agents) => (agentModes = agents.find((a) => a.name === 'claude')?.login_modes ?? []))
-      .catch(() => {});
-  });
   const defaultChoices = $derived(
     status
-      ? loginChoices(agentModes, 'session_vm', {
+      ? loginChoices(agent, 'session_vm', {
           proxyUrl: llmProxyUrl,
           hasApiKey: status.has_api_key,
           apiKeyEnding: status.api_key_ending,
@@ -35,7 +30,7 @@
 
   // A default that is not set up any more falls back to the session's own login, as the node does.
   const defaultFallsBack = $derived(
-    !!status && agentModes.length > 0 && loginFallsBack(status.default_login_mode, defaultChoices),
+    !!status && loginFallsBack(status.default_login_mode, defaultChoices),
   );
   const fallbackNote = $derived(
     status?.default_login_mode === 'api_key'
@@ -47,7 +42,7 @@
     saving = true;
     saveError = '';
     try {
-      status = await api.saveLoginSettings('claude', settings);
+      status = await api.saveLoginSettings(agent.name, settings);
       apiKeyDraft = '';
     } catch (e) {
       saveError = e instanceof Error ? e.message : String(e);
@@ -61,7 +56,7 @@
     const stop = usePolling(
       async () => {
         try {
-          status = await api.sharedLogin('claude', undefined, ac.signal);
+          status = await api.sharedLogin(agent.name, undefined, ac.signal);
           loadError = '';
         } catch (e) {
           if ((e as Error)?.name !== 'AbortError') {
@@ -85,7 +80,7 @@
 </script>
 
 <section class="space-y-3 rounded-xl border border-border bg-card p-4">
-  <h2 class="text-sm font-medium text-muted-foreground">Claude login</h2>
+  <h2 class="text-sm font-medium text-muted-foreground">{agent.display_name} login</h2>
   {#if status === null}
     {#if loadError}
       <p class="text-xs text-destructive">{loadError}</p>
@@ -100,7 +95,7 @@
     {:else if status.account}
       <p class="text-sm">{`Your sessions share ${status.account}.`}</p>
     {:else}
-      <p class="text-sm">Your sessions share one Claude login.</p>
+      <p class="text-sm">{`Your sessions share one ${agent.display_name} login.`}</p>
     {/if}
     <div
       class="grid gap-2 border-t border-border pt-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4"
@@ -144,10 +139,10 @@
           <input
             type="password"
             bind:value={apiKeyDraft}
-            placeholder="sk-ant-…"
+            placeholder={agent.api_key_example}
             autocomplete="off"
             class="h-9 min-w-0 flex-1 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
-            aria-label="Anthropic API key"
+            aria-label={`${agent.display_name} API key`}
           />
           <Button
             size="sm"
@@ -165,7 +160,7 @@
         <p class="text-sm">
           {`A session logged in as ${status.waiting.account || 'another account'}.`}
         </p>
-        <OtherAccountChoice agent="claude" {status} onanswered={(next) => (status = next)} />
+        <OtherAccountChoice agent={agent.name} {status} onanswered={(next) => (status = next)} />
       </div>
     {/if}
   {/if}

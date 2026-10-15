@@ -1,4 +1,7 @@
 export PATH="$HOME/.local/bin:$PATH"
+# deepcove starts this in the session's own folder. DEEPCOVE_WORKDIR is the machine's, which on a workspace
+# VM is the folder every session's folder sits in, so the folder this starts in is the one to go back to.
+session_folder=$PWD
 # The conversation is pinned to the deepcove session id, so a VM rebuild picks the history back up and
 # sessions sharing a machine and a directory never resume each other. Resolved per attempt: no file for
 # our id means start it, a file means continue it.
@@ -15,7 +18,7 @@ conversation() {
 # other exit, so an unlucky one-off spike still gets retried.
 ooms=0
 while true; do
-  cd "${DEEPCOVE_WORKDIR:-/workspace}" || exit 1
+  cd "$session_folder" || exit 1
   # Unquoted on purpose: conversation prints a flag and its value, which have to arrive as two arguments.
   # shellcheck disable=SC2046
   claude $(conversation)

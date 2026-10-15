@@ -143,8 +143,8 @@
       </div>
       <h2 class="text-lg font-semibold">Run a coding agent in a sandbox</h2>
       <p class="mt-1.5 text-sm text-muted-foreground">
-        Each session runs Claude Code in a sandbox, on its own VM or one your sessions share,
-        reachable from this dashboard. Create one to get started.
+        Each session runs Claude Code or Codex in a sandbox, on its own VM or one your sessions
+        share, reachable from this dashboard. Create one to get started.
       </p>
 
       {#if !preflight.ready}

@@ -59,7 +59,10 @@ func TestGuestSync_Once(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			files := &fakeFiles{local: tc.local, onboarded: tc.onboarded}
 			var offered bool
-			sync := &GuestSync{Files: files, Ask: func(request Request) (Reply, error) {
+			sync := &GuestSync{Agent: "claude", Files: files, Ask: func(request Request) (Reply, error) {
+				if request.Agent != "claude" {
+					t.Errorf("asked for %q's login, want claude's", request.Agent)
+				}
 				offered = request.Offer != nil
 				return tc.reply, nil
 			}}

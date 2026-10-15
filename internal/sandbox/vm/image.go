@@ -18,6 +18,8 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 // imageStore turns an OCI image reference into a read only ext4 base image, cached by image digest so a
@@ -91,7 +93,7 @@ func guestPlatform() v1.Platform {
 func (s *imageStore) baseImage(ctx context.Context, ref string) (string, error) {
 	digest, err := s.resolveDigest(ctx, ref)
 	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", ref, err)
+		return "", fmt.Errorf("%w: resolve %s: %w", sandbox.ErrImageUnavailable, ref, err)
 	}
 	path := s.cachePath(digest)
 	if _, err := os.Stat(path); err == nil {
@@ -103,7 +105,7 @@ func (s *imageStore) baseImage(ctx context.Context, ref string) (string, error) 
 
 	img, err := s.pull(ctx, ref, s.platform)
 	if err != nil {
-		return "", fmt.Errorf("pull %s: %w", ref, err)
+		return "", fmt.Errorf("%w: pull %s: %w", sandbox.ErrImageUnavailable, ref, err)
 	}
 	if err := s.buildBase(img, path); err != nil {
 		return "", err

@@ -55,8 +55,9 @@ type Config struct {
 	// LLMRequestPort is the local port the guest offers for LLM requests, spliced to the host over
 	// vsock. Zero means the session calls the provider itself.
 	LLMRequestPort int `json:"llm_request_port,omitempty"`
-	// SharedLoginAgent is the agent whose shared login this guest keeps up to date. Empty means its own login.
-	SharedLoginAgent string `json:"shared_login_agent,omitempty"`
+	// SharedLoginAgents are the agents whose shared login this guest keeps up to date. Empty means each
+	// agent logs in on its own.
+	SharedLoginAgents []string `json:"shared_login_agents,omitempty"`
 }
 
 // Mount is one virtio-fs share: the tag the host announced, and where the guest should mount it.

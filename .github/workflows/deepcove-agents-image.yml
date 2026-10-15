@@ -1,20 +1,21 @@
-# Builds and pushes the deepcove-claude session image to GHCR.
+# Builds and pushes the deepcove-agents session image to GHCR, with every agent installed.
 #
 # Triggers:
 #   workflow_dispatch — manual button in the Actions tab, for ad-hoc rebuilds.
-#   tag push deepcove-claude-v* — versioned releases (e.g. `git tag deepcove-claude-v0.1.0`).
-#   schedule — weekly, so a new session starts from a recent Claude and package set rather than
+#   tag push deepcove-agents-v* — versioned releases (e.g. `git tag deepcove-agents-v0.1.0`).
+#   schedule — weekly, so a new session starts from recent agents and packages rather than
 #   whatever was current at the last release. Only runs from the default branch.
 #
 # Tags pushed to GHCR:
-#   latest            — always, so the agent registry's OfficialImage ref resolves.
+#   latest            — from the default branch or a version tag only, so the agent registry's
+#                       OfficialImage ref never points at a build of an unmerged branch.
 #   <short-sha>       — every build, for traceability + rollback.
-#   <version>         — only on tag push, stripped from the `deepcove-claude-v` prefix.
+#   <version>         — only on tag push, stripped from the `deepcove-agents-v` prefix.
 #
 # After the first successful run, walk through Package Settings → Danger Zone →
-# Change visibility → Public so users can `docker pull` without authentication.
+# Change visibility → Public so sessions can pull without authentication.
 
-name: deepcove-claude image
+name: deepcove-agents image
 
 on:
   workflow_dispatch:
@@ -23,7 +24,7 @@ on:
     - cron: '23 7 * * 1'
   push:
     tags:
-      - 'deepcove-claude-v*'
+      - 'deepcove-agents-v*'
 
 permissions:
   contents: read
@@ -51,10 +52,13 @@ jobs:
       - name: Derive tags
         id: tags
         run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/deepcove-claude
-          TAGS="$IMAGE:latest,$IMAGE:${GITHUB_SHA::7}"
-          if [[ "$GITHUB_REF" == refs/tags/deepcove-claude-v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/deepcove-claude-}"
+          IMAGE=ghcr.io/${{ github.repository_owner }}/deepcove-agents
+          TAGS="$IMAGE:${GITHUB_SHA::7}"
+          if [[ "$GITHUB_REF" == "refs/heads/${{ github.event.repository.default_branch }}" || "$GITHUB_REF" == refs/tags/deepcove-agents-v* ]]; then
+            TAGS="$TAGS,$IMAGE:latest"
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/deepcove-agents-v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/deepcove-agents-}"
             TAGS="$TAGS,$IMAGE:$VERSION"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
@@ -63,7 +67,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: deepcove-claude.Dockerfile
+          file: deepcove-agents.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}

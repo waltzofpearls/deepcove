@@ -130,24 +130,31 @@ func (s *Service) agentLaunchCommand(sess *Session, runtime sandbox.Sandbox) ([]
 			baseURL = forwarder.LLMEndpoint()
 		}
 	}
+	agent, err := resolveAgent(sess.Agent)
+	if err != nil {
+		return nil, err
+	}
 	// env's options have to come before any assignment, or env reads them as the command to run.
 	//
 	// Cleared either way. Off has to mean off, whatever the machine, the image or a setup script left
 	// behind, and a machine built before this setting existed still holds the address on its init.
-	argv := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL"}
+	argv := []string{"env"}
+	for _, name := range agent.API.ClearEnv {
+		argv = append(argv, "-u", name)
+	}
 	argv = append(argv, "DEEPCOVE_SESSION_ID="+sess.ID)
 	if baseURL != "" {
 		argv = append(argv,
-			"ANTHROPIC_BASE_URL="+baseURL,
+			agent.API.BaseURLEnv+"="+baseURL,
 			// Carries the session id, which is how the host tells apart sessions sharing a machine. The
 			// proxy and the provider never see it: it is replaced on the way out.
-			"ANTHROPIC_AUTH_TOKEN="+llmproxy.AuthToken(sess.ID))
+			agent.API.TokenEnv+"="+llmproxy.AuthToken(sess.ID))
 	}
 	provisioner, ok := runtime.(sandbox.AgentProvisioner)
 	if !ok {
 		return nil, fmt.Errorf("session: the %s runtime cannot say what starts its agent", sess.Runtime)
 	}
-	launch, err := provisioner.AgentLaunchCommand(sandbox.ID(sess.SandboxID))
+	launch, err := provisioner.AgentLaunchCommand(sandbox.ID(sess.SandboxID), sess.Agent)
 	if err != nil {
 		return nil, fmt.Errorf("session: what starts the agent: %w", err)
 	}

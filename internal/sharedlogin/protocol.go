@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"time"
 )
 
@@ -22,6 +23,8 @@ const answerTimeout = 30 * time.Second
 
 // Request is a session asking for the shared login, or offering one it made itself.
 type Request struct {
+	// Agent is whose login this is. A machine that several sessions share runs more than one agent.
+	Agent string `json:"agent"`
 	// Offer is nil to just ask.
 	Offer *Login `json:"offer,omitempty"`
 }
@@ -35,8 +38,9 @@ type Reply struct {
 	Error            string `json:"error,omitempty"`
 }
 
-// Serve answers one request on conn, from session sessionID on the VM sandboxID.
-func Serve(conn net.Conn, keeper *Keeper, agent, sessionID, sandboxID string) error {
+// Serve answers one request on conn, from session sessionID on the VM sandboxID. agents are the only
+// ones whose login this VM may have, so a session's machine never gets another agent's login.
+func Serve(conn net.Conn, keeper *Keeper, agents []string, sessionID, sandboxID string) error {
 	defer func() { _ = conn.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), answerTimeout)
 	defer cancel()
@@ -47,7 +51,10 @@ func Serve(conn net.Conn, keeper *Keeper, agent, sessionID, sandboxID string) er
 	if err != nil {
 		return err
 	}
-	return writeMessage(conn, keeper.answer(ctx, agent, sessionID, sandboxID, request))
+	if !slices.Contains(agents, request.Agent) {
+		return writeMessage(conn, Reply{Error: fmt.Sprintf("this machine gets no shared login for %q", request.Agent)})
+	}
+	return writeMessage(conn, keeper.answer(ctx, request.Agent, sessionID, sandboxID, request))
 }
 
 // Ask sends one request on conn and returns the host's reply.

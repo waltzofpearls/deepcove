@@ -171,7 +171,7 @@ func bringUp(children *processTable) error {
 	}
 
 	// Before the entrypoint, which starts the agent, so it finds the shared login already there.
-	keepSharedLogin(hostCfg.SharedLoginAgent)
+	keepSharedLogins(hostCfg.SharedLoginAgents)
 
 	return runEntrypoint(children, hostCfg)
 }

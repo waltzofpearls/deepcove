@@ -2,6 +2,7 @@ package sharedlogin
 
 import (
 	"errors"
+	"net/http"
 )
 
 // LoginFiles is how a guest reads and writes one agent's login, where that agent looks for it.
@@ -17,17 +18,32 @@ type LoginFiles interface {
 	TokenPath() string
 }
 
-// LoginFilesFor says where an agent keeps its login under home, nil for an agent that cannot share one.
-func LoginFilesFor(agent, home string) LoginFiles {
-	switch agent {
-	case "claude":
-		return ClaudeLoginFiles{Home: home}
-	}
-	return nil
+// loginFiles says, for each agent that can share its login, where it keeps that login under a home.
+var loginFiles = map[string]func(home string) LoginFiles{
+	"claude": func(home string) LoginFiles { return ClaudeLoginFiles{Home: home} },
+	"codex":  func(home string) LoginFiles { return CodexLoginFiles{Home: home} },
 }
 
-// GuestSync keeps one session's agent login in step with the user's shared one.
+// LoginFilesFor says where an agent keeps its login under home, nil for an agent that cannot share one.
+func LoginFilesFor(agent, home string) LoginFiles {
+	files, ok := loginFiles[agent]
+	if !ok {
+		return nil
+	}
+	return files(home)
+}
+
+// Providers are the vendors whose logins this build can keep, one per agent that can share its login.
+func Providers(client *http.Client) map[string]Provider {
+	return map[string]Provider{
+		"claude": ClaudeProvider{Client: client, TokenURL: ClaudeTokenURL, ProfileURL: ClaudeProfileURL},
+		"codex":  &CodexProvider{Client: client, TokenURL: CodexTokenURL, KeysURL: CodexKeysURL},
+	}
+}
+
+// GuestSync keeps one agent's login in a session in step with the user's shared one.
 type GuestSync struct {
+	Agent string
 	Files LoginFiles
 	Ask   func(Request) (Reply, error)
 }
@@ -39,7 +55,7 @@ func (g *GuestSync) Once() error {
 	if err != nil {
 		return err
 	}
-	var request Request
+	request := Request{Agent: g.Agent}
 	if local.RefreshToken != "" {
 		request.Offer = &local
 	}

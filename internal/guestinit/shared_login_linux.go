@@ -18,27 +18,36 @@ const sharedLoginCheckEvery = 10 * time.Second
 // sharedLoginAskTimeout keeps the first ask inside the 20 seconds the host gives a booting VM.
 const sharedLoginAskTimeout = 8 * time.Second
 
-// keepSharedLogin syncs the agent's login once before the agent starts, then in the background. An empty
-// agent means the session logs in on its own.
-func keepSharedLogin(agent string) {
-	files := sharedlogin.LoginFilesFor(agent, sandbox.SandboxedAgentHome)
-	if files == nil {
+// keepSharedLogins syncs each agent's login once before any agent starts, then in the background. No
+// agents means every agent logs in on its own.
+func keepSharedLogins(agents []string) {
+	var syncs []*sharedlogin.GuestSync
+	for _, agent := range agents {
+		if files := sharedlogin.LoginFilesFor(agent, sandbox.SandboxedAgentHome); files != nil {
+			syncs = append(syncs, &sharedlogin.GuestSync{Agent: agent, Files: files, Ask: askHostForLogin})
+		}
+	}
+	lastProblems := map[string]string{}
+	report := func(agent string, err error) {
+		// Said once, not every 10 seconds while the host stays unreachable.
+		if err != nil && err.Error() != lastProblems[agent] {
+			logf("WARNING: shared login for %s: %v", agent, err)
+		}
+		lastProblems[agent] = fmt.Sprint(err)
+	}
+	syncAll := func() {
+		for _, sync := range syncs {
+			report(sync.Agent, sync.Once())
+		}
+	}
+	if len(syncs) == 0 {
 		return
 	}
-	sync := &sharedlogin.GuestSync{Files: files, Ask: askHostForLogin}
-	var lastProblem string
-	report := func(err error) {
-		// Said once, not every 10 seconds while the host stays unreachable.
-		if err != nil && err.Error() != lastProblem {
-			logf("WARNING: shared login: %v", err)
-		}
-		lastProblem = fmt.Sprint(err)
-	}
-	report(sync.Once())
+	syncAll()
 	go func() {
 		for {
 			time.Sleep(sharedLoginCheckEvery)
-			report(sync.Once())
+			syncAll()
 		}
 	}()
 }

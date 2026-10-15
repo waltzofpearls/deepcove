@@ -419,9 +419,11 @@ func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec, sizes []VMSize) (sandbox.
 		resources.Size = defaultWorkspaceVMSize(sizes)
 	}
 	return newSandboxSpec(sandboxRequest{
-		ID:        workspaceVMHomeDiskID,
-		Name:      "workspace",
-		Agent:     agent,
+		ID:    workspaceVMHomeDiskID,
+		Name:  "workspace",
+		Agent: agent,
+		// Sessions on this machine can pick any agent, so it carries them all.
+		Agents:    allAgents(),
 		Image:     vm.Image,
 		Setup:     vm.SetupScript,
 		Resources: resources.withSizeApplied(sizes),
