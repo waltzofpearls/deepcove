@@ -176,6 +176,13 @@ export interface ConnectOwner {
   profile_pic_url?: string;
 }
 
+// Me mirrors GET /api/me: the person using the dashboard, as Tailscale knows them.
+export interface Me {
+  login_name: string;
+  display_name: string;
+  profile_pic_url?: string;
+}
+
 // NodeInfo is one of the user's deepcove machines from GET /api/nodes (this one or a tailnet peer).
 export interface NodeInfo {
   stable_node_id: string;

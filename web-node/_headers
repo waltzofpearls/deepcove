@@ -1,6 +1,9 @@
-# This page keeps a Tailscale node's keys in the browser, so no other site may put it in a frame.
+# This page keeps a Tailscale node's keys in the browser. Only our own scripts may run here, and the page
+# may talk only to Tailscale, so a script that does not belong can neither run nor send the keys away. No
+# other site may put the page in a frame. cmd/webnode puts the hashes of index.html's inline scripts where
+# INLINE_SCRIPT_HASHES is.
 /*
   X-Frame-Options: DENY
-  Content-Security-Policy: frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' INLINE_SCRIPT_HASHES; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https://*.tailscale.com wss://*.tailscale.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer

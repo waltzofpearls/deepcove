@@ -73,7 +73,8 @@ var hostOnlyPrefixes = []netip.Prefix{
 // The most specific match decides, as with the routes on Linux, so an allowed address only gets through
 // where it is at least as specific as the block it sits in. Both backends then agree on every setting.
 func Refuses(addr netip.Addr, allowed, hostNetworks []netip.Prefix) bool {
-	addr = addr.Unmap()
+	// A prefix never contains an address with a zone, so fe80::1%en0 would slip past every block.
+	addr = addr.Unmap().WithZone("")
 	if longestMatch(hostOnlyPrefixes, addr) >= 0 {
 		return true
 	}

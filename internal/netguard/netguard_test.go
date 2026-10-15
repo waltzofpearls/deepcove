@@ -115,6 +115,8 @@ func TestRefuses(t *testing.T) {
 		{"the IPv6 internet", "2606:4700::1", false},
 		{"the host's own loopback, even when allowed", "127.0.0.1", true},
 		{"the host's IPv6 loopback", "::1", true},
+		{"the host's IPv6 loopback with a zone", "::1%lo0", true},
+		{"a link local address with a zone", "fe80::1%en0", true},
 		{"a machine on the host's IPv6 LAN", "2001:db8:5::10", true},
 		{"an allowed network wider than its block stays blocked", "10.1.2.3", true},
 		{"an allowed network as wide as its block gets through", "172.16.5.5", false},

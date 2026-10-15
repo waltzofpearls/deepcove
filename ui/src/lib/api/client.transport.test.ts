@@ -49,6 +49,30 @@ describe('api client routes through the transport seam', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-1', { method: 'DELETE' });
   });
 
+  it('me() returns the person, or null when the node knows no one', async () => {
+    fetchMock.mockResolvedValueOnce(json({ login_name: 'ana@example.com', display_name: 'Ana' }));
+    expect((await api.me())?.login_name).toBe('ana@example.com');
+    expect(fetchMock).toHaveBeenCalledWith('/api/me');
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    expect(await api.me()).toBeNull();
+  });
+
+  it('myProfilePicture() fetches the picture through the node and returns a data: URL', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      }),
+    );
+    expect(await api.myProfilePicture()).toBe('data:image/png;base64,iVBORw==');
+    expect(fetchMock).toHaveBeenCalledWith('/api/me/profile-picture');
+  });
+
+  it('myProfilePicture() returns null when there is no picture', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+    expect(await api.myProfilePicture()).toBeNull();
+  });
+
   it('openAttachSocket() opens via transport.openSocket with the pty subprotocol', () => {
     openSocketMock.mockReturnValue({});
     api.openAttachSocket('sess-1', 'win-2');

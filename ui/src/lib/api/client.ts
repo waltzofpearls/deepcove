@@ -13,6 +13,7 @@ import type {
   FsListResponse,
   LLMProxy,
   LoginMode,
+  Me,
   SharedLoginStatus,
   MountRequest,
   NodeInfo,
@@ -70,6 +71,12 @@ async function requestRaw<T>(
   // 204 No Content means the caller doesn't get a body. Cast to satisfy T.
   if (resp.status === 204) return { data: undefined as T, resp };
   return { data: (await resp.json()) as T, resp };
+}
+
+function toDataURL(contentType: string, bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `data:${contentType};base64,${btoa(binary)}`;
 }
 
 // request is the body-only common case; requestRaw also returns the Response (for a header).
@@ -457,6 +464,21 @@ export const api = {
   },
   connectStatus(signal?: AbortSignal): Promise<ConnectStatus> {
     return request('/connect/status', { signal });
+  },
+  // me is the person using the dashboard, or null when the node knows no one, as on a node that is not
+  // on a tailnet.
+  async me(): Promise<Me | null> {
+    const resp = await transport.fetch(`${BASE}/me`);
+    return resp.ok ? ((await resp.json()) as Me) : null;
+  },
+  // myProfilePicture is that person's picture as a data: URL, or null when there is none. The node
+  // fetches it, so the page never loads it from the picture's own site: the web node's policy refuses
+  // that.
+  async myProfilePicture(): Promise<string | null> {
+    const resp = await transport.fetch(`${BASE}/me/profile-picture`);
+    const contentType = resp.headers.get('content-type');
+    if (!resp.ok || !contentType) return null;
+    return toDataURL(contentType, new Uint8Array(await resp.arrayBuffer()));
   },
   // disconnect stops + keeps tsnet state (quick reconnect); reset logs the node
   // out of the tailnet and wipes state (fresh login next time).
