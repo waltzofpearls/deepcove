@@ -60,6 +60,21 @@ func TestServeShellInjectsTransportOverHTTP(t *testing.T) {
 	}
 }
 
+func TestSpaHandler_RefusesFrames(t *testing.T) {
+	mux := http.NewServeMux()
+	if err := New(WithMux(mux)).AttachRoutes(); err != nil {
+		t.Fatalf("attach routes: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if got := recorder.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := recorder.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+		t.Errorf("Content-Security-Policy = %q, want frame-ancestors 'none'", got)
+	}
+}
+
 func head(html string) string {
 	if i := strings.Index(html, "</head>"); i >= 0 {
 		return html[:i+len("</head>")]

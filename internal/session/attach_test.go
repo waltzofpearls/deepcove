@@ -136,6 +136,25 @@ func TestHandleAttach_PreUpgradeValidation(t *testing.T) {
 	}
 }
 
+func TestHandleAttach_RefusesPlainGet(t *testing.T) {
+	svc, fake, _, _ := newTestService(t)
+	sess := mustRunning(t, svc)
+	fake.execCalls = nil
+
+	ts, _ := newAttachTestServer(t, svc)
+	resp, err := http.Get(ts.URL + "/api/sessions/" + sess.ID + "/attach")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusUpgradeRequired)
+	}
+	if len(fake.execCalls) != 0 {
+		t.Errorf("a plain GET ran %d commands in the sandbox, want none: %v", len(fake.execCalls), fake.execCalls)
+	}
+}
+
 // TestHandleAttach_ViewSessionLifecycle exercises the per-attach view session: the substrate for
 // Split mode (per-client window views) and the fix for tmux clients piling up after each toggle.
 // Asserts:
@@ -298,7 +317,12 @@ func TestHandleAttach_ViewSessionSetupFailure(t *testing.T) {
 	fake.execCalls = nil
 
 	ts, _ := newAttachTestServer(t, svc)
-	resp, err := http.Get(ts.URL + "/api/sessions/" + sess.ID + "/attach")
+	request, err := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions/"+sess.ID+"/attach", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	request.Header.Set("Upgrade", "websocket")
+	resp, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}

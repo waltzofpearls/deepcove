@@ -26,6 +26,8 @@ func TestBrowserGate(t *testing.T) {
 		{name: "post from our own page", hosts: []string{"node"}, host: "node", method: "POST",
 			fetchSite: "same-origin", want: 200},
 		{name: "post from the CLI", hosts: []string{"node"}, host: "node", method: "POST", want: 200},
+		{name: "terminal socket from another site", hosts: []string{"node"}, host: "node", fetchSite: "cross-site",
+			want: 403},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

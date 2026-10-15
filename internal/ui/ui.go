@@ -119,6 +119,9 @@ func (ui *UI) AttachRoutes() error {
 //     build is picked up immediately.
 func (ui *UI) spaHandler(sub fs.FS, fileServer http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No other site may show the dashboard in a frame, where it could trick a click.
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		reqPath := strings.TrimPrefix(r.URL.Path, "/")
 
 		if reqPath != "" {

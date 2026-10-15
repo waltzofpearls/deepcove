@@ -1,158 +1,102 @@
 package middleware
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
-func TestLocalTokenCookieName(t *testing.T) {
-	// Distinct ports must give distinct cookie names, so two instances on one loopback host (where
-	// cookies aren't port-isolated) don't clobber each other's token.
-	a := LocalTokenCookieName("127.0.0.1:8080")
-	b := LocalTokenCookieName("127.0.0.1:8081")
-	if a == b {
-		t.Errorf("distinct ports share a cookie name: %q", a)
-	}
-	if a != LocalTokenCookieBaseName+"_8080" {
-		t.Errorf("cookie name = %q, want %q", a, LocalTokenCookieBaseName+"_8080")
-	}
-	if got := LocalTokenCookieName("noport"); got != LocalTokenCookieBaseName {
-		t.Errorf("no-port addr -> %q, want base %q", got, LocalTokenCookieBaseName)
-	}
-}
-
-func TestLocalGatePerPortCookie(t *testing.T) {
-	const token = "secret-token"
-	name := LocalTokenCookieName("127.0.0.1:8081") // deepcove_token_8081
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	gate := LocalGate(next, token, name, nil)
-
-	do := func(path, cookieName, cookieVal string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("GET", "http://x"+path, nil)
-		r.Host = "127.0.0.1:8081"
-		if cookieName != "" {
-			r.AddCookie(&http.Cookie{Name: cookieName, Value: cookieVal})
-		}
-		w := httptest.NewRecorder()
-		gate.ServeHTTP(w, r)
-		return w
-	}
-
-	if w := do("/api/sessions", name, token); w.Code != http.StatusOK {
-		t.Errorf("suffixed cookie: status %d, want 200", w.Code)
-	}
-	if w := do("/api/sessions", LocalTokenCookieBaseName, token); w.Code != http.StatusUnauthorized {
-		t.Errorf("base cookie name must not authorize the suffixed gate: status %d, want 401", w.Code)
-	}
-	w := do("/", "", "")
-	var seeded *http.Cookie
-	for _, c := range w.Result().Cookies() {
-		if c.Name == name {
-			seeded = c
-		}
-	}
-	if seeded == nil {
-		t.Fatalf("expected a seeded Set-Cookie named %q", name)
-	}
-	if seeded.Value != token {
-		t.Errorf("seeded value = %q, want token", seeded.Value)
-	}
+// fromUser builds a request as LocalConnContext leaves it: marked as from deepcove's own user or not.
+func fromUser(request *http.Request, same bool) *http.Request {
+	return request.WithContext(context.WithValue(request.Context(), sameUserKey{}, same))
 }
 
 func TestLocalGate(t *testing.T) {
-	const token = "secret-token"
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	gate := LocalGate(next, token, LocalTokenCookieBaseName, []string{"deepcove.example"})
-
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	gate := LocalGate(next, []string{"deepcove.example"})
 	cases := []struct {
-		name          string
-		method        string
-		path          string
-		host          string
-		cookie        string // "" = none
-		wantStatus    int
-		wantSetCookie bool
+		name       string
+		path       string
+		host       string
+		sameUser   bool
+		wantStatus int
 	}{
-		{"runtime, no token -> 401", "GET", "/api/sessions", "127.0.0.1:8080", "", http.StatusUnauthorized, false},
-		{"runtime, valid token -> 200", "GET", "/api/sessions", "127.0.0.1:8080", token, http.StatusOK, false},
-		{"runtime, wrong token -> 401", "GET", "/api/sessions", "127.0.0.1:8080", "nope", http.StatusUnauthorized, false},
-		{"health exempt", "GET", "/api/health", "localhost:8080", "", http.StatusOK, false},
-		{"setup exempt", "POST", "/api/setup/init", "localhost", "", http.StatusOK, false},
-		{"SPA seeds cookie", "GET", "/", "localhost:8080", "", http.StatusOK, true},
-		{"SPA with cookie, no reseed", "GET", "/", "localhost:8080", token, http.StatusOK, false},
-		{"ipv6 loopback host", "GET", "/api/sessions", "[::1]:8080", token, http.StatusOK, false},
-		{"configured host allowed", "GET", "/api/sessions", "deepcove.example", token, http.StatusOK, false},
-		{"foreign host (dns rebind) -> 403", "GET", "/api/health", "evil.example", "", http.StatusForbidden, false},
-		{"foreign host, even with token -> 403", "GET", "/api/sessions", "evil.example:8080", token, http.StatusForbidden, false},
+		{"the dashboard", "/", "localhost:9000", true, http.StatusOK},
+		{"the API", "/api/sessions", "127.0.0.1:9000", true, http.StatusOK},
+		{"ipv6 loopback host", "/api/sessions", "[::1]:9000", true, http.StatusOK},
+		{"configured host", "/api/sessions", "deepcove.example", true, http.StatusOK},
+		{"another user, the dashboard", "/", "localhost:9000", false, http.StatusForbidden},
+		{"another user, the API", "/api/sessions", "127.0.0.1:9000", false, http.StatusForbidden},
+		{"another user, the health check", "/api/health", "127.0.0.1:9000", false, http.StatusForbidden},
+		{"foreign host (dns rebind)", "/api/health", "evil.example", true, http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest(tc.method, "http://x"+tc.path, nil)
-			r.Host = tc.host
-			if tc.cookie != "" {
-				r.AddCookie(&http.Cookie{Name: LocalTokenCookieBaseName, Value: tc.cookie})
-			}
-			w := httptest.NewRecorder()
-			gate.ServeHTTP(w, r)
-
-			if w.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d", w.Code, tc.wantStatus)
-			}
-			var seeded *http.Cookie
-			for _, c := range w.Result().Cookies() {
-				if c.Name == LocalTokenCookieBaseName {
-					seeded = c
-				}
-			}
-			if (seeded != nil) != tc.wantSetCookie {
-				t.Fatalf("set-cookie present = %v, want %v", seeded != nil, tc.wantSetCookie)
-			}
-			if seeded != nil {
-				if seeded.Value != token {
-					t.Errorf("seeded value = %q, want token", seeded.Value)
-				}
-				if !seeded.HttpOnly {
-					t.Errorf("seeded cookie should be HttpOnly")
-				}
-				if seeded.SameSite != http.SameSiteStrictMode {
-					t.Errorf("seeded SameSite = %v, want Strict", seeded.SameSite)
-				}
+			request := fromUser(httptest.NewRequest(http.MethodGet, "http://x"+tc.path, nil), tc.sameUser)
+			request.Host = tc.host
+			recorder := httptest.NewRecorder()
+			gate.ServeHTTP(recorder, request)
+			if recorder.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", recorder.Code, tc.wantStatus)
 			}
 		})
 	}
 }
 
-func TestLocalGate_RefusesCrossSiteWrites(t *testing.T) {
-	const token = "secret-token"
+func TestLocalGate_RefusesOtherOrigins(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	gate := LocalGate(next, token, LocalTokenCookieBaseName, nil)
+	gate := LocalGate(next, nil)
 	cases := []struct {
 		name      string
+		method    string
+		path      string
 		fetchSite string
 		want      int
 	}{
-		{name: "a page on another port", fetchSite: "same-site", want: http.StatusForbidden},
-		{name: "a page on another site", fetchSite: "cross-site", want: http.StatusForbidden},
-		{name: "the dashboard itself", fetchSite: "same-origin", want: http.StatusOK},
-		{name: "no browser headers", want: http.StatusOK},
+		{"a write from a page on another port", http.MethodPost, "/api/sessions", "same-site", http.StatusForbidden},
+		{"a write from a page on another site", http.MethodPost, "/api/sessions", "cross-site", http.StatusForbidden},
+		{"a terminal socket from another site", http.MethodGet, "/api/sessions/abc/attach", "cross-site", http.StatusForbidden},
+		{"a write from the dashboard itself", http.MethodPost, "/api/sessions", "same-origin", http.StatusOK},
+		{"a link from another site to the dashboard", http.MethodGet, "/", "cross-site", http.StatusOK},
+		{"no browser headers", http.MethodPost, "/api/sessions", "", http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPost, "http://x/api/sessions", nil)
-			r.Host = "127.0.0.1:9000"
-			r.AddCookie(&http.Cookie{Name: LocalTokenCookieBaseName, Value: token})
+			request := fromUser(httptest.NewRequest(tc.method, "http://x"+tc.path, nil), true)
+			request.Host = "127.0.0.1:9000"
 			if tc.fetchSite != "" {
-				r.Header.Set("Sec-Fetch-Site", tc.fetchSite)
+				request.Header.Set("Sec-Fetch-Site", tc.fetchSite)
 			}
-			w := httptest.NewRecorder()
-			gate.ServeHTTP(w, r)
-			if w.Code != tc.want {
-				t.Errorf("status = %d, want %d", w.Code, tc.want)
+			recorder := httptest.NewRecorder()
+			gate.ServeHTTP(recorder, request)
+			if recorder.Code != tc.want {
+				t.Errorf("status = %d, want %d", recorder.Code, tc.want)
 			}
 		})
+	}
+}
+
+func TestLocalConnContext_MarksOurOwnConnection(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Close() }()
+
+	ctx := LocalConnContext(context.Background(), server)
+	if same, _ := ctx.Value(sameUserKey{}).(bool); !same {
+		t.Error("a connection this process made should count as its own user's")
 	}
 }

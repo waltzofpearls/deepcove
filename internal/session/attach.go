@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -80,6 +81,13 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+	}
+
+	// A page can make a browser send a plain GET with no Origin, an image for one. Only a WebSocket
+	// handshake goes on to start anything in the sandbox.
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		writeError(w, http.StatusUpgradeRequired, "attach needs a WebSocket")
+		return
 	}
 
 	// Each attach runs in its own per-connection tmux session, created as a member of the "main"

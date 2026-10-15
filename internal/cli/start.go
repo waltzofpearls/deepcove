@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -31,7 +29,7 @@ import (
 // cmdStart runs the deepcove background service. Default for solo and most users.
 //
 // Mounts the three front doors over one mux:
-//   - local TCP on cfg.Addr: SPA + runtime API, behind LocalGate (Host allowlist + per-run token)
+//   - local TCP on cfg.Addr: SPA + runtime API, behind LocalGate (same OS user + Host allowlist)
 //   - Unix socket: full runtime API for the local CLI (filesystem perms)
 //   - tailnet (via connect.Manager): owner-gated, when connected
 //
@@ -195,16 +193,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	})
 	connectMgr.AutoStartIfEnabled()
 
-	// Per-run token gating the local TCP front door. The SPA served on this listener receives
-	// it as a cookie; runtime /api/* requires it. The CLI uses the Unix socket (filesystem perms)
-	// and the tailnet uses WhoIs, so neither needs the token.
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return fmt.Errorf("generate local token: %w", err)
-	}
-	localToken := hex.EncodeToString(tokenBytes)
-
-	// Local TCP: SPA + runtime API, behind LocalGate (Host allowlist + token).
+	// Local TCP: SPA + runtime API, behind LocalGate, which answers only the user who runs deepcove.
 	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
@@ -215,7 +204,8 @@ func cmdStart(ctx context.Context, args []string) error {
 	// lock up a goroutine indefinitely. ReadHeaderTimeout is the load-bearing one; the others
 	// bound long-lived but stalled streams.
 	srv := &http.Server{
-		Handler:           middleware.LocalGate(mux, localToken, middleware.LocalTokenCookieName(cfg.Addr), localAllowedHosts(cfg.Addr)),
+		Handler:           middleware.LocalGate(mux, localAllowedHosts(cfg.Addr)),
+		ConnContext:       middleware.LocalConnContext,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
