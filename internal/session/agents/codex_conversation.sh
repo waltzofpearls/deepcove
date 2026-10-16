@@ -95,9 +95,9 @@ note_conversation() {
 # run_codex starts Codex, the binary at $1, on this session's conversation, and notes a new one when there
 # is none yet. It returns Codex's exit code, which the restart loop reads.
 #
-# When deepcove stands between Codex and OpenAI, for the API key, it sets DEEPCOVE_LLM_BASE_URL and
-# DEEPCOVE_LLM_TOKEN. Codex has no variable for its address, so they become a model provider of its own.
-# The token names the session, and the host swaps it for the real key.
+# When deepcove stands between Codex and OpenAI, for the API key or the LLM proxy, it sets
+# DEEPCOVE_LLM_BASE_URL and DEEPCOVE_LLM_TOKEN. Codex has no variable for its address, so they become a
+# model provider of its own. The token names the session, and the host replaces it on the way out.
 run_codex() {
   codex_binary=$1
   if [ -n "${DEEPCOVE_LLM_BASE_URL:-}" ]; then

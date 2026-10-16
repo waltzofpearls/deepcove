@@ -88,13 +88,35 @@ func TestMachineEnvironmentCarriesNoAgentCredentials(t *testing.T) {
 
 func TestAgentLaunchCommand(t *testing.T) {
 	forwarding := forwardingSandbox{newFakeSandbox()}
+	codexClears := []string{
+		"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "-u", "CODEX_ACCESS_TOKEN",
+		"-u", "DEEPCOVE_LLM_BASE_URL", "-u", "DEEPCOVE_LLM_TOKEN", "DEEPCOVE_SESSION_ID=s1",
+	}
 	cases := []struct {
 		name     string
+		agent    string
 		proxyURL string
 		runtime  sandbox.Sandbox
 		mode     LoginMode
 		want     []string
 	}{
+		{
+			name:     "Codex in a VM reaches the proxy through the local hop",
+			agent:    "codex",
+			proxyURL: "http://100.75.35.244:9000",
+			runtime:  forwarding,
+			mode:     LoginWithLLMProxy,
+			want: append(slices.Clone(codexClears),
+				"DEEPCOVE_LLM_BASE_URL=http://127.0.0.1:9100", "DEEPCOVE_LLM_TOKEN=deepcove-s1", sandbox.SandboxedAgentLaunchPath("codex")),
+		},
+		{
+			name:     "Codex without forwarding calls the proxy itself",
+			agent:    "codex",
+			proxyURL: "http://100.75.35.244:9000",
+			mode:     LoginWithLLMProxy,
+			want: append(slices.Clone(codexClears),
+				"DEEPCOVE_LLM_BASE_URL=http://100.75.35.244:9000", "DEEPCOVE_LLM_TOKEN=deepcove-s1", sandbox.SandboxedAgentLaunchPath("codex")),
+		},
 		{
 			name:    "a session that wants nothing is cleared of any address the machine carries",
 			runtime: forwarding,
@@ -160,7 +182,11 @@ func TestAgentLaunchCommand(t *testing.T) {
 			if runtime == nil {
 				runtime = fake
 			}
-			sess := &Session{ID: "s1", Agent: "claude", LoginMode: tc.mode}
+			agent := tc.agent
+			if agent == "" {
+				agent = "claude"
+			}
+			sess := &Session{ID: "s1", Agent: agent, LoginMode: tc.mode}
 			got, err := svc.agentLaunchCommand(sess, runtime)
 			if err != nil {
 				t.Fatalf("agentLaunchCommand: %v", err)
