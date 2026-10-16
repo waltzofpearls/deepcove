@@ -164,7 +164,7 @@ var agents = map[string]AgentSpec{
 	"codex": {
 		Name:        "codex",
 		DisplayName: "Codex",
-		LoginModes:  []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey},
+		LoginModes:  []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey, LoginWithLLMProxy},
 		// The browser login cannot reach back into a VM, so the device code is the one that works.
 		LoginHint:     "Sign in with a device code in this session.",
 		APIKeyExample: "sk-proj-…",
