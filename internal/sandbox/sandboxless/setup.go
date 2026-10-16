@@ -33,8 +33,9 @@ func (d *Driver) Setup(_ context.Context, instanceID sandbox.ID) (sandbox.SetupS
 	return inst.setup, nil
 }
 
-// AgentLaunchCommand is what the terminal multiplexer runs to start the agent.
-func (d *Driver) AgentLaunchCommand(instanceID sandbox.ID) ([]string, error) {
+// AgentLaunchCommand is what the terminal multiplexer runs to start the agent. A session with no sandbox
+// runs only its own agent, so the name adds nothing.
+func (d *Driver) AgentLaunchCommand(instanceID sandbox.ID, _ string) ([]string, error) {
 	inst, err := d.lookup(instanceID)
 	if err != nil {
 		return nil, err
@@ -224,9 +225,13 @@ func createAgentHome(path string) error {
 
 // runInstall runs the agent's own install command with HOME pointed at the shared agent home, which is
 // where the installers put things. Nothing outside deepcove's data directory is written.
+//
+// It runs in a session of its own, which has no terminal. An installer that finds one can ask a question
+// on it and wait for an answer nobody is there to type. A new session is also a new process group, which
+// is what killGroup stops.
 func runInstall(ctx context.Context, agentHome, install string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", install)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Cancel = func() error { return killGroup(cmd) }
 	env := allowedEnvVars()
 	env["HOME"] = agentHome

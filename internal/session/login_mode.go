@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/waltzofpearls/deepcove/internal/llmproxy"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 	"github.com/waltzofpearls/deepcove/internal/sharedlogin"
 )
@@ -166,27 +167,32 @@ func (s *Service) sharesLogin(agent, sessionID string) (bool, error) {
 	return sess.LoginMode == LoginShared, nil
 }
 
-// APIKeyFor is the key the host adds to requests from session sessionID on VM sandboxID, empty when that
-// session does not use the API key. A session on another VM is refused, so no VM can spend the key.
-func (s *Service) APIKeyFor(sandboxID sandbox.ID, sessionID string) (string, error) {
+// APIKeyFor is the key the host adds to requests from session sessionID on VM sandboxID, with the
+// provider of that session's agent. The key is empty when that session does not use one. A session on
+// another VM is refused, so no VM can spend the key.
+func (s *Service) APIKeyFor(sandboxID sandbox.ID, sessionID string) (llmproxy.APIKey, error) {
 	sess, err := s.repo.Get(context.Background(), placeholderOwner, sessionID)
 	if err != nil {
-		return "", err
+		return llmproxy.APIKey{}, err
 	}
 	if sess.SandboxID != string(sandboxID) {
-		return "", fmt.Errorf("session %s does not run on this VM", sessionID)
+		return llmproxy.APIKey{}, fmt.Errorf("session %s does not run on this VM", sessionID)
 	}
 	if sess.LoginMode != LoginWithAPIKey {
-		return "", nil
+		return llmproxy.APIKey{}, nil
+	}
+	agent, err := resolveAgent(sess.Agent)
+	if err != nil {
+		return llmproxy.APIKey{}, err
 	}
 	key, err := s.sharedLoginStore.APIKey(sess.Agent)
 	if err != nil {
-		return "", err
+		return llmproxy.APIKey{}, err
 	}
 	if key == "" {
-		return "", errors.New("no API key is saved. Add one in Settings")
+		return llmproxy.APIKey{}, errors.New("no API key is saved. Add one in Settings")
 	}
-	return key, nil
+	return llmproxy.APIKey{Key: key, Provider: agent.API.Provider}, nil
 }
 
 // waitForSharedLogin waits, up to a limit, for a VM back on sharing to get the login before its agent

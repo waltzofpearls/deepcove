@@ -50,8 +50,18 @@ func sessionFrom(h http.Header) string {
 // LLMEndpoint is what a sandbox uses instead of the provider's URL.
 func LLMEndpoint() string { return fmt.Sprintf("http://127.0.0.1:%d", LLMRequestPort) }
 
-// AnthropicAPIURL is where a session that logs in with the user's API key is sent.
-const AnthropicAPIURL = "https://api.anthropic.com"
+// Provider is an agent vendor's API, where a session that logs in with the user's API key is sent.
+type Provider struct {
+	URL string
+	// KeyHeader is the header the key goes in. Authorization means a bearer token.
+	KeyHeader string
+}
+
+// APIKey is the user's key for one session, and the provider it belongs to.
+type APIKey struct {
+	Key      string
+	Provider Provider
+}
 
 // errNoProxy is what a request meets when this node has no proxy address configured.
 var errNoProxy = errors.New("no llm proxy is configured on this node")
@@ -59,11 +69,9 @@ var errNoProxy = errors.New("no llm proxy is configured on this node")
 // Forwarder sends a guest's requests on to the proxy.
 type Forwarder struct {
 	proxyURL func() string
-	// apiKeyFor is the user's API key for a session that uses it, empty for any other.
-	apiKeyFor func(sessionID string) (string, error)
-	// providerURL is where a request carrying the API key goes. AnthropicAPIURL outside tests.
-	providerURL string
-	client      func() *http.Client
+	// apiKeyFor is the user's API key for a session that uses it, an empty key for any other.
+	apiKeyFor func(sessionID string) (APIKey, error)
+	client    func() *http.Client
 	// onError records what the agent was told, so the same failure is visible on the host. Nil is quiet.
 	onError func(error)
 	// onRequest is told which session made each request, so a machine several sessions share can be
@@ -76,14 +84,13 @@ type Forwarder struct {
 // three can change while a VM runs.
 func NewForwarder(
 	proxyURL func() string,
-	apiKeyFor func(sessionID string) (string, error),
+	apiKeyFor func(sessionID string) (APIKey, error),
 	client func() *http.Client,
 	onError func(error),
 	onRequest func(sessionID, method, path string),
 ) *Forwarder {
 	f := &Forwarder{
-		proxyURL: proxyURL, apiKeyFor: apiKeyFor, providerURL: AnthropicAPIURL,
-		client: client, onError: onError, onRequest: onRequest,
+		proxyURL: proxyURL, apiKeyFor: apiKeyFor, client: client, onError: onError, onRequest: onRequest,
 	}
 	f.proxy = &httputil.ReverseProxy{
 		// Rewrite, not Director: it adds no X-Forwarded-For, so the proxy learns nothing about the
@@ -95,12 +102,16 @@ func NewForwarder(
 			r.SetURL(to.url)
 			r.Out.Host = to.url.Host
 			// The session id is for this machine, not for the proxy or the provider, so it goes no further.
-			if to.apiKey != "" {
-				r.Out.Header.Del("Authorization")
-				r.Out.Header.Set("X-Api-Key", to.apiKey)
-			} else {
+			// Neither does a key the agent sent itself.
+			r.Out.Header.Del("Authorization")
+			r.Out.Header.Del("X-Api-Key")
+			switch {
+			case to.apiKey.Key == "":
 				r.Out.Header.Set("Authorization", "Bearer deepcove")
-				r.Out.Header.Del("X-Api-Key")
+			case to.apiKey.Provider.KeyHeader == "Authorization":
+				r.Out.Header.Set("Authorization", "Bearer "+to.apiKey.Key)
+			default:
+				r.Out.Header.Set(to.apiKey.Provider.KeyHeader, to.apiKey.Key)
 			}
 			for _, h := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Forwarded"} {
 				r.Out.Header.Del(h)
@@ -136,7 +147,7 @@ func (f *Forwarder) current() (*url.URL, error) {
 // roundTrip reaches the proxy over the tailnet once this node has signed in. The provider is on the
 // internet, so a request with the API key always takes the ordinary network.
 func (f *Forwarder) roundTrip(r *http.Request) (*http.Response, error) {
-	if routeFrom(r.Context()).apiKey == "" && f.client != nil {
+	if routeFrom(r.Context()).apiKey.Key == "" && f.client != nil {
 		if c := f.client(); c != nil && c.Transport != nil {
 			return c.Transport.RoundTrip(r)
 		}
@@ -184,7 +195,7 @@ func writeProxyError(w http.ResponseWriter, err error) {
 // route is where one request goes, with the API key when it goes to the provider.
 type route struct {
 	url    *url.URL
-	apiKey string
+	apiKey APIKey
 }
 
 // route picks the provider for a session that logs in with the API key, and the proxy for any other.
@@ -194,8 +205,8 @@ func (f *Forwarder) route(sessionID string) (route, error) {
 		if err != nil {
 			return route{}, err
 		}
-		if key != "" {
-			provider, err := url.Parse(f.providerURL)
+		if key.Key != "" {
+			provider, err := url.Parse(key.Provider.URL)
 			return route{url: provider, apiKey: key}, err
 		}
 	}

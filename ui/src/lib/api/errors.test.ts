@@ -6,6 +6,7 @@ describe('friendlyError', () => {
   // Each known code maps to a specific title; the code + raw message pass through.
   it.each([
     { code: 'runtime_unavailable', title: "That runtime isn't available" },
+    { code: 'image_unavailable', title: "Couldn't get the image" },
     { code: 'invalid_input', title: 'Check the form and try again' },
     { code: 'conflict', title: 'That conflicts with the current state' },
     { code: 'not_found', title: 'Not found' },

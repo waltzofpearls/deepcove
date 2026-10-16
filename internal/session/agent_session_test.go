@@ -53,7 +53,7 @@ func TestStartAgentSession(t *testing.T) {
 			"-c /workspace/repo",
 			// The launch script pins the conversation to this, so two sessions in one directory on a
 			// shared machine do not resume each other.
-			"DEEPCOVE_SESSION_ID=" + sess.ID + " " + sandbox.SandboxedAgentLaunchPath,
+			"DEEPCOVE_SESSION_ID=" + sess.ID + " " + sandbox.SandboxedAgentLaunchPath("claude"),
 			// Whatever the machine holds, this session's answer is the only one that counts.
 			"env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL",
 		} {
@@ -94,7 +94,7 @@ func TestStartAgentSession(t *testing.T) {
 // The entrypoint prepares the machine and stops there. Agents are started by deepcove, because a
 // machine can carry several sessions and a reboot must bring all of them back, not just one.
 func TestEntrypointPreparesButDoesNotLaunch(t *testing.T) {
-	body := strings.Join(buildEntrypoint("NAME", "SETUP", "LAUNCH"), " ")
+	body := strings.Join(buildEntrypoint("NAME", "SETUP", map[string]string{"claude": "LAUNCH"}), " ")
 	for _, want := range []string{`session "NAME"`, "SETUP", "#!/bin/sh\nLAUNCH"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("entrypoint missing %q", want)
@@ -108,12 +108,12 @@ func TestEntrypointPreparesButDoesNotLaunch(t *testing.T) {
 // The entrypoint writes these paths and words as shell literals, and the runtime reads them back
 // through the constants. This is what keeps the two sides saying the same thing.
 func TestEntrypointWritesWhatTheRuntimeReadsBack(t *testing.T) {
-	body := strings.Join(buildEntrypoint("NAME", "SETUP", "LAUNCH"), " ")
+	body := strings.Join(buildEntrypoint("NAME", "SETUP", map[string]string{"claude": "LAUNCH"}), " ")
 	want := []string{
 		"echo " + sandbox.SandboxedStatusInstalling + " > " + sandbox.SandboxedSetupStatusPath,
 		"echo " + sandbox.SandboxedStatusErrored + " > " + sandbox.SandboxedSetupStatusPath,
 		"echo " + sandbox.SandboxedStatusReady + " > " + sandbox.SandboxedSetupStatusPath,
-		"cat > " + sandbox.SandboxedAgentLaunchPath,
+		"cat > " + sandbox.SandboxedAgentLaunchPath("claude"),
 		sandbox.SandboxedSetupLogPath,
 	}
 	for _, line := range want {
@@ -140,7 +140,7 @@ func TestBuildEntrypoint_RecordsHowSetupEnded(t *testing.T) {
 			root := t.TempDir()
 			moved := strings.NewReplacer("/etc", root+"/etc", "/var/log", root+"/var/log",
 				"/usr/local/bin", root+"/usr/local/bin", "/tmp/", root+"/tmp/", "/workspace", root+"/workspace")
-			argv := buildEntrypoint("NAME", tc.setup, "LAUNCH")
+			argv := buildEntrypoint("NAME", tc.setup, map[string]string{"claude": "LAUNCH"})
 			err := exec.Command("sh", "-c", moved.Replace(argv[len(argv)-1])).Run()
 			if failed := err != nil; failed != tc.wantFailure {
 				t.Errorf("got exit error %v, want failure %v", err, tc.wantFailure)

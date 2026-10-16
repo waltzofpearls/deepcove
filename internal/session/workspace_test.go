@@ -3,10 +3,13 @@ package session
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/db"
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 func TestWorkspaceVMStore(t *testing.T) {
@@ -22,7 +25,7 @@ func TestWorkspaceVMStore(t *testing.T) {
 	want := &WorkspaceVM{
 		HostRoot:  "/Users/rollie/Dev",
 		GuestRoot: "/repos",
-		Image:     "ghcr.io/waltzofpearls/deepcove-claude:latest",
+		Image:     "ghcr.io/waltzofpearls/deepcove-agents:latest",
 		Runtime:   RuntimeAppleVF,
 		Resources: Resources{CPU: 4, MemoryMB: 8192, DiskMB: 32768},
 		CreatedAt: now,
@@ -160,5 +163,42 @@ func TestWorkspaceVMGuestRootDefaults(t *testing.T) {
 	}
 	if vm.GuestRoot != workspaceDir {
 		t.Errorf("guest root %q, want %q", vm.GuestRoot, workspaceDir)
+	}
+}
+
+func TestWorkspaceVMSpec_CarriesEveryAgent(t *testing.T) {
+	agent, _ := resolveAgent(defaultAgent)
+	sizes := workspaceVMSizes(32<<10, 4<<10)
+	vm := &WorkspaceVM{HostRoot: t.TempDir(), GuestRoot: "/workspace", Resources: Resources{Size: VMSizeSmall}}
+	spec, err := workspaceVMSpec(vm, agent, sizes)
+	if err != nil {
+		t.Fatalf("workspaceVMSpec: %v", err)
+	}
+	entrypoint := strings.Join(spec.Cmd, " ")
+	for _, other := range allAgents() {
+		if !strings.Contains(entrypoint, other.Sandboxed.Setup) {
+			t.Errorf("the workspace VM does not install %s", other.Name)
+		}
+		if !strings.Contains(entrypoint, "cat > "+sandbox.SandboxedAgentLaunchPath(other.Name)) {
+			t.Errorf("the workspace VM has no launcher for %s", other.Name)
+		}
+		if !slices.Contains(spec.SharedLoginAgents, other.Name) {
+			t.Errorf("the workspace VM cannot get %s's shared login", other.Name)
+		}
+	}
+}
+
+func TestNewSandboxSpec_ASessionMachineCarriesOnlyItsAgent(t *testing.T) {
+	codex, _ := resolveAgent("codex")
+	spec := newSandboxSpec(sandboxRequest{ID: "s1", Name: "s1", Agent: codex, WorkDir: "/workspace"})
+	entrypoint := strings.Join(spec.Cmd, " ")
+	if !strings.Contains(entrypoint, "cat > "+sandbox.SandboxedAgentLaunchPath("codex")) {
+		t.Error("a Codex session's machine has no Codex launcher")
+	}
+	if strings.Contains(entrypoint, sandbox.SandboxedAgentLaunchPath("claude")) {
+		t.Error("a Codex session's machine also starts Claude")
+	}
+	if !slices.Equal(spec.SharedLoginAgents, []string{"codex"}) {
+		t.Errorf("shared logins %v, want only Codex's", spec.SharedLoginAgents)
 	}
 }

@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"fmt"
 	"sort"
+
+	"github.com/waltzofpearls/deepcove/internal/llmproxy"
 )
 
 // The agent scripts are .sh files so they read as shell and shellcheck can see them. Each is a fragment
@@ -18,10 +20,24 @@ var claudeSandboxedLaunch string
 //go:embed agents/claude_sandboxless_launch.sh
 var claudeSandboxlessLaunch string
 
+//go:embed agents/codex_sandboxed_setup.sh
+var codexSandboxedSetup string
+
+//go:embed agents/codex_conversation.sh
+var codexConversation string
+
+//go:embed agents/codex_sandboxed_launch.sh
+var codexSandboxedLaunch string
+
+//go:embed agents/codex_sandboxless_launch.sh
+var codexSandboxlessLaunch string
+
+// agentsImage is the prebuilt guest image, with every agent already installed.
+const agentsImage = "ghcr.io/waltzofpearls/deepcove-agents:latest"
+
 // AgentSpec is one agent as this build knows it, and the public shape returned by GET /api/agents: the
 // SPA's "new session" form reads it for the agent dropdown and to pre-populate the setup-script
-// textarea. v1 returns Claude only; codex/gemini/opencode are deferred until each is verified
-// end-to-end (see project_agent_works_deferred.md).
+// textarea.
 //
 // A runtime with a guest installs the agent inside it, and one without a guest installs it on the
 // machine. The two need different commands, so each has its own half.
@@ -30,11 +46,30 @@ type AgentSpec struct {
 	DisplayName string `json:"display_name"`
 	// LoginModes are the ways this agent may be logged in, safest first. Each vendor sets its own rules,
 	// so a mode is listed only after checking that vendor's terms.
-	LoginModes []LoginMode   `json:"login_modes"`
-	Sandboxed  SandboxedSpec `json:"sandboxed"`
+	LoginModes []LoginMode `json:"login_modes"`
+	// LoginHint says how to log in inside a session, for the login picker.
+	LoginHint string `json:"login_hint"`
+	// APIKeyExample is what the vendor's API keys start with, for the key field in Settings.
+	APIKeyExample string        `json:"api_key_example"`
+	Sandboxed     SandboxedSpec `json:"sandboxed"`
 	// Sandboxless stays on the node. It is a command to run on the machine, and the create form has
 	// nothing to show from it: it says "not installed yet" from the preflight instead.
 	Sandboxless SandboxlessSpec `json:"-"`
+	// API is how the agent reaches its vendor when deepcove stands in between, for the API key and the
+	// LLM proxy. Its login is kept per agent in package sharedlogin, which the guest reads too.
+	API AgentAPI `json:"-"`
+}
+
+// AgentAPI is how one agent is pointed at the host instead of its vendor.
+type AgentAPI struct {
+	// Provider is where the host sends a session that uses the user's API key, and how the key goes on.
+	Provider llmproxy.Provider
+	// BaseURLEnv and TokenEnv point the agent at the host. The token carries the session id.
+	BaseURLEnv string
+	TokenEnv   string
+	// ClearEnv is every variable the agent could take an address or a credential from. All of them are
+	// cleared before each start, so a mode that is off is off whatever the machine left behind.
+	ClearEnv []string
 }
 
 // LoginMode is one way an agent gets logged in.
@@ -87,18 +122,19 @@ func allAgents() []AgentSpec {
 	return out
 }
 
-// defaultAgent is the agent a machine is built for when no session picked one. v1 ships Claude only,
-// so the shared machine is a Claude machine.
+// defaultAgent is the agent a machine is built for when no session picked one.
 const defaultAgent = "claude"
 
 var agents = map[string]AgentSpec{
 	"claude": {
-		Name:        "claude",
-		DisplayName: "Claude Code",
-		LoginModes:  []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey, LoginWithLLMProxy},
+		Name:          "claude",
+		DisplayName:   "Claude Code",
+		LoginModes:    []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey, LoginWithLLMProxy},
+		LoginHint:     "Run /login in this session.",
+		APIKeyExample: "sk-ant-…",
 		Sandboxed: SandboxedSpec{
 			DefaultImage:  "alpine:3.20",
-			OfficialImage: "ghcr.io/waltzofpearls/deepcove-claude:latest",
+			OfficialImage: agentsImage,
 			Setup:         claudeSandboxedSetup,
 			LaunchCmd:     claudeSandboxedLaunch,
 			Env: map[string]string{
@@ -117,6 +153,46 @@ var agents = map[string]AgentSpec{
 			// home, so nothing outside deepcove's data directory is written.
 			Install:   "curl -fsSL https://claude.ai/install.sh | bash",
 			LaunchCmd: claudeSandboxlessLaunch,
+		},
+		API: AgentAPI{
+			Provider:   llmproxy.Provider{URL: "https://api.anthropic.com", KeyHeader: "X-Api-Key"},
+			BaseURLEnv: "ANTHROPIC_BASE_URL",
+			TokenEnv:   "ANTHROPIC_AUTH_TOKEN",
+			ClearEnv:   []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"},
+		},
+	},
+	"codex": {
+		Name:        "codex",
+		DisplayName: "Codex",
+		LoginModes:  []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey},
+		// The browser login cannot reach back into a VM, so the device code is the one that works.
+		LoginHint:     "Sign in with a device code in this session.",
+		APIKeyExample: "sk-proj-…",
+		Sandboxed: SandboxedSpec{
+			DefaultImage:  "alpine:3.20",
+			OfficialImage: agentsImage,
+			Setup:         codexSandboxedSetup,
+			LaunchCmd:     codexConversation + codexSandboxedLaunch,
+			Env: map[string]string{
+				"LANG":   "C.UTF-8",
+				"LC_ALL": "C.UTF-8",
+			},
+		},
+		Sandboxless: SandboxlessSpec{
+			Binary: "codex",
+			// Same as Claude: the installer puts the binary in $HOME/.local/bin of the shared agent home.
+			Install:   "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+			LaunchCmd: codexConversation + codexSandboxlessLaunch,
+		},
+		API: AgentAPI{
+			Provider: llmproxy.Provider{URL: "https://api.openai.com", KeyHeader: "Authorization"},
+			// Codex has no variables for these, so its launch script turns them into a model provider.
+			BaseURLEnv: "DEEPCOVE_LLM_BASE_URL",
+			TokenEnv:   "DEEPCOVE_LLM_TOKEN",
+			ClearEnv: []string{
+				"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
+				"DEEPCOVE_LLM_BASE_URL", "DEEPCOVE_LLM_TOKEN",
+			},
 		},
 	},
 }

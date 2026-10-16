@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -685,9 +687,11 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 type sandboxRequest struct {
 	// ID keys the runtime's per sandbox storage: a session's id for a private machine, the workspace
 	// machine's own id for the shared one.
-	ID        string
-	Name      string
-	Agent     AgentSpec
+	ID    string
+	Name  string
+	Agent AgentSpec
+	// Agents are every agent the machine runs. Empty means Agent alone, which is a session's own machine.
+	Agents    []AgentSpec
 	Image     string
 	Resources Resources
 	Setup     string
@@ -713,19 +717,31 @@ func llmProxyEndpoint(runtime sandbox.Sandbox, proxyURL string) string {
 // newSandboxSpec builds the driver spec: the caller's shared folders, the agent's env under the
 // caller's, and the entrypoint that installs the agent and writes its launch script.
 func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
+	machineAgents := req.Agents
+	if len(machineAgents) == 0 {
+		machineAgents = []AgentSpec{req.Agent}
+	}
+	// Each agent's setup checks before it installs, so running all of them in turn is safe.
+	var setups, names []string
+	launchers := make(map[string]string, len(machineAgents))
+	env := map[string]string{}
+	for _, agent := range machineAgents {
+		setups = append(setups, agent.Sandboxed.Setup)
+		names = append(names, agent.Name)
+		launchers[agent.Name] = agent.Sandboxed.LaunchCmd
+		// The guest's env is the image's: its locale, its ripgrep. A session on the machine takes the
+		// machine as it finds it.
+		agentEnv := agent.Sandboxed.Env
+		if req.OnThisMachine {
+			agentEnv = agent.Sandboxless.Env
+		}
+		for k, v := range agentEnv {
+			env[k] = v
+		}
+	}
 	setup := req.Setup
 	if setup == "" {
-		setup = req.Agent.Sandboxed.Setup
-	}
-	// The guest's env is the image's: its locale, its ripgrep. A session on the machine takes the
-	// machine as it finds it.
-	agentEnv := req.Agent.Sandboxed.Env
-	if req.OnThisMachine {
-		agentEnv = req.Agent.Sandboxless.Env
-	}
-	env := make(map[string]string, len(agentEnv)+len(req.Env)+1)
-	for k, v := range agentEnv {
-		env[k] = v
+		setup = strings.Join(setups, "\n")
 	}
 	for k, v := range req.Env {
 		env[k] = v
@@ -742,10 +758,11 @@ func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
 			Install:   req.Agent.Sandboxless.Install,
 			LaunchCmd: req.Agent.Sandboxless.LaunchCmd,
 		},
-		Resources: toSandboxResources(req.Resources),
-		Cmd:       buildEntrypoint(req.Name, setup, req.Agent.Sandboxed.LaunchCmd),
-		Env:       env,
-		Mounts:    req.Mounts,
+		SharedLoginAgents: names,
+		Resources:         toSandboxResources(req.Resources),
+		Cmd:               buildEntrypoint(req.Name, setup, launchers),
+		Env:               env,
+		Mounts:            req.Mounts,
 	}
 }
 
@@ -770,7 +787,14 @@ func (s *Service) buildSandboxSpec(sess *Session, agent AgentSpec, userMounts []
 // multi-line shell script as a tmux new-window argument is nightmare-tier. Heredocs
 // use the single-quoted `<<'TERM'` form so user-supplied session names can't inject
 // shell metacharacters into the MOTD.
-func buildEntrypoint(sessName, setupScript, launchCmd string) []string {
+func buildEntrypoint(sessName, setupScript string, launchCmds map[string]string) []string {
+	// One launcher per agent the machine runs. Names come from the agent registry, so they are safe in a path.
+	var launchers strings.Builder
+	for _, agent := range slices.Sorted(maps.Keys(launchCmds)) {
+		path := sandbox.SandboxedAgentLaunchPath(agent)
+		fmt.Fprintf(&launchers, "cat > %s <<'DEEPCOVE_LAUNCH_END'\n#!/bin/sh\n%s\nDEEPCOVE_LAUNCH_END\nchmod +x %s\n",
+			path, launchCmds[agent], path)
+	}
 	body := fmt.Sprintf(`mkdir -p /etc /usr/local/bin /var/log /workspace
 
 # deepcove preamble: drop the shell tab's MOTD. Refreshed every boot so name/path
@@ -827,17 +851,12 @@ if [ $setup_rc -ne 0 ]; then
   exit "$setup_rc"
 fi
 
-cat > /usr/local/bin/deepcove-agent-launch <<'DEEPCOVE_LAUNCH_END'
-#!/bin/sh
 %s
-DEEPCOVE_LAUNCH_END
-chmod +x /usr/local/bin/deepcove-agent-launch
-
 # A fresh tmux refuses to reuse a stale socket from a previous boot.
 rm -rf /tmp/tmux-* 2>/dev/null || true
 
 echo ready > /etc/deepcove-bootstrap-status
-`, sessName, setupScript, launchCmd)
+`, sessName, setupScript, launchers.String())
 
 	return []string{"sh", "-c", body}
 }

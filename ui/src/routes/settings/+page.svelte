@@ -4,7 +4,8 @@
   import { sessions } from '$lib/stores/sessions.svelte';
   import { api } from '$lib/api/client';
   import TailnetConnect from '$lib/components/TailnetConnect.svelte';
-  import ClaudeLoginCard from '$lib/components/ClaudeLoginCard.svelte';
+  import AgentLoginCard from '$lib/components/AgentLoginCard.svelte';
+  import type { Agent } from '$lib/api/types';
   import { Button } from '$lib/components/ui/button';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -16,6 +17,20 @@
     TooltipProvider,
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
+
+  // One login card for each agent whose login deepcove can share or whose API key it can keep.
+  let loginAgents = $state<Agent[]>([]);
+  $effect(() => {
+    api
+      .listAgents()
+      .then(
+        (agents) =>
+          (loginAgents = agents.filter((agent) =>
+            agent.login_modes.some((mode) => mode === 'shared' || mode === 'api_key'),
+          )),
+      )
+      .catch(() => {});
+  });
 
   // Refresh-interval choices for the preview/session pollers. Kept to a
   // few sensible steps rather than a free number field, for fewer knobs.
@@ -213,7 +228,9 @@
     <!-- Access -->
     <TailnetConnect />
 
-    <ClaudeLoginCard />
+    {#each loginAgents as agent (agent.name)}
+      <AgentLoginCard {agent} />
+    {/each}
 
     <section class="space-y-3 rounded-xl border border-border bg-card p-4">
       <div class="flex items-center gap-1.5">

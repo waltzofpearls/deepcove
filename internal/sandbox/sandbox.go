@@ -42,6 +42,10 @@ var (
 	// is up but the sandbox is absent). The session layer maps this to a 503 with a plain message
 	// instead of a raw error.
 	ErrUnavailable = errors.New("sandbox: backend unavailable")
+
+	// ErrImageUnavailable means the image could not be fetched: a wrong name, a private image, or no
+	// way to reach the registry. Nothing about the session itself is wrong.
+	ErrImageUnavailable = errors.New("sandbox: image unavailable")
 )
 
 // Pinger is an optional capability: a driver that can cheaply check
@@ -131,8 +135,9 @@ type LLMForwarder interface {
 type AgentProvisioner interface {
 	// Setup is how far this sandbox has got with getting the agent ready.
 	Setup(ctx context.Context, sandboxID ID) (SetupState, error)
-	// AgentLaunchCommand is what the terminal multiplexer runs to start the agent.
-	AgentLaunchCommand(sandboxID ID) ([]string, error)
+	// AgentLaunchCommand is what the terminal multiplexer runs to start agent, which matters on a machine
+	// that runs more than one.
+	AgentLaunchCommand(sandboxID ID, agent string) ([]string, error)
 	// WorkDir is the folder the agent works in. Keyed by session, not sandbox, because the spec that
 	// names it is built before the sandbox exists.
 	WorkDir(sessionID string, mounts []Mount) string
@@ -276,6 +281,10 @@ type SandboxSpec struct {
 
 	// Agent is the coding agent this sandbox hosts.
 	Agent Agent
+
+	// SharedLoginAgents are the agents whose shared login this sandbox may be handed: its own agent on a
+	// session's machine, every agent on the machine sessions share.
+	SharedLoginAgents []string
 
 	// Mounts are host paths shared with the sandbox. Source paths must be owned by this node;
 	// sessions never cross host boundaries. ValidateSpec enforces this.

@@ -11,12 +11,17 @@ import (
 const (
 	SandboxedSetupStatusPath = "/etc/deepcove-bootstrap-status"
 	SandboxedSetupLogPath    = "/var/log/deepcove-bootstrap.log"
-	SandboxedAgentLaunchPath = "/usr/local/bin/deepcove-agent-launch"
 	SandboxedWorkDir         = "/workspace"
 	// SandboxedAgentHome is the agent's home, where guest init mounts the home disk. Agent images run
 	// as root today. Nothing may be shared at or under it.
 	SandboxedAgentHome = "/root"
 )
+
+// SandboxedAgentLaunchPath is the script the entrypoint writes to start agent. A machine that several
+// sessions share runs every agent, so each has its own.
+func SandboxedAgentLaunchPath(agent string) string {
+	return "/usr/local/bin/deepcove-agent-launch-" + agent
+}
 
 // Words the entrypoint writes into the status file at SandboxedSetupStatusPath. The guest's own
 // vocabulary: it says errored where a SetupStatus says failed.
@@ -31,8 +36,8 @@ const (
 // works in. A driver embeds this and adds Setup, which needs the driver itself to read those files.
 type SandboxedProvisioner struct{}
 
-func (SandboxedProvisioner) AgentLaunchCommand(ID) ([]string, error) {
-	return []string{SandboxedAgentLaunchPath}, nil
+func (SandboxedProvisioner) AgentLaunchCommand(_ ID, agent string) ([]string, error) {
+	return []string{SandboxedAgentLaunchPath(agent)}, nil
 }
 
 func (SandboxedProvisioner) WorkDir(_ string, mounts []Mount) string {

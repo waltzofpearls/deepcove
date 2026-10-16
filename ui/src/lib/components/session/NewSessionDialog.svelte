@@ -361,6 +361,7 @@
       ownFolder = false;
       workDir = '';
       workspaceFolder = '';
+      workspaceHostRoot = '';
     });
     let cancelled = false;
     api
@@ -562,7 +563,7 @@
   // Until both answers are in, no mode is sent and the node uses its default.
   const loginChoicesHere = $derived(
     loginSetup && llmProxyChecked && selectedAgent
-      ? loginChoices(selectedAgent.login_modes, loginPlace, {
+      ? loginChoices(selectedAgent, loginPlace, {
           proxyUrl: llmProxyUrl,
           hasApiKey: loginSetup.has_api_key,
           apiKeyEnding: loginSetup.api_key_ending,
@@ -1072,7 +1073,7 @@
               <div class="flex-1">
                 <div class="font-medium">Run install script at startup</div>
                 <div class="text-xs text-muted-foreground">
-                  Start from a base image and install the agent on first boot (~15s for Claude).
+                  Start from a base image and install the agent on first boot (~15s).
                 </div>
               </div>
             </label>
@@ -1234,6 +1235,15 @@
         </div>
       {/if}
 
+      <!-- Above the messages, so an error or the download progress sits right over the buttons. -->
+      {#if loginChoicesHere.length > 1 && pickedLogin}
+        <LoginModePicker
+          choices={loginChoicesHere}
+          value={pickedLogin}
+          onpick={(mode) => (loginMode = mode)}
+        />
+      {/if}
+
       {#if submitError}
         <div class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2.5 text-sm">
           <div class="font-medium text-destructive">{submitError.title}</div>
@@ -1314,14 +1324,6 @@
             then is reused.
           </span>
         </div>
-      {/if}
-
-      {#if loginChoicesHere.length > 1 && pickedLogin}
-        <LoginModePicker
-          choices={loginChoicesHere}
-          value={pickedLogin}
-          onpick={(mode) => (loginMode = mode)}
-        />
       {/if}
 
       <div class="flex items-center justify-end gap-2">

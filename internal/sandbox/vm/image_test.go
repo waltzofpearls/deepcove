@@ -16,6 +16,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+
+	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
 // layerImage builds a synthetic single layer OCI image whose rootfs contains the given files, so the
@@ -50,6 +52,33 @@ func layerImage(t *testing.T, files map[string]string) v1.Image {
 		t.Fatalf("append layer: %v", err)
 	}
 	return img
+}
+
+func TestBaseImage_ReportsAnImageItCannotFetch(t *testing.T) {
+	denied := errors.New("DENIED")
+	cases := []struct {
+		name          string
+		resolveDigest func(context.Context, string) (string, error)
+		pull          func(context.Context, string, v1.Platform) (v1.Image, error)
+	}{
+		{
+			name:          "its digest",
+			resolveDigest: func(context.Context, string) (string, error) { return "", denied },
+		},
+		{
+			name:          "its layers",
+			resolveDigest: func(context.Context, string) (string, error) { return "sha256:cafe", nil },
+			pull:          func(context.Context, string, v1.Platform) (v1.Image, error) { return nil, denied },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &imageStore{dir: t.TempDir(), resolveDigest: tc.resolveDigest, pull: tc.pull}
+			if _, err := store.baseImage(context.Background(), "ghcr.io/x/private:latest"); !errors.Is(err, sandbox.ErrImageUnavailable) {
+				t.Errorf("err = %v, want it to say the image cannot be fetched", err)
+			}
+		})
+	}
 }
 
 func TestBaseImageBuildsAndCaches(t *testing.T) {

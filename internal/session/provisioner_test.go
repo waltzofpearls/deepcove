@@ -31,7 +31,9 @@ func (f *fakeProvisioner) Setup(context.Context, sandbox.ID) (sandbox.SetupState
 	return f.state, f.setupErr
 }
 
-func (f *fakeProvisioner) AgentLaunchCommand(sandbox.ID) ([]string, error) { return f.launch, nil }
+func (f *fakeProvisioner) AgentLaunchCommand(sandbox.ID, string) ([]string, error) {
+	return f.launch, nil
+}
 
 func (f *fakeProvisioner) WorkDir(string, []sandbox.Mount) string { return f.workDir }
 

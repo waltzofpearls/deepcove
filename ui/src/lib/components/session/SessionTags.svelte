@@ -8,6 +8,7 @@
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
   import RuntimeBadge from '$lib/components/session/RuntimeBadge.svelte';
+  import { agentBadgeClass } from '$lib/util/agentBadge';
   import Globe from '@lucide/svelte/icons/globe';
   import Waypoints from '@lucide/svelte/icons/waypoints';
 
@@ -25,7 +26,9 @@
         {#snippet child({ props })}
           <span
             {...props}
-            class="shrink-0 cursor-default rounded bg-secondary px-1.5 py-0.5 text-xs font-medium text-secondary-foreground ring-1 ring-inset ring-muted-foreground/30 dark:bg-white/10"
+            class="shrink-0 cursor-default rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset {agentBadgeClass(
+              session.agent,
+            )}"
             class:relative={elevated}
             class:z-20={elevated}
           >

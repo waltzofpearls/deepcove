@@ -213,6 +213,10 @@ export interface Agent {
   display_name: string;
   // login_modes are the ways this agent may be logged in, safest first.
   login_modes: LoginMode[];
+  // login_hint says how to log in inside a session.
+  login_hint: string;
+  // api_key_example is what the vendor's API keys start with.
+  api_key_example: string;
   sandboxed: SandboxedAgent;
 }
 

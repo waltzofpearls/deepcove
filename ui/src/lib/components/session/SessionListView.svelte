@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { agentBadgeClass } from '$lib/util/agentBadge';
   import type { Session } from '$lib/api/types';
   import { ageOf, shortId } from '$lib/format';
   import { sessions as sessionsStore } from '$lib/stores/sessions.svelte';
@@ -31,7 +32,9 @@
               <span class="ml-1 text-xs text-primary">{session.host?.hostname}</span>{/if}
           </td>
           <td class="px-4 py-3">
-            <span class="rounded bg-secondary px-2 py-0.5 text-xs">{session.agent}</span>
+            <span class="rounded px-2 py-0.5 text-xs {agentBadgeClass(session.agent)}">
+              {session.agent}
+            </span>
           </td>
           <td class="px-4 py-3 font-mono text-xs text-muted-foreground">{shortId(session.id)}</td>
           <td class="px-4 py-3 text-xs text-muted-foreground">{ageOf(session.last_activity_at)}</td>

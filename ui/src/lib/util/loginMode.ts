@@ -1,4 +1,4 @@
-import type { LoginMode } from '$lib/api/types';
+import type { Agent, LoginMode } from '$lib/api/types';
 
 // LoginChoice is one row of the login picker.
 export interface LoginChoice {
@@ -16,12 +16,12 @@ export type LoginPlace = 'session_vm' | 'workspace_vm' | 'no_sandbox';
 // loginChoices lists the ways a session can log in, safest first, from what the agent allows and what
 // this node has set up.
 export function loginChoices(
-  agentModes: LoginMode[],
+  agent: Pick<Agent, 'login_modes' | 'login_hint'>,
   place: LoginPlace,
   setup: { proxyUrl: string; hasApiKey: boolean; apiKeyEnding: string },
 ): LoginChoice[] {
   const choices: LoginChoice[] = [];
-  const allows = (mode: LoginMode) => agentModes.includes(mode);
+  const allows = (mode: LoginMode) => agent.login_modes.includes(mode);
   if (place === 'workspace_vm') {
     if (allows('shared')) {
       choices.push({
@@ -46,7 +46,7 @@ export function loginChoices(
               label: 'The login on this machine',
               detail: 'Whatever this machine is already logged in as.',
             }
-          : { mode: 'in_session', label: 'Its own login', detail: 'Run /login in this session.' },
+          : { mode: 'in_session', label: 'Its own login', detail: agent.login_hint },
       );
     }
   }

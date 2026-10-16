@@ -389,7 +389,9 @@ const (
 	codeRuntimeUnavailable = "runtime_unavailable"
 	codeNotFound           = "not_found"
 	codeConflict           = "conflict"
-	codeInternal           = "internal"
+	// codeImageUnavailable means the session's image could not be fetched.
+	codeImageUnavailable = "image_unavailable"
+	codeInternal         = "internal"
 	// codeNotHostedHere means this node does not have that session. It may still exist on another node.
 	codeNotHostedHere = "not_hosted_here"
 	// codeNodeUnreachable means the node hosting the session did not answer.
@@ -425,6 +427,8 @@ func writeSandboxError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusNotFound, codeNotFound, "not found")
 	case errors.Is(err, sandbox.ErrConflict):
 		writeErrorCode(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, sandbox.ErrImageUnavailable):
+		writeErrorCode(w, http.StatusBadGateway, codeImageUnavailable, err.Error())
 	default:
 		writeErrorCode(w, http.StatusBadRequest, codeInvalidInput, err.Error())
 	}

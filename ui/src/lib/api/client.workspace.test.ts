@@ -34,7 +34,7 @@ describe('workspaceVM', () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         host_root: '/Users/rollie/Dev',
-        image: 'ghcr.io/waltzofpearls/deepcove-claude:latest',
+        image: 'ghcr.io/waltzofpearls/deepcove-agents:latest',
         runtime: 'applevf',
         resources: { cpu: 4, memory_mb: 8192 },
         created_at: '2026-08-12T00:00:00Z',

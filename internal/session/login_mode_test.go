@@ -170,8 +170,11 @@ func TestService_APIKeyFor(t *testing.T) {
 				sandboxID = sandbox.ID(sess.SandboxID)
 			}
 			got, err := svc.APIKeyFor(sandboxID, sess.ID)
-			if (err != nil) != tc.wantErr || got != tc.want {
-				t.Errorf("APIKeyFor = %q, %v; want %q, an error: %v", got, err, tc.want, tc.wantErr)
+			if (err != nil) != tc.wantErr || got.Key != tc.want {
+				t.Errorf("APIKeyFor = %q, %v; want %q, an error: %v", got.Key, err, tc.want, tc.wantErr)
+			}
+			if got.Key != "" && got.Provider != agents["claude"].API.Provider {
+				t.Errorf("APIKeyFor sends the key to %+v, want Claude's provider", got.Provider)
 			}
 		})
 	}

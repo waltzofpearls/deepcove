@@ -16,20 +16,21 @@ func TestServe(t *testing.T) {
 		wantReply  Reply
 		wantAccess string
 	}{
-		{name: "asking before anyone logged in", request: Request{}, wantReply: Reply{NoLogin: true}},
-		{name: "asking for the shared login", stored: &shared, request: Request{}, wantAccess: "a"},
+		{name: "asking before anyone logged in", request: Request{Agent: "claude"}, wantReply: Reply{NoLogin: true}},
+		{name: "asking for the shared login", stored: &shared, request: Request{Agent: "claude"}, wantAccess: "a"},
 		{
 			name:       "offering the first login",
-			request:    Request{Offer: &Login{AccessToken: "b", RefreshToken: "s", ExpiresAt: time.Now().Add(8 * time.Hour), AccountID: "account-1"}},
+			request:    Request{Agent: "claude", Offer: &Login{AccessToken: "b", RefreshToken: "s", ExpiresAt: time.Now().Add(8 * time.Hour), AccountID: "account-1"}},
 			wantAccess: "refreshed-access",
 		},
 		{
 			name:      "offering another account",
 			stored:    &shared,
-			request:   Request{Offer: &Login{AccessToken: "b", RefreshToken: "s", AccountID: "account-2"}},
+			request:   Request{Agent: "claude", Offer: &Login{AccessToken: "b", RefreshToken: "s", AccountID: "account-2"}},
 			wantReply: Reply{DifferentAccount: true},
 		},
-		{name: "a session that does not share", notSharing: true, stored: &shared, request: Request{}, wantReply: Reply{NotSharing: true}},
+		{name: "a session that does not share", notSharing: true, stored: &shared, request: Request{Agent: "claude"}, wantReply: Reply{NotSharing: true}},
+		{name: "asking for an agent this machine does not run", stored: &shared, request: Request{Agent: "codex"}, wantReply: Reply{Error: "this machine gets no shared login for \"codex\""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -46,14 +47,14 @@ func TestServe(t *testing.T) {
 			keeper.SetSharingCheck(func(agent, sessionID string) (bool, error) {
 				return agent == "claude" && sessionID == "session-1" && !tc.notSharing, nil
 			})
-			go func() { _ = Serve(host, keeper, "claude", "session-1", "machine-1") }()
+			go func() { _ = Serve(host, keeper, []string{"claude"}, "session-1", "machine-1") }()
 
 			reply, err := Ask(guest, tc.request)
 			if err != nil {
 				t.Fatalf("Ask: %v", err)
 			}
 			if tc.wantAccess == "" {
-				if reply.NoLogin != tc.wantReply.NoLogin || reply.DifferentAccount != tc.wantReply.DifferentAccount || reply.NotSharing != tc.wantReply.NotSharing || reply.Login != nil {
+				if reply.NoLogin != tc.wantReply.NoLogin || reply.DifferentAccount != tc.wantReply.DifferentAccount || reply.NotSharing != tc.wantReply.NotSharing || reply.Error != tc.wantReply.Error || reply.Login != nil {
 					t.Errorf("reply = %+v, want %+v", reply, tc.wantReply)
 				}
 				return

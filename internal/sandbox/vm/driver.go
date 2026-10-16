@@ -55,7 +55,7 @@ type Driver struct {
 	// agent can read.
 	llmProxyURL func() string
 	// apiKeyFor is the user's API key for a session on a VM that uses it. Asked per request.
-	apiKeyFor func(sandboxID sandbox.ID, sessionID string) (string, error)
+	apiKeyFor func(sandboxID sandbox.ID, sessionID string) (llmproxy.APIKey, error)
 
 	silentGuestCheckEvery time.Duration
 	silentGuestLimit      time.Duration
@@ -111,16 +111,16 @@ func WithLLMProxyURL(current func() string) Option {
 }
 
 // WithAPIKeys gives the driver the user's API key for each session that uses it. Read per request.
-func WithAPIKeys(apiKeyFor func(sandboxID sandbox.ID, sessionID string) (string, error)) Option {
+func WithAPIKeys(apiKeyFor func(sandboxID sandbox.ID, sessionID string) (llmproxy.APIKey, error)) Option {
 	return func(d *Driver) { d.apiKeyFor = apiKeyFor }
 }
 
 // apiKeysOn answers for the sessions on one VM, so a request naming a session elsewhere gets no key.
-func (d *Driver) apiKeysOn(sandboxID sandbox.ID) func(sessionID string) (string, error) {
+func (d *Driver) apiKeysOn(sandboxID sandbox.ID) func(sessionID string) (llmproxy.APIKey, error) {
 	if d.apiKeyFor == nil {
 		return nil
 	}
-	return func(sessionID string) (string, error) { return d.apiKeyFor(sandboxID, sessionID) }
+	return func(sessionID string) (llmproxy.APIKey, error) { return d.apiKeyFor(sandboxID, sessionID) }
 }
 
 // LLMEndpoint implements sandbox.LLMForwarder.
@@ -291,26 +291,32 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 	if err := guest.ServeLLMForward(d.llmProxyURL, d.apiKeysOn(sandboxID), d.tailnetClient); err != nil {
 		return d.abandon(state, guest, err)
 	}
-	sharedLoginAgent := ""
 	// Served whether or not the session shares now: the keeper asks on every request, so the switch
 	// works without a restart.
-	if d.sharedLogin != nil && d.sharedLogin.CanShare(state.spec.Agent.Name) {
-		sharedLoginAgent = state.spec.Agent.Name
-		if err := guest.ServeSharedLogin(d.sharedLogin, sharedLoginAgent, state.spec.SessionID, sandboxID); err != nil {
+	var sharedLoginAgents []string
+	if d.sharedLogin != nil {
+		for _, agent := range state.spec.SharedLoginAgents {
+			if d.sharedLogin.CanShare(agent) {
+				sharedLoginAgents = append(sharedLoginAgents, agent)
+			}
+		}
+	}
+	if len(sharedLoginAgents) > 0 {
+		if err := guest.ServeSharedLogin(d.sharedLogin, sharedLoginAgents, state.spec.SessionID, sandboxID); err != nil {
 			return d.abandon(state, guest, err)
 		}
 	}
 	// The guest asks for these at boot, so they have to be listening before it gets that far.
 	if err := guest.ServeConfig(guestcfg.Config{
-		Entrypoint:       state.spec.Cmd,
-		Env:              state.spec.Env,
-		OverlayBytes:     state.spec.Resources.Disk,
-		Mounts:           guestMounts,
-		HomeDevice:       homeDevice,
-		SwapDevice:       swapDevice,
-		NetworkAllow:     d.networkAllow,
-		LLMRequestPort:   llmproxy.LLMRequestPort,
-		SharedLoginAgent: sharedLoginAgent,
+		Entrypoint:        state.spec.Cmd,
+		Env:               state.spec.Env,
+		OverlayBytes:      state.spec.Resources.Disk,
+		Mounts:            guestMounts,
+		HomeDevice:        homeDevice,
+		SwapDevice:        swapDevice,
+		NetworkAllow:      d.networkAllow,
+		LLMRequestPort:    llmproxy.LLMRequestPort,
+		SharedLoginAgents: sharedLoginAgents,
 	}); err != nil {
 		return d.abandon(state, guest, err)
 	}

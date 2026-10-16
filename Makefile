@@ -244,10 +244,10 @@ build-all: build-darwin build-windows build-linux ## Build release binaries for 
 GHCR_NAMESPACE ?= ghcr.io/waltzofpearls
 IMAGE_TAG      ?= latest
 
-.PHONY: image-claude
-image-claude: ## Build the deepcove-claude session image with docker, for pushing to GHCR (sessions pull from the registry)
-	docker build -f deepcove-claude.Dockerfile \
-		-t $(GHCR_NAMESPACE)/deepcove-claude:$(IMAGE_TAG) .
+.PHONY: image-agents
+image-agents: ## Build the deepcove-agents session image with docker, for pushing to GHCR (sessions pull from the registry)
+	docker build -f deepcove-agents.Dockerfile \
+		-t $(GHCR_NAMESPACE)/deepcove-agents:$(IMAGE_TAG) .
 
 .PHONY: test
 test: test-go test-js ## Run all unit tests (Go + JS)

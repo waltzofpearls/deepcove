@@ -292,7 +292,10 @@ func TestForwarder_route(t *testing.T) {
 	proxy, provider := serverNamed("proxy"), serverNamed("provider")
 	defer proxy.Close()
 	defer provider.Close()
-	keys := map[string]string{"with-key": "sk-ant-1234"}
+	keys := map[string]APIKey{
+		"with-key":    {Key: "sk-ant-1234", Provider: Provider{URL: provider.URL, KeyHeader: "X-Api-Key"}},
+		"with-bearer": {Key: "sk-proj-1234", Provider: Provider{URL: provider.URL, KeyHeader: "Authorization"}},
+	}
 
 	cases := []struct {
 		name       string
@@ -302,6 +305,7 @@ func TestForwarder_route(t *testing.T) {
 		want       seen
 	}{
 		{name: "a session with the API key goes to the provider with it", sessionID: "with-key", wantStatus: http.StatusOK, want: seen{"provider", "", "sk-ant-1234"}},
+		{name: "a provider that takes a bearer key gets it in Authorization", sessionID: "with-bearer", sentAPIKey: "sk-from-the-guest", wantStatus: http.StatusOK, want: seen{"provider", "Bearer sk-proj-1234", ""}},
 		{name: "any other session goes to the proxy", sessionID: "without", wantStatus: http.StatusOK, want: seen{"proxy", "Bearer deepcove", ""}},
 		{name: "a key the agent sends never reaches the proxy", sessionID: "without", sentAPIKey: "sk-from-the-guest", wantStatus: http.StatusOK, want: seen{"proxy", "Bearer deepcove", ""}},
 		{name: "a session whose key cannot be read is told why", sessionID: "broken", wantStatus: http.StatusBadGateway},
@@ -311,16 +315,15 @@ func TestForwarder_route(t *testing.T) {
 			got = nil
 			forwarder := NewForwarder(
 				func() string { return proxy.URL },
-				func(sessionID string) (string, error) {
+				func(sessionID string) (APIKey, error) {
 					if sessionID == "broken" {
-						return "", errors.New("no API key is saved")
+						return APIKey{}, errors.New("no API key is saved")
 					}
 					return keys[sessionID], nil
 				},
 				func() *http.Client { return nil },
 				nil, nil,
 			)
-			forwarder.providerURL = provider.URL
 			guest, host := net.Pipe()
 			go func() { _ = forwarder.Serve(host) }()
 			defer func() { _ = guest.Close() }()

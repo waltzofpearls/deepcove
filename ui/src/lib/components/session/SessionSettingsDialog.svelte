@@ -15,6 +15,7 @@
   import { describeVMSize, formatRunningSize, sessionVMSizeCards } from '$lib/util/vmSize';
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
   import type {
+    Agent,
     LoginMode,
     RuntimesInfo,
     SandboxView,
@@ -103,9 +104,10 @@
   });
   // What this node offers: its saved API key, and what the agent allows. Per node, like the proxy.
   let loginSetup = $state<SharedLoginStatus | null>(null);
-  let agentModes = $state<LoginMode[]>([]);
+  let agent = $state<Agent | null>(null);
   $effect(() => {
     loginSetup = null;
+    agent = null;
     if (!open) return;
     void hostKey;
     const currentAgent = session.agent;
@@ -122,16 +124,17 @@
       .catch(() => {});
     api
       .listAgents()
-      .then(
-        (agents) => (agentModes = agents.find((a) => a.name === currentAgent)?.login_modes ?? []),
-      )
+      .then((agents) => {
+        // A dialog reused for another session has its own answer coming.
+        if (!ac.signal.aborted) agent = agents.find((a) => a.name === currentAgent) ?? null;
+      })
       .catch(() => {});
     return () => ac.abort();
   });
   const loginChoicesHere = $derived(
-    loginSetup && llmProxyChecked
+    loginSetup && llmProxyChecked && agent
       ? loginChoices(
-          agentModes,
+          agent,
           session.on_workspace_vm ? 'workspace_vm' : onThisMachine ? 'no_sandbox' : 'session_vm',
           {
             proxyUrl: llmProxyUrl,

@@ -8,12 +8,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
@@ -315,6 +318,36 @@ func TestRunInstall(t *testing.T) {
 	}
 }
 
+func TestRunInstall_HasNoTerminal(t *testing.T) {
+	// An installer that finds a terminal can stop and wait for an answer nobody will type, which is how
+	// Codex's installer hung asking "Start Codex now?" on the terminal deepcove was started from. So the
+	// install runs in a session of its own, which has no terminal.
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = runInstall(context.Background(), dir, "echo $$ > "+pidFile+"; sleep 2")
+	}()
+	defer func() { <-done }()
+
+	var pid int
+	for deadline := time.Now().Add(time.Second); pid == 0 && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		data, _ := os.ReadFile(pidFile)
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	}
+	if pid == 0 {
+		t.Fatal("the install never started")
+	}
+	session, err := unix.Getsid(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session != pid {
+		t.Errorf("the install runs in session %d, want a session of its own (%d)", session, pid)
+	}
+}
+
 func TestKillGroup(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -530,7 +563,7 @@ func TestWriteLaunchScript_RunsTheAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	launch, err := d.AgentLaunchCommand(instanceID)
+	launch, err := d.AgentLaunchCommand(instanceID, "claude")
 	if err != nil {
 		t.Fatalf("AgentLaunchCommand: %v", err)
 	}
@@ -559,7 +592,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := d.AgentLaunchCommand(instanceID)
+	got, err := d.AgentLaunchCommand(instanceID, "claude")
 	if err != nil {
 		t.Fatalf("AgentLaunchCommand: %v", err)
 	}
@@ -569,7 +602,7 @@ func TestAgentLaunchCommand(t *testing.T) {
 	}
 	// An instance nobody knows has no command, and saying so beats handing back an empty one that tmux
 	// would try to run.
-	if _, err := d.AgentLaunchCommand("sandboxless-nope"); !errors.Is(err, sandbox.ErrNotFound) {
+	if _, err := d.AgentLaunchCommand("sandboxless-nope", "claude"); !errors.Is(err, sandbox.ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }
