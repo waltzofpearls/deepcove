@@ -129,3 +129,123 @@ describe('DirectTransport.openSocket', () => {
     expect(sockets[0].url).toBe('wss://deepcove.example.ts.net/api/x');
   });
 });
+
+describe('waitWhileNodeAnswers', () => {
+  const never = () => new Promise<string>(() => {});
+  const cases: Array<{
+    name: string;
+    answer: () => Promise<string>;
+    // checks is what each node check answers, in order.
+    checks: boolean[];
+    abortAfterMs?: number;
+    waitMs: number;
+    want: { value?: string; error?: string };
+  }> = [
+    {
+      name: 'passes the answer through',
+      answer: async () => 'ok',
+      checks: [],
+      waitMs: 0,
+      want: { value: 'ok' },
+    },
+    {
+      name: 'fails once the node misses two checks in a row',
+      answer: never,
+      checks: [false, false],
+      waitMs: 10000,
+      want: { error: 'droplet stopped answering' },
+    },
+    {
+      name: 'keeps waiting through one missed check',
+      answer: () => new Promise((resolve) => setTimeout(() => resolve('late'), 16000)),
+      checks: [false, true, false],
+      waitMs: 16000,
+      want: { value: 'late' },
+    },
+    {
+      name: 'stops waiting when the caller aborts',
+      answer: never,
+      checks: [],
+      abortAfterMs: 100,
+      waitMs: 100,
+      want: { error: 'The request was aborted.' },
+    },
+  ];
+
+  for (const tc of cases) {
+    it(tc.name, async () => {
+      vi.useFakeTimers();
+      try {
+        const { waitWhileNodeAnswers } = await loadTransport();
+        const checks = [...tc.checks];
+        const caller = new AbortController();
+        if (tc.abortAfterMs !== undefined) setTimeout(() => caller.abort(), tc.abortAfterMs);
+        const result = waitWhileNodeAnswers(tc.answer(), 'droplet', caller.signal, async () =>
+          checks.length ? checks.shift()! : true,
+        );
+        const settled = tc.want.error
+          ? expect(result).rejects.toThrow(tc.want.error)
+          : expect(result).resolves.toBe(tc.want.value);
+        await vi.advanceTimersByTimeAsync(tc.waitMs);
+        await settled;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  }
+
+  it('fails at once for a signal that is already aborted, and still handles a late failure', async () => {
+    const { waitWhileNodeAnswers } = await loadTransport();
+    const caller = new AbortController();
+    caller.abort();
+    const lateFailure = new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error('dial failed')), 10),
+    );
+    const result = waitWhileNodeAnswers(lateFailure, 'droplet', caller.signal, async () => true);
+    await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    // An unhandled rejection from the late failure fails this run.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+});
+
+describe('WasmTransport.fetch', () => {
+  it('never sends a call that is already aborted', async () => {
+    const netFetch = vi.fn();
+    vi.doMock('./wasm', () => ({ ensureTailnet: async () => ({ fetch: netFetch }) }));
+    try {
+      const { transport } = await loadTransport({ transport: 'wasm', target: 'http://droplet.ts' });
+      const caller = new AbortController();
+      caller.abort();
+      await expect(
+        transport.fetch('/api/llm-proxy', { signal: caller.signal }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(netFetch).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('./wasm');
+    }
+  });
+
+  it('checks the node the call went to, even after the primary node changes', async () => {
+    vi.useFakeTimers();
+    const urls: string[] = [];
+    const netFetch = vi.fn((url: string) => {
+      urls.push(url);
+      return new Promise(() => {});
+    });
+    vi.doMock('./wasm', () => ({ ensureTailnet: async () => ({ fetch: netFetch }) }));
+    try {
+      const { transport, setDiscoveredTarget } = await loadTransport({
+        transport: 'wasm',
+        target: 'http://old.ts',
+      });
+      void transport.fetch('/api/sessions').catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      setDiscoveredTarget('new.ts');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(urls).toEqual(['http://old.ts/api/sessions', 'http://old.ts/api/health']);
+    } finally {
+      vi.doUnmock('./wasm');
+      vi.useRealTimers();
+    }
+  });
+});

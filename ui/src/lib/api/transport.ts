@@ -68,14 +68,26 @@ class WasmTransport implements Transport {
   }
 
   async fetch(path: string, init?: RequestInit): Promise<Response> {
+    // tailscale-web's fetch cannot be cancelled once sent, so a call that is already unwanted never
+    // starts.
+    init?.signal?.throwIfAborted();
     const net = await ensureTailnet();
-    const r = await this.fetchWithRetry(net, this.targetBase + path, {
+    init?.signal?.throwIfAborted();
+    // Read once: discovery can move the boot transport to another node while this call waits.
+    const targetBase = this.targetBase;
+    const nodeName = new URL(targetBase).hostname;
+    // The wait is what stops instead: on abort, or once the node stops answering. A long call keeps
+    // going for as long as the node answers.
+    const answer = this.fetchWithRetry(net, targetBase + path, {
       method: init?.method,
       headers: toRecord(init?.headers),
       // tailscale-web's fetch buffers the body. Strings cover JSON calls; Uint8Array/ArrayBuffer
       // cover binary uploads to a remote node (file paste/drop on a peer-hosted session).
       body: toWasmBody(init?.body),
     });
+    const r = await waitWhileNodeAnswers(answer, nodeName, init?.signal, () =>
+      nodeAnswersHealth(net, targetBase),
+    );
     // Re-wrap as a real Response so client.ts stays transport-agnostic. 204/304
     // forbid a body.
     const noBody = r.status === 204 || r.status === 304;
@@ -114,6 +126,86 @@ class WasmTransport implements Transport {
     // node's existing :80 WS endpoint (WireGuard encrypts, so no TLS needed).
     const sub = typeof protocols === 'string' ? protocols : protocols?.[0];
     return openWasmSocket(new URL(this.targetBase).hostname, path, sub);
+  }
+}
+
+// nodeCheckEveryMs is how often a node is checked while a call to it is waiting. missedChecksLimit
+// checks in a row going unanswered fail the call.
+const nodeCheckEveryMs = 5000;
+const missedChecksLimit = 2;
+const nodeCheckTimeoutMs = 3000;
+
+// waitWhileNodeAnswers waits for answer, but gives up when signal aborts or when nodeAnswers reports
+// the node gone missedChecksLimit times in a row.
+export function waitWhileNodeAnswers<T>(
+  answer: Promise<T>,
+  nodeName: string,
+  signal: AbortSignal | null | undefined,
+  nodeAnswers: () => Promise<boolean>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    let missedChecks = 0;
+    let checkTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      done = true;
+      clearTimeout(checkTimer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      finish();
+      reject(new DOMException('The request was aborted.', 'AbortError'));
+    };
+    // Attached first, so the answer's own failure is always handled, even when it is no longer wanted.
+    answer.then(
+      (value) => {
+        if (done) return;
+        finish();
+        resolve(value);
+      },
+      (err) => {
+        if (done) return;
+        finish();
+        reject(err);
+      },
+    );
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const checkNode = async () => {
+      const answered = await nodeAnswers();
+      if (done) return;
+      missedChecks = answered ? 0 : missedChecks + 1;
+      if (missedChecks >= missedChecksLimit) {
+        finish();
+        reject(new Error(`${nodeName} stopped answering`));
+        return;
+      }
+      checkTimer = setTimeout(checkNode, nodeCheckEveryMs);
+    };
+    checkTimer = setTimeout(checkNode, nodeCheckEveryMs);
+  });
+}
+
+// nodeAnswersHealth asks the node's health endpoint, on the same address and port as the call itself,
+// so an ACL that blocks ping but allows the call never reads as a dead node. A dead node can hang the
+// check, so it is raced.
+async function nodeAnswersHealth(
+  net: Awaited<ReturnType<typeof ensureTailnet>>,
+  targetBase: string,
+): Promise<boolean> {
+  try {
+    const health = await Promise.race([
+      net.fetch(targetBase + '/api/health'),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('health check timed out')), nodeCheckTimeoutMs),
+      ),
+    ]);
+    return health.ok;
+  } catch {
+    return false;
   }
 }
 

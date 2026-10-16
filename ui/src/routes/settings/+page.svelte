@@ -5,11 +5,16 @@
   import { api } from '$lib/api/client';
   import TailnetConnect from '$lib/components/TailnetConnect.svelte';
   import AgentLoginCard from '$lib/components/AgentLoginCard.svelte';
-  import type { Agent } from '$lib/api/types';
+  import LLMProxyRow from '$lib/components/LLMProxyRow.svelte';
+  import { discoveryRequired } from '$lib/api/transport';
+  import { discovery } from '$lib/stores/discovery.svelte';
+  import { usePolling } from '$lib/polling';
+  import type { Agent, NodeInfo } from '$lib/api/types';
   import { Button } from '$lib/components/ui/button';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
-  import Loader2 from '@lucide/svelte/icons/loader-2';
   import Check from '@lucide/svelte/icons/check';
+  import Copy from '@lucide/svelte/icons/copy';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
   import Info from '@lucide/svelte/icons/info';
   import {
     Tooltip,
@@ -31,6 +36,41 @@
       )
       .catch(() => {});
   });
+
+  // Logins live on each node, so the login cards list every node. Dashboard mode finds them itself.
+  let fetchedNodes = $state<NodeInfo[]>([]);
+  const nodes = $derived(discoveryRequired() ? discovery.nodes : fetchedNodes);
+  $effect(() => {
+    if (discoveryRequired()) return;
+    const ac = new AbortController();
+    const stop = usePolling(
+      async () => {
+        try {
+          fetchedNodes = await api.nodes(ac.signal);
+        } catch {
+          // Kept as it was until the next round answers.
+        }
+      },
+      () => preferences.pollIntervalMs,
+    );
+    return () => {
+      ac.abort();
+      stop();
+    };
+  });
+
+  const upgradeCommand = 'deepcove upgrade';
+  let upgradeCopied = $state(false);
+
+  async function copyUpgradeCommand() {
+    try {
+      await navigator.clipboard.writeText(upgradeCommand);
+      upgradeCopied = true;
+      setTimeout(() => (upgradeCopied = false), 1500);
+    } catch {
+      // The clipboard needs a secure context. The command is still selectable.
+    }
+  }
 
   // Refresh-interval choices for the preview/session pollers. Kept to a
   // few sensible steps rather than a free number field, for fewer knobs.
@@ -66,62 +106,6 @@
 
   const selectClass =
     'flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring';
-  const inputClass =
-    'h-9 w-40 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring';
-
-  let currentProxy = $state('');
-  let proxyDraft = $state('');
-  let savingProxy = $state(false);
-  let proxySaved = $state(false);
-  let proxyError = $state('');
-
-  $effect(() => {
-    let cancelled = false;
-    api
-      .llmProxy()
-      .then((p) => {
-        if (cancelled) return;
-        currentProxy = p.url;
-        proxyDraft = p.url;
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  });
-
-  let testingProxy = $state(false);
-  let proxyTest = $state('');
-
-  // A reachability check from this node, which is the machine that will actually make the calls.
-  async function testProxy() {
-    testingProxy = true;
-    proxyTest = '';
-    proxyError = '';
-    try {
-      proxyTest = (await api.testLLMProxy()).result;
-    } catch (e) {
-      proxyError = e instanceof Error ? e.message : String(e);
-    } finally {
-      testingProxy = false;
-    }
-  }
-
-  async function saveProxy() {
-    savingProxy = true;
-    proxyError = '';
-    try {
-      const p = await api.saveLLMProxy(proxyDraft.trim());
-      currentProxy = p.url;
-      proxyDraft = p.url;
-      proxySaved = true;
-      setTimeout(() => (proxySaved = false), 1500);
-    } catch (e) {
-      proxyError = e instanceof Error ? e.message : String(e);
-    } finally {
-      savingProxy = false;
-    }
-  }
 
   $effect(() => {
     let cancelled = false;
@@ -228,11 +212,56 @@
     <!-- Access -->
     <TailnetConnect />
 
+    <!-- About -->
+    <section class="space-y-3 rounded-xl border border-border bg-card p-4">
+      <h2 class="text-sm font-medium text-muted-foreground">About</h2>
+      <div class="flex items-center justify-between gap-4 text-sm">
+        <span class="font-medium">deepcove</span>
+        <span class="font-mono text-xs text-muted-foreground">{version || 'unknown'}</span>
+      </div>
+      <div class="space-y-2 border-t border-border pt-3">
+        <div>
+          <div class="text-sm font-medium">Update</div>
+          <div class="text-xs text-muted-foreground">Run this on each machine.</div>
+        </div>
+        <div
+          class="flex items-center gap-2 rounded-md border border-border bg-secondary p-2 font-mono text-xs"
+        >
+          <span class="flex-1 truncate">{upgradeCommand}</span>
+          <Button
+            size="icon"
+            variant="ghost"
+            class="size-7 shrink-0"
+            onclick={copyUpgradeCommand}
+            aria-label="Copy the update command"
+          >
+            {#if upgradeCopied}
+              <Check class="size-3.5 text-[var(--color-success)]" />
+            {:else}
+              <Copy class="size-3.5" />
+            {/if}
+          </Button>
+        </div>
+      </div>
+      <div class="flex items-center justify-between gap-4 border-t border-border pt-3 text-sm">
+        <span class="font-medium">Website</span>
+        <a
+          href="https://deepcove.dev"
+          target="_blank"
+          rel="noopener"
+          class="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+        >
+          deepcove.dev
+          <ExternalLink class="size-3" />
+        </a>
+      </div>
+    </section>
+
     {#each loginAgents as agent (agent.name)}
-      <AgentLoginCard {agent} />
+      <AgentLoginCard {agent} {nodes} />
     {/each}
 
-    <section class="space-y-3 rounded-xl border border-border bg-card p-4">
+    <section class="space-y-3 rounded-xl border border-border bg-card p-4 md:col-span-2">
       <div class="flex items-center gap-1.5">
         <h2 class="text-sm font-medium text-muted-foreground">LLM proxy</h2>
         {@render help(
@@ -245,51 +274,9 @@
         Agents send their requests here instead of straight to the model's API, so the sandbox holds
         no key of its own.
       </p>
-      <div class="flex items-center gap-2">
-        <input
-          bind:value={proxyDraft}
-          placeholder="http://100.75.35.244:9001"
-          class="{inputClass} min-w-0 flex-1"
-        />
-        <Button
-          size="sm"
-          variant="ghost"
-          onclick={testProxy}
-          disabled={testingProxy || !currentProxy}
-        >
-          {#if testingProxy}
-            <Loader2 class="size-4 animate-spin" />
-          {/if}
-          Test
-        </Button>
-        <Button
-          size="sm"
-          onclick={saveProxy}
-          disabled={savingProxy || proxyDraft.trim() === currentProxy}
-        >
-          {#if savingProxy}
-            <Loader2 class="size-4 animate-spin" />
-          {:else if proxySaved}
-            <Check class="size-4" />
-          {/if}
-          Save
-        </Button>
-      </div>
-      {#if proxyError}
-        <p class="text-xs text-destructive">{proxyError}</p>
-      {/if}
-      {#if proxyTest}
-        <p class="text-xs text-muted-foreground">{proxyTest}</p>
-      {/if}
-    </section>
-
-    <!-- About -->
-    <section class="space-y-3 rounded-xl border border-border bg-card p-4">
-      <h2 class="text-sm font-medium text-muted-foreground">About</h2>
-      <div class="flex items-center justify-between gap-4 text-sm">
-        <span class="font-medium">deepcove</span>
-        <span class="font-mono text-xs text-muted-foreground">{version || 'unknown'}</span>
-      </div>
+      {#each nodes as node (node.stable_node_id || node.hostname)}
+        <LLMProxyRow {node} />
+      {/each}
     </section>
   </div>
 </div>

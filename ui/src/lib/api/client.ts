@@ -105,8 +105,8 @@ const peerFanoutTimeoutMs = 2000;
 // alike. Long enough for a cold tailnet dial, short enough that Create is never held forever.
 export const preflightTimeoutMs = 8000;
 
-// withTimeout rejects if p doesn't settle within ms. For calls over the WASM transport, which can hang
-// on a dead peer (it doesn't honor AbortSignal); the orphaned promise may still settle later, discarded.
+// withTimeout rejects if p doesn't settle within ms. The orphaned promise may still settle later, and
+// its result is discarded.
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(label + ' timed out')), ms);
@@ -123,39 +123,43 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-// fetchNodeSessions GETs one node's own sessions over WASM, rejecting after peerFanoutTimeoutMs. The
-// timeout is a racing promise, not an AbortSignal: tailscale-web's fetch doesn't honor signals, so a
-// signal alone wouldn't cut a slow dial. The orphaned fetch may still settle later; its result is
-// discarded.
-function fetchNodeSessions(
+// requestWithDeadline is a GET to a node that gives up after timeoutMs. The request is aborted when it
+// gives up, so nothing keeps waiting on the node after the caller has moved on.
+function requestWithDeadline<T>(
+  path: string,
+  host: SessionHost | undefined,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort();
+  signal?.addEventListener('abort', forwardAbort, { once: true });
+  const answer = request<T>(path, { signal: controller.signal }, transportForHost(host));
+  return withTimeout(answer, timeoutMs, label).finally(() => {
+    signal?.removeEventListener('abort', forwardAbort);
+    controller.abort();
+  });
+}
+
+// fetchNodeSessions GETs one node's own sessions over WASM, rejecting after peerFanoutTimeoutMs, so one
+// slow node never holds up the list.
+async function fetchNodeSessions(
   node: NodeInfo,
   opts: { all?: boolean; signal?: AbortSignal },
 ): Promise<{ sessions: Session[] }> {
   const q = opts.all ? '?all=true' : '';
-  const fetchP = requestRaw<Session[]>(
-    `/sessions/local${q}`,
-    { signal: opts.signal },
-    transportForHost(nodeHost(node)),
-  ).then(({ data }) => ({ sessions: data }));
-  return new Promise<{ sessions: Session[] }>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('node fan-out timeout')), peerFanoutTimeoutMs);
-    const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
-    opts.signal?.addEventListener('abort', onAbort);
-    const done = () => {
-      clearTimeout(timer);
-      opts.signal?.removeEventListener('abort', onAbort);
-    };
-    fetchP.then(
-      (v) => {
-        done();
-        resolve(v);
-      },
-      (e) => {
-        done();
-        reject(e);
-      },
-    );
-  });
+  const path = `/sessions/local${q}`;
+  const host = nodeHost(node);
+  const sessions = await requestWithDeadline<Session[]>(
+    path,
+    host,
+    opts.signal,
+    peerFanoutTimeoutMs,
+    'node fan-out',
+  );
+  return { sessions };
 }
 
 // uploadViaWasm PUTs a file to a remote session's owning node over the WASM transport (file paste/drop
@@ -243,22 +247,10 @@ export const api = {
   // failing a create with a raw backend error.
   // host (optional) checks a specific node's readiness instead of this one, e.g. the chosen create
   // target in the New Session form. Omit for the local/primary node.
-  // timeoutMs (optional) gives up on a node that does not answer. Raced as well as aborted: the direct
-  // transport closes the request on abort, while the WASM transport ignores the signal.
+  // timeoutMs (optional) gives up on a node that does not answer in time.
   preflight(host?: SessionHost, signal?: AbortSignal, timeoutMs?: number): Promise<Preflight> {
     if (!timeoutMs) return request<Preflight>('/preflight', { signal }, transportForHost(host));
-    const controller = new AbortController();
-    const forwardAbort = () => controller.abort();
-    signal?.addEventListener('abort', forwardAbort, { once: true });
-    const answer = request<Preflight>(
-      '/preflight',
-      { signal: controller.signal },
-      transportForHost(host),
-    );
-    return withTimeout(answer, timeoutMs, 'preflight').finally(() => {
-      signal?.removeEventListener('abort', forwardAbort);
-      controller.abort();
-    });
+    return requestWithDeadline('/preflight', host, signal, timeoutMs, 'preflight');
   },
 
   // runtimes reports what this node's runtimes are hosting, joined against the session table. Always
@@ -293,8 +285,12 @@ export const api = {
   },
 
   // An empty url sends sessions to the provider. Applies to machines built after it, not running ones.
-  saveLLMProxy(url: string): Promise<LLMProxy> {
-    return request('/llm-proxy', { method: 'PUT', body: JSON.stringify({ url }) });
+  saveLLMProxy(url: string, host?: SessionHost): Promise<LLMProxy> {
+    return request(
+      '/llm-proxy',
+      { method: 'PUT', body: JSON.stringify({ url }) },
+      transportForHost(host),
+    );
   },
 
   // sharedLogin is the account a node's sessions share for agent. Per node, like the LLM proxy.
@@ -319,11 +315,13 @@ export const api = {
   saveLoginSettings(
     agent: string,
     settings: { default_login_mode?: LoginMode; api_key?: string },
+    host?: SessionHost,
   ): Promise<SharedLoginStatus> {
-    return request(`/shared-logins/${encodeURIComponent(agent)}`, {
-      method: 'PUT',
-      body: JSON.stringify(settings),
-    });
+    return request(
+      `/shared-logins/${encodeURIComponent(agent)}`,
+      { method: 'PUT', body: JSON.stringify(settings) },
+      transportForHost(host),
+    );
   },
 
   // keepSharedLogin keeps the shared account. The waiting one is not asked about again.
@@ -335,10 +333,10 @@ export const api = {
     );
   },
 
-  // testLLMProxy asks this node to make one request to the configured proxy, so the UI can report
-  // whether it is reachable from here.
-  testLLMProxy(): Promise<{ result: string }> {
-    return request('/llm-proxy/test', { method: 'POST' });
+  // testLLMProxy asks a node to make one request to its configured proxy, so the UI can report
+  // whether it is reachable from there.
+  testLLMProxy(host?: SessionHost): Promise<{ result: string }> {
+    return request('/llm-proxy/test', { method: 'POST' }, transportForHost(host));
   },
 
   // workspaceVM is this node's shared machine, or null when there is none. Null is the normal state
