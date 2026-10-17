@@ -348,6 +348,16 @@ func (s *Service) handleSetupRuntime(w http.ResponseWriter, r *http.Request) {
 	// All of these are resolved before committing to a streamed 200, so a caller gets a clean status
 	// code rather than an error buried in the body.
 	finish, err := s.startRuntimeSetup(name)
+	if errors.Is(err, errRuntimeNotMissing) {
+		if _, ok := s.lookupRuntime(name); ok {
+			// Set up already, from another tab or client. Done rather than a conflict, so the caller
+			// refreshes instead of offering a setup that can never run.
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"percent": 100, "done": true})
+			return
+		}
+	}
 	if err != nil {
 		writeErrorCode(w, http.StatusConflict, codeConflict, err.Error())
 		return

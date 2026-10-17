@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -89,14 +90,17 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 }
 
 // ForVersion is the release a build takes its files from: its own, so a binary and the files it shipped
-// with are always a matched set. A build with no version of its own, which is every build from a working
-// copy, falls back to the newest release.
+// with are always a matched set. A build from a working copy falls back to the newest release: its
+// version is "dev", or a git describe such as v0.1.1-rc2-19-g51bb3af-dirty that names no release.
 func (c *Client) ForVersion(ctx context.Context, version string) (Release, error) {
-	if strings.HasPrefix(version, "v") {
+	if releaseTag.MatchString(version) {
 		return c.ByTag(ctx, version)
 	}
 	return c.Latest(ctx)
 }
+
+// releaseTag is the shape of a tag a release is cut from, such as v1.2.3 or v1.2.3-rc2.
+var releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+(-rc\d+)?$`)
 
 // ByTag is one exact release, which is how a named version is installed.
 func (c *Client) ByTag(ctx context.Context, tag string) (Release, error) {

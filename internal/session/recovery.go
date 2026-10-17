@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -18,10 +20,89 @@ import (
 // The pair of operations here closes that gap. MarkLostSessions tells the truth at startup, and
 // rebuilding a vanished sandbox on Start makes the session usable again instead of only diagnosable.
 
+// ReconcileSessions squares the session table with what the runtimes are hosting, and returns the
+// sessions to start again: those whose sandbox is gone, and those still waiting from before, on a runtime
+// set up since or a restart a shutdown cut short. Startup runs it for every runtime, and a setup for the
+// runtime it just added.
+func (s *Service) ReconcileSessions(ctx context.Context, runtimeNames ...string) []*Session {
+	if err := s.markSessionsOnMissingRuntimes(ctx); err != nil {
+		s.logger.Warn("could not stop the sessions on a runtime that is not set up", "err", err)
+	}
+	if err := s.AdoptRunningSandboxes(ctx, runtimeNames...); err != nil {
+		s.logger.Warn("could not take back what a previous run left running", "err", err)
+	}
+	// Before the check below, which marks sessions lost too: each is queued once.
+	waiting := s.sessionsWaitingToRestart(ctx, s.runtimesNamed(runtimeNames))
+	lost, err := s.MarkLostSessions(ctx, runtimeNames...)
+	if err != nil {
+		s.logger.Warn("could not check sessions against their runtimes", "err", err)
+	}
+	return append(lost, waiting...)
+}
+
+// markSessionsOnMissingRuntimes stops the running sessions on a VM runtime this node could not start.
+// Their VM died with the previous process, so "running" would leave them waiting on nothing.
+func (s *Service) markSessionsOnMissingRuntimes(ctx context.Context) error {
+	missing := s.missingRuntimeNames()
+	if len(missing) == 0 {
+		return nil
+	}
+	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, sess := range sessions {
+		if sess.Status != StatusRunning || !runtimeBootsVMs(sess.Runtime) || !slices.Contains(missing, sess.Runtime) {
+			continue
+		}
+		if err := s.repo.MarkStoppedBecause(ctx, placeholderOwner, sess.ID, StopReasonRuntimeMissing, now); err != nil {
+			return fmt.Errorf("session: mark %s stopped: %w", sess.ID, err)
+		}
+		s.logger.Info("session marked stopped: its runtime is not set up",
+			"id", sess.ID, "name", sess.Name, "runtime", sess.Runtime)
+	}
+	return nil
+}
+
+// sessionsWaitingToRestart are the sessions on one of runtimes that deepcove stopped to bring back: their
+// runtime was not set up, or a shutdown cut their restart short. They were running before, so they start
+// again.
+func (s *Service) sessionsWaitingToRestart(ctx context.Context, runtimes map[string]sandbox.Sandbox) []*Session {
+	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
+	if err != nil {
+		s.logger.Warn("could not find the sessions waiting to restart", "err", err)
+		return nil
+	}
+	var waiting []*Session
+	for _, sess := range sessions {
+		if sess.Status == StatusStopped && waitsToRestart(sess.StopReason) && runtimes[sess.Runtime] != nil {
+			waiting = append(waiting, sess)
+		}
+	}
+	return waiting
+}
+
+// waitsToRestart reports whether deepcove stopped a session meaning to start it again.
+func waitsToRestart(reason StopReason) bool {
+	return reason == StopReasonRuntimeMissing || reason == StopReasonSandboxLost
+}
+
+// runtimesNamed is the registered runtimes, or only the named ones when any are named.
+func (s *Service) runtimesNamed(names []string) map[string]sandbox.Sandbox {
+	runtimes := s.registeredRuntimes()
+	if len(names) > 0 {
+		maps.DeleteFunc(runtimes, func(name string, _ sandbox.Sandbox) bool {
+			return !slices.Contains(names, name)
+		})
+	}
+	return runtimes
+}
+
 // AdoptRunningSandboxes hands every runtime that can take its sandboxes back the ids its sessions were
-// using. Called once at startup, before MarkLostSessions, so a session whose sandbox survived is not
-// seen as lost and rebuilt on top of itself.
-func (s *Service) AdoptRunningSandboxes(ctx context.Context) error {
+// using, or only the named runtimes. Called before MarkLostSessions, so a session whose sandbox survived
+// is not seen as lost and rebuilt on top of itself.
+func (s *Service) AdoptRunningSandboxes(ctx context.Context, runtimeNames ...string) error {
 	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
 	if err != nil {
 		return err
@@ -29,7 +110,7 @@ func (s *Service) AdoptRunningSandboxes(ctx context.Context) error {
 	byRuntime := runningSessionsByRuntime(sessions, s.DefaultRuntime())
 
 	var adoptErr error
-	for name, driver := range s.registeredRuntimes() {
+	for name, driver := range s.runtimesNamed(runtimeNames) {
 		adopter, ok := driver.(sandbox.Adopter)
 		if !ok {
 			continue
@@ -94,19 +175,21 @@ func (s *Service) savedSpecForSession(sess *Session) (sandbox.SandboxSpec, error
 }
 
 // MarkLostSessions marks a session stopped when its runtime no longer has the sandbox the row points
-// at, and returns those sessions. They were running a moment ago, so the caller can bring them back.
+// at, and returns those sessions. They were running a moment ago, so the caller can bring them back. Only
+// the named runtimes are checked when any are named.
 //
 // Only runtimes that can enumerate their sandboxes are considered. "The driver cannot tell us" is not
 // "the sandbox is gone", and guessing would stop sessions that are running fine.
-func (s *Service) MarkLostSessions(ctx context.Context) ([]*Session, error) {
+func (s *Service) MarkLostSessions(ctx context.Context, runtimeNames ...string) ([]*Session, error) {
 	sessions, err := s.List(ctx, ListFilter{IncludeAll: true})
 	if err != nil {
 		return nil, err
 	}
 
 	// One listing per runtime rather than one per session.
-	alive := make(map[string]map[string]bool, len(s.runtimes))
-	for name, driver := range s.runtimes {
+	runtimes := s.runtimesNamed(runtimeNames)
+	alive := make(map[string]map[string]bool, len(runtimes))
+	for name, driver := range runtimes {
 		lister, ok := driver.(sandbox.Lister)
 		if !ok {
 			continue
@@ -136,11 +219,13 @@ func (s *Service) MarkLostSessions(ctx context.Context) ([]*Session, error) {
 		if !known || sandboxes[sess.SandboxID] {
 			continue
 		}
-		if err := s.repo.MarkStopped(ctx, placeholderOwner, sess.ID, now); err != nil {
+		if err := s.repo.MarkStoppedBecause(ctx, placeholderOwner, sess.ID, StopReasonSandboxLost, now); err != nil {
 			return nil, fmt.Errorf("session: mark %s lost: %w", sess.ID, err)
 		}
 		s.logger.Info("session marked stopped: its sandbox is gone",
 			"id", sess.ID, "name", sess.Name, "runtime", sess.Runtime, "sandbox", sess.SandboxID)
+		// As the row now reads, which RestartSessions compares against to see a Stop that came after.
+		sess.Status, sess.StopReason = StatusStopped, StopReasonSandboxLost
 		lost = append(lost, sess)
 	}
 	return lost, nil
@@ -176,12 +261,59 @@ func (s *Service) MarkSandboxStopped(runtime string, sandboxID sandbox.ID) {
 // builds it and the rest join what is already up.
 func (s *Service) RestartSessions(ctx context.Context, sessions []*Session) {
 	for _, sess := range sessions {
-		if err := s.Start(ctx, sess.ID); err != nil {
-			s.logger.Warn("could not restart session", "id", sess.ID, "name", sess.Name, "err", err)
-			continue
-		}
-		s.logger.Info("session restarted", "id", sess.ID, "name", sess.Name)
+		s.restartIfStillQueued(ctx, sess)
 	}
+}
+
+// restartIfStillQueued starts sess unless you stopped it after it was queued, which clears the reason it
+// was queued for. Under the lock Stop takes, so a Stop either lands before the check and is seen, or
+// waits for the start and then stops it.
+func (s *Service) restartIfStillQueued(ctx context.Context, sess *Session) {
+	unlock, err := s.lockAgent(ctx, sess.ID)
+	if err != nil {
+		s.logger.Warn("could not restart session", "id", sess.ID, "name", sess.Name, "err", err)
+		return
+	}
+	defer unlock()
+	current, err := s.Get(ctx, sess.ID)
+	if err != nil {
+		s.logger.Warn("could not restart session", "id", sess.ID, "name", sess.Name, "err", err)
+		return
+	}
+	if current.StopReason != sess.StopReason {
+		return
+	}
+	if err := s.Start(ctx, sess.ID); err != nil {
+		s.logger.Warn("could not restart session", "id", sess.ID, "name", sess.Name, "err", err)
+		// It is not coming back on its own after a real failure, or every startup would retry it. Kept on
+		// a shutdown, so the next start tries again.
+		if ctx.Err() == nil && waitsToRestart(sess.StopReason) {
+			if err := s.repo.MarkStopped(ctx, placeholderOwner, sess.ID, time.Now().UTC()); err != nil {
+				s.logger.Warn("could not clear why a session was stopped", "id", sess.ID, "err", err)
+			}
+		}
+		return
+	}
+	s.logger.Info("session restarted", "id", sess.ID, "name", sess.Name)
+}
+
+// SetLifetime is the context restarts run on: the node's own run, cancelled when it shuts down.
+func (s *Service) SetLifetime(ctx context.Context) {
+	s.lifetime = ctx
+}
+
+// RestartSessionsInBackground starts sessions again without holding up the caller. On the node's lifetime
+// rather than the caller's: a setup request ends long before its VMs are up.
+func (s *Service) RestartSessionsInBackground(sessions []*Session) {
+	s.restarts.Go(func() {
+		s.RestartSessions(s.lifetime, sessions)
+	})
+}
+
+// WaitForRestarts returns once every background restart has ended. Shutdown calls it after the lifetime
+// is cancelled and before the runtimes close.
+func (s *Service) WaitForRestarts() {
+	s.restarts.Wait()
 }
 
 // rebuildSandbox creates a fresh sandbox for a session whose old one no longer exists, and points the row

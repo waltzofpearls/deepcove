@@ -98,6 +98,21 @@ func TestHandleSetupRuntime(t *testing.T) {
 		}
 	})
 
+	t.Run("setting up a runtime that is already set up ends done", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		mux := http.NewServeMux()
+		svc.AttachRoutes(mux)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/runtimes/"+runtimeFake+"/setup", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		lines := decodeStream(t, rec.Body.String())
+		if last := lines[len(lines)-1]; last["done"] != true {
+			t.Errorf("last line: got %v, want done", last)
+		}
+	})
+
 	t.Run("a second setup while one is running is a conflict", func(t *testing.T) {
 		svc, _, _, _ := newTestService(t)
 		svc.MarkRuntimeMissing(RuntimeAppleVF, MissingKernel)

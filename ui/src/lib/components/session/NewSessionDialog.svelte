@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
-  import { opensInNewTab } from '$lib/util/links';
   import {
     Dialog,
     DialogContent,
@@ -24,6 +23,7 @@
   import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import VMSizePicker from './VMSizePicker.svelte';
   import LoginModePicker from './LoginModePicker.svelte';
+  import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
   import { loginChoices, type LoginPlace } from '$lib/util/loginMode';
   import { shellQuote } from '$lib/util/shell';
   import { looksLikePath, pathInsideFolder, sessionFolderIn } from '$lib/util/path';
@@ -42,7 +42,7 @@
     runtimeHint,
     runtimeLabel,
     missingReasons,
-    runtimeSetupOffered,
+    runtimeSetUpByDeepcove,
     showsRuntimePicker,
     RUNTIME_SANDBOXLESS,
   } from '$lib/util/runtime';
@@ -171,9 +171,6 @@
     const host = untrack(() => selectedHost);
     nodeRuntimes = null;
     nodeRuntimesError = null;
-    // A pick belongs to the node it was made for, and to this visit: reopening or switching nodes
-    // starts from that node's own default, so No sandbox is never carried over unseen.
-    runtimeChoice = '';
     waitingForNodeRuntimes = Boolean(open && key);
     if (!open || !key) return;
     let cancelled = false;
@@ -196,6 +193,16 @@
       ac.abort();
     };
   });
+  // A pick belongs to the node it was made for, and to this visit: reopening or switching nodes starts
+  // from that node's own default, so No sandbox is never carried over unseen. Not on a re-read of the
+  // same node, such as the one after a setup, which would drop the VM you just picked.
+  $effect(() => {
+    void open;
+    void selectedHostKey;
+    runtimeChoice = '';
+    // A download started for the last node is that node's. Its button is gone, so nothing else clears it.
+    downloadingVM = false;
+  });
 
   const preflightLoaded = $derived(
     !waitingForNodeRuntimes && (nodeRuntimes !== null || preflight.loaded),
@@ -209,17 +216,43 @@
     waitingForNodeRuntimes || nodeRuntimesError ? null : (nodeRuntimes ?? preflight.runtimes),
   );
   const runtimeOptions = $derived(runtimes?.available ?? []);
+  // A VM runtime this node can have after a one-time download. It is listed under Isolation so the setup
+  // runs right here, and it is the pick unless you choose something else.
+  const vmToSetUp = $derived.by(() => {
+    if (runtimeOptions.some(bootsVMs)) return null;
+    const missing = Object.entries(runtimes?.missing ?? {});
+    return (
+      missing.find(([name, code]) => bootsVMs(name) && runtimeSetUpByDeepcove(code))?.[0] ?? null
+    );
+  });
   // No sandbox is still offered when it can't run yet, greyed out with what it needs.
   const sandboxlessNeedsTmux = $derived(runtimes?.missing?.[RUNTIME_SANDBOXLESS] === 'no_tmux');
-  const showRuntimePicker = $derived(showsRuntimePicker(runtimeOptions) || sandboxlessNeedsTmux);
+  const showRuntimePicker = $derived(
+    showsRuntimePicker(runtimeOptions) || sandboxlessNeedsTmux || vmToSetUp !== null,
+  );
   // Only the user's explicit pick is stored. Resolving it against the node happens in a $derived
   // below, NOT in an $effect: an effect that both reads and writes the same state re-triggers itself,
   // which in Svelte 5 runs until effect_update_depth_exceeded and hangs the page.
   let runtimeChoice = $state('');
+  // Picked when you pick it, or when the node has no default of its own. A node told to default to No
+  // sandbox keeps that.
+  const settingUpVM = $derived(
+    vmToSetUp !== null && (runtimeChoice === vmToSetUp || (!runtimeChoice && !runtimes?.default)),
+  );
+  // True while the download runs, so its progress gets the whole row.
+  let downloadingVM = $state(false);
+  // The node picks its default again once the download is done, and that is the VM, so a fresh read
+  // selects it and the form opens up.
+  function refreshRuntimes() {
+    if (selectedHostKey) nodeRuntimesAttempt++;
+    else return preflight.refresh();
+  }
   // What the create will actually use. A pick the target node does not offer falls back to that node's
   // default, which can be empty ("Choose one"), so switching nodes can never leave an unavailable runtime
   // selected. Image checks and pulls target this too, since each runtime keeps its own image store.
   const effectiveRuntime = $derived.by(() => {
+    // The VM on screen is not set up yet, so nothing can be created; never the default behind it.
+    if (settingUpVM) return '';
     if (runtimeChoice && runtimeOptions.includes(runtimeChoice)) return runtimeChoice;
     return runtimes?.default ?? '';
   });
@@ -230,24 +263,6 @@
   const runtimeKnown = $derived(effectiveRuntime !== '');
   // Workspace and session VMs are VM concepts. Anywhere else there is no machine to choose.
   const onVMRuntime = $derived(bootsVMs(effectiveRuntime));
-  // This machine offers no VM yet but deepcove can set one up. Without this line the picker offers only
-  // No sandbox, and nothing says that isolation is one download away.
-  const vmSetupOffered = $derived(
-    !(selectedHost ?? soleRemoteNode) &&
-      runtimeSetupOffered(runtimes) &&
-      !runtimeOptions.some(bootsVMs),
-  );
-  // A plain click goes to the page, so the dialog closes. A cmd or ctrl click opens a new tab and keeps the form.
-  function closeUnlessNewTab(e: MouseEvent) {
-    if (opensInNewTab(e)) return;
-    open = false;
-  }
-  // The same, for a remote node: its own page under Nodes has the Set up button.
-  const remoteVMSetupOffered = $derived(
-    runtimeSetupOffered(runtimes) && !runtimeOptions.some(bootsVMs)
-      ? (selectedHost ?? soleRemoteNode)
-      : null,
-  );
 
   // No sandbox means no image and no size caps, and the folder is a real folder on that machine rather
   // than something mounted into a guest.
@@ -269,26 +284,10 @@
     if (nodeRuntimesError) return nodeRuntimesError;
     if (!runtimes) return null;
     if (runtimeOptions.length > 0) return runtimes.unavailable?.[effectiveRuntime] ?? null;
+    // The download under Isolation is the way forward, so there is nothing to block on.
+    if (vmToSetUp) return null;
     const where = (selectedHost ?? soleRemoteNode)?.hostname ?? 'This machine';
-    const reasons = runtimeSetupOffered(runtimes) ? [] : missingReasons(runtimes);
-    return [`${where} has nothing to run sessions on yet.`, ...reasons].join(' ');
-  });
-  // The remote node behind that message, whose own page can set it up from here.
-  const remoteNodeWithNothing = $derived(
-    runtimes && runtimeOptions.length === 0 && runtimeSetupOffered(runtimes)
-      ? (selectedHost ?? soleRemoteNode)
-      : null,
-  );
-  // Back from setting the node up in another tab: ask it again. Only while nothing is picked, since a
-  // fresh answer resets the pick.
-  $effect(() => {
-    const waitingOnSetup =
-      remoteNodeWithNothing || ((vmSetupOffered || remoteVMSetupOffered) && !runtimeChoice);
-    if (!open || !waitingOnSetup) return;
-    // A single node is read from the shared preflight rather than asked directly.
-    const recheck = () => (selectedHostKey ? nodeRuntimesAttempt++ : void preflight.refresh());
-    window.addEventListener('focus', recheck);
-    return () => window.removeEventListener('focus', recheck);
+    return [`${where} has nothing to run sessions on yet.`, ...missingReasons(runtimes)].join(' ');
   });
   // Another option could host the session right now.
   const otherIsolationUsable = $derived(
@@ -825,21 +824,6 @@
   }
 </script>
 
-{#snippet vmSetupLink()}
-  <a
-    href="/setup?step=vm"
-    onclick={(e) => {
-      if (opensInNewTab(e)) return;
-      e.preventDefault();
-      open = false;
-      goto('/setup?step=vm', { state: { autostartSetup: true } });
-    }}
-    class="cursor-pointer underline underline-offset-4 hover:text-foreground"
-  >
-    Set up
-  </a>
-{/snippet}
-
 <Dialog bind:open>
   <DialogContent
     class="flex max-h-[90vh] w-[calc(100%-2rem)] max-w-4xl flex-col gap-0 p-0 sm:max-w-4xl"
@@ -883,13 +867,16 @@
             <select
               id="runtime"
               aria-describedby="runtime-hint"
-              value={effectiveRuntime}
+              value={settingUpVM ? vmToSetUp : effectiveRuntime}
               onchange={(e) => (runtimeChoice = e.currentTarget.value)}
               class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <!-- The node picks no default when No sandbox is all it has: that has to be your choice. -->
-              {#if !effectiveRuntime}
+              {#if !effectiveRuntime && !settingUpVM}
                 <option value="" disabled>Choose one</option>
+              {/if}
+              {#if vmToSetUp}
+                <option value={vmToSetUp}>{runtimeLabel(vmToSetUp)} (needs setup)</option>
               {/if}
               {#each runtimeOptions as runtimeName (runtimeName)}
                 <option value={runtimeName}>{runtimeLabel(runtimeName)}</option>
@@ -901,29 +888,32 @@
               {/if}
             </select>
             <p id="runtime-hint" class="text-xs text-muted-foreground">
-              {effectiveRuntime ? runtimeHint(effectiveRuntime) : 'Pick how this session runs.'}
+              {settingUpVM && vmToSetUp
+                ? runtimeHint(vmToSetUp)
+                : effectiveRuntime
+                  ? runtimeHint(effectiveRuntime)
+                  : 'Pick how this session runs.'}
             </p>
             {#if sandboxlessNeedsTmux}
               <p class="text-xs text-muted-foreground">
                 No sandbox needs tmux. Install it, then restart deepcove.
               </p>
             {/if}
-            {#if vmSetupOffered}
-              <p class="text-xs text-muted-foreground">
-                Virtual machines aren't set up yet.
-                {@render vmSetupLink()}
-              </p>
-            {:else if remoteVMSetupOffered}
-              <p class="text-xs text-muted-foreground">
-                Virtual machines aren't set up on {remoteVMSetupOffered.hostname} yet.
-                <a
-                  href={`/nodes/${remoteVMSetupOffered.stable_node_id}`}
-                  onclick={closeUnlessNewTab}
-                  class="underline underline-offset-4 hover:text-foreground"
-                >
-                  Set up
-                </a>
-              </p>
+            {#if settingUpVM && vmToSetUp}
+              <!-- The setup button's error drops to a line of its own, so it never squeezes the row. -->
+              <div
+                class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-md border border-border px-3 py-2 [&>p[role=alert]]:mt-0 [&>p[role=alert]]:basis-full"
+              >
+                {#if !downloadingVM}
+                  <p class="flex-1 text-xs text-muted-foreground">Needs a one-time download.</p>
+                {/if}
+                <RuntimeSetupButton
+                  runtime={vmToSetUp}
+                  host={selectedHost}
+                  ondone={refreshRuntimes}
+                  bind:busy={downloadingVM}
+                />
+              </div>
             {/if}
           </div>
         {/if}
@@ -1318,19 +1308,6 @@
           {#if otherIsolationUsable}
             Pick another option under Isolation to create a session now.
           {/if}
-          <!-- With the picker on screen, its own "Virtual machines aren't set up yet" link is enough. -->
-          {#if vmSetupOffered && runtimeOptions.length === 0 && !showRuntimePicker}
-            {@render vmSetupLink()}
-          {/if}
-          {#if remoteNodeWithNothing}
-            <a
-              href={`/nodes/${remoteNodeWithNothing.stable_node_id}`}
-              onclick={closeUnlessNewTab}
-              class="underline underline-offset-4"
-            >
-              Set one up on its page under Nodes.
-            </a>
-          {/if}
           {#if nodeRuntimesError}
             <button
               type="button"
@@ -1379,7 +1356,9 @@
       {/if}
 
       <div class="flex items-center justify-end gap-2">
-        {#if creatingWorkspaceVM && !looksLikePath(workspaceHostRoot)}
+        {#if settingUpVM}
+          <p class="text-xs text-muted-foreground">Set up virtual machines first.</p>
+        {:else if creatingWorkspaceVM && !looksLikePath(workspaceHostRoot)}
           <p class="text-xs text-muted-foreground">Pick a folder this VM can see.</p>
         {/if}
         <Button variant="ghost" onclick={() => (open = false)} disabled={submitting || pulling}>
