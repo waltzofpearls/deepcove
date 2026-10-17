@@ -138,6 +138,10 @@ type Service struct {
 	// background runs work that outlives the request that started it, like waiting for a machine to
 	// finish setting up. A field so tests can run it synchronously instead of racing it.
 	background func(func())
+	// lifetime is the node's own run: restarts that outlive a request use it, so a shutdown still stops
+	// them. restarts is waited on before the runtimes close, so none boots a VM after they are gone.
+	lifetime context.Context
+	restarts sync.WaitGroup
 
 	// workspaceVM persists the shared machine. nil on a node that never wires one, where every session
 	// gets a sandbox of its own.
@@ -170,6 +174,7 @@ func NewService(repo SessionRepository, logger *slog.Logger) *Service {
 		runtimes:     map[string]sandbox.Sandbox{},
 		previewCache: newPreviewCache(previewCacheMaxEntries),
 		background:   func(f func()) { go f() },
+		lifetime:     context.Background(),
 		// The guest asks for the login every 10 seconds, and writing it takes moments.
 		sharedLoginWaitLimit: 15 * time.Second,
 		sharedLoginWaitEvery: 500 * time.Millisecond,
@@ -527,6 +532,14 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 	}
 	// Starting is a no-op for the same reason stopped is: there is nothing running to stop yet. This is
 	// also what happened before the status existed, when a booting session still read as stopped.
+	if sess.Status == StatusStopped && sess.StopReason != "" {
+		// Stopped by deepcove and waiting to come back, after a setup for one. Stopped by you now, so it
+		// stays down.
+		if err := s.repo.MarkStopped(ctx, placeholderOwner, id, time.Now().UTC()); err != nil {
+			return fmt.Errorf("session: mark stopped: %w", err)
+		}
+		return nil
+	}
 	if sess.Status == StatusStopped || sess.Status == StatusStarting {
 		return nil
 	}

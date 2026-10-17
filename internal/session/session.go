@@ -36,6 +36,14 @@ type StopReason string
 // StopReasonUnresponsive is a VM that stopped answering, so deepcove shut it down.
 const StopReasonUnresponsive StopReason = "unresponsive"
 
+// StopReasonRuntimeMissing is a session on a VM runtime that was not set up when deepcove started. Its VM
+// died with the previous process. It starts again once the runtime is set up.
+const StopReasonRuntimeMissing StopReason = "runtime_missing"
+
+// StopReasonSandboxLost is a session whose sandbox was gone when deepcove started, most often a VM that
+// died with the previous process. Startup restarts it.
+const StopReasonSandboxLost StopReason = "sandbox_lost"
+
 // Mounts only holds USER-supplied mounts; the agent's home is an implementation detail and stays out of
 // the API.
 type Session struct {

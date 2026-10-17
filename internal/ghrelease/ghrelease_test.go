@@ -329,7 +329,11 @@ func TestClientForVersion(t *testing.T) {
 		want    string
 	}{
 		{name: "a released build asks for its own release", version: "v1.2.3", want: "tags/v1.2.3"},
+		{name: "a release candidate asks for its own release", version: "v1.2.3-rc2", want: "tags/v1.2.3-rc2"},
 		{name: "a build from a working copy asks for the newest", version: "dev", want: "latest"},
+		{name: "a build past a tag asks for the newest", version: "v0.1.1-rc2-19-g51bb3af", want: "latest"},
+		{name: "a build with local changes asks for the newest", version: "v0.1.1-rc2-dirty", want: "latest"},
+		{name: "a build from the tag with local changes asks for the newest", version: "v0.1.1-rc2-19-g51bb3af-dirty", want: "latest"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

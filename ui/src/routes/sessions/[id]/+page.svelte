@@ -262,7 +262,9 @@
       ? 'Start it again, or destroy and recreate it.'
       : session?.status === 'stopped' && session.stop_reason === 'unresponsive'
         ? 'The VM stopped answering and was shut down. Start it again.'
-        : 'The terminal opens when the session is running.',
+        : session?.status === 'stopped' && session.stop_reason === 'runtime_missing'
+          ? "Virtual machines aren't set up on this session's node yet. It starts again once they are."
+          : 'The terminal opens when the session is running.',
   );
 
   $effect(() => {

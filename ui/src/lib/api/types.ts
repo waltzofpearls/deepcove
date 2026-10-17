@@ -15,7 +15,7 @@ export interface Session {
   owner_email: string;
   status: SessionStatus;
   // Why deepcove stopped this session on its own. Absent when you stopped it.
-  stop_reason?: 'unresponsive';
+  stop_reason?: 'unresponsive' | 'runtime_missing' | 'sandbox_lost';
   env: Record<string, string> | null;
   // User mounts currently attached to the sandbox. The agent's /root
   // home is NOT included, because deepcove manages it, not the user.

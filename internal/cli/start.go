@@ -131,6 +131,12 @@ func cmdStart(ctx context.Context, args []string) error {
 	sessionSvc.SetSharedLogins(logins, sharedLoginStore)
 	runtimes := registerRuntimes(sessionSvc, cfg, logins, logger, tailnetClient)
 	defer runtimes.close()
+	// Defers unwind in reverse: the lifetime ends first, on every return and not only a shutdown signal,
+	// then the restarts on it are waited for, then the runtimes close.
+	lifetime, endLifetime := context.WithCancel(ctx)
+	defer sessionSvc.WaitForRestarts()
+	defer endLifetime()
+	sessionSvc.SetLifetime(lifetime)
 	// Defers unwind in reverse, so this runs before the runtimes and the database close. Terminal
 	// streams survive the HTTP drain (their connection is hijacked) and need both to clean up.
 	defer sessionSvc.CloseAttachStreams(attachCloseGrace)
@@ -145,18 +151,9 @@ func cmdStart(ctx context.Context, args []string) error {
 	// Bring the session table back in line with what the runtimes are actually hosting, then restart what
 	// was running. VM sessions died with the previous process, so without this they all sit stopped.
 	// Must run AFTER the runtimes are registered, or there is nothing to ask.
-	// A runtime whose sandboxes outlive deepcove takes them back here, so the check below does not read
-	// them as gone.
-	if err := sessionSvc.AdoptRunningSandboxes(ctx); err != nil {
-		logger.Warn("could not take back what a previous run left running", "err", err)
-	}
-	lost, err := sessionSvc.MarkLostSessions(ctx)
-	if err != nil {
-		logger.Warn("could not check sessions against their runtimes", "err", err)
-	}
-	if len(lost) > 0 {
+	if lost := sessionSvc.ReconcileSessions(ctx); len(lost) > 0 {
 		// In the background: each VM takes seconds to boot, and the node should serve requests meanwhile.
-		go sessionSvc.RestartSessions(ctx, lost)
+		sessionSvc.RestartSessionsInBackground(lost)
 	}
 
 	mux := http.NewServeMux()

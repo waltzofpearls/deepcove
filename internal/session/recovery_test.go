@@ -5,8 +5,12 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/waltzofpearls/deepcove/internal/db"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
@@ -77,6 +81,69 @@ func TestMarkLostSessionsSkipsRuntimesThatCannotList(t *testing.T) {
 	}
 	if got.Status != StatusRunning {
 		t.Errorf("status = %q; a runtime that cannot list must not have its sessions stopped", got.Status)
+	}
+}
+
+func TestReconcileSessions_OnlyTheNamedRuntime(t *testing.T) {
+	cases := []struct {
+		name     string
+		runtimes []string
+		want     Status
+	}{
+		{name: "every runtime at startup", runtimes: nil, want: StatusStopped},
+		{name: "the runtime a setup added", runtimes: []string{runtimeFake}, want: StatusStopped},
+		{name: "another runtime", runtimes: []string{"other"}, want: StatusRunning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, lister := newListerService(t)
+			ctx := context.Background()
+			sess := mustCreate(t, svc, "claude")
+			lister.instances = nil
+
+			lost := svc.ReconcileSessions(ctx, tc.runtimes...)
+
+			got, err := svc.Get(ctx, sess.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Status != tc.want {
+				t.Errorf("status = %q, want %q", got.Status, tc.want)
+			}
+			if wantLost := tc.want == StatusStopped; (len(lost) == 1) != wantLost {
+				t.Errorf("returned %d lost sessions, want lost = %v", len(lost), wantLost)
+			}
+		})
+	}
+}
+
+func TestReconcileSessions_RuntimeSetUpAfterStartup(t *testing.T) {
+	ctx := context.Background()
+	database := db.OpenForTest(t)
+	lister := &listerSandbox{fakeSandbox: newFakeSandbox()}
+	sess := mustCreate(t, newServiceWithNamedRuntime(t, database, lister, RuntimeAppleVF), "claude")
+
+	// A restart before the VM runtime is set up: it is missing, not registered.
+	restarted := NewService(NewDuckDBSessionRepository(database), nil)
+	restarted.MarkRuntimeMissing(RuntimeAppleVF, MissingKernel)
+	if lost := restarted.ReconcileSessions(ctx); len(lost) != 0 {
+		t.Errorf("startup returned %d sessions to start, want none: the runtime is not there", len(lost))
+	}
+	got, err := restarted.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusStopped || got.StopReason != StopReasonRuntimeMissing {
+		t.Errorf("status, reason = %q, %q, want stopped, %q", got.Status, got.StopReason, StopReasonRuntimeMissing)
+	}
+
+	// The setup.
+	lister.instances = nil
+	restarted.RegisterRuntime(RuntimeAppleVF, lister)
+	restarted.MarkRuntimeReady(RuntimeAppleVF)
+	lost := restarted.ReconcileSessions(ctx, RuntimeAppleVF)
+	if len(lost) != 1 || lost[0].ID != sess.ID {
+		t.Errorf("setup returned %d sessions to start, want the one that waited", len(lost))
 	}
 }
 
@@ -367,5 +434,234 @@ func TestRunningSessionsByRuntime(t *testing.T) {
 				t.Errorf("grouped %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestReconcileSessions_StoppedWhileWaitingOnSetup(t *testing.T) {
+	ctx := context.Background()
+	database := db.OpenForTest(t)
+	lister := &listerSandbox{fakeSandbox: newFakeSandbox()}
+	sess := mustCreate(t, newServiceWithNamedRuntime(t, database, lister, RuntimeAppleVF), "claude")
+
+	restarted := NewService(NewDuckDBSessionRepository(database), nil)
+	restarted.MarkRuntimeMissing(RuntimeAppleVF, MissingKernel)
+	restarted.ReconcileSessions(ctx)
+	if err := restarted.Stop(ctx, sess.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	restarted.RegisterRuntime(RuntimeAppleVF, lister)
+	restarted.MarkRuntimeReady(RuntimeAppleVF)
+	if lost := restarted.ReconcileSessions(ctx, RuntimeAppleVF); len(lost) != 0 {
+		t.Errorf("setup returned %d sessions to start, want none: you stopped it", len(lost))
+	}
+}
+
+func TestRestartSessions_StoppedWhileQueued(t *testing.T) {
+	ctx := context.Background()
+	database := db.OpenForTest(t)
+	lister := &listerSandbox{fakeSandbox: newFakeSandbox()}
+	sess := mustCreate(t, newServiceWithNamedRuntime(t, database, lister, RuntimeAppleVF), "claude")
+
+	restarted := NewService(NewDuckDBSessionRepository(database), nil)
+	restarted.MarkRuntimeMissing(RuntimeAppleVF, MissingKernel)
+	restarted.ReconcileSessions(ctx)
+	restarted.RegisterRuntime(RuntimeAppleVF, lister)
+	restarted.MarkRuntimeReady(RuntimeAppleVF)
+	queued := restarted.ReconcileSessions(ctx, RuntimeAppleVF)
+
+	if err := restarted.Stop(ctx, sess.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	restarted.RestartSessions(ctx, queued)
+
+	got, err := restarted.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusStopped {
+		t.Errorf("status = %q, want stopped: you stopped it while it was queued", got.Status)
+	}
+}
+
+func TestRestartSessions_LostSessionStoppedWhileQueued(t *testing.T) {
+	svc, lister := newListerService(t)
+	ctx := context.Background()
+	sess := mustCreate(t, svc, "claude")
+	lister.instances = nil
+	lost, err := svc.MarkLostSessions(ctx)
+	if err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
+	}
+
+	if err := svc.Stop(ctx, sess.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	svc.RestartSessions(ctx, lost)
+
+	got, err := svc.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusStopped {
+		t.Errorf("status = %q, want stopped: you stopped it while it was queued", got.Status)
+	}
+}
+
+// blockingCreateSandbox holds a rebuild open until released, so a test can act while a restart is mid-start.
+type blockingCreateSandbox struct {
+	*listerSandbox
+	block            bool
+	entered, release chan struct{}
+	enteredOnce      sync.Once
+	creates          atomic.Int32
+}
+
+func (b *blockingCreateSandbox) Create(ctx context.Context, spec sandbox.SandboxSpec) (sandbox.ID, error) {
+	if b.block {
+		b.creates.Add(1)
+		b.enteredOnce.Do(func() {
+			close(b.entered)
+		})
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return b.listerSandbox.Create(ctx, spec)
+}
+
+func TestRestartSessions_StoppedWhileStarting(t *testing.T) {
+	ctx := context.Background()
+	sandboxes := &blockingCreateSandbox{
+		listerSandbox: &listerSandbox{fakeSandbox: newFakeSandbox()},
+		entered:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	svc := newServiceWithRuntime(t, db.OpenForTest(t), sandboxes)
+	sess := mustCreate(t, svc, "claude")
+	// What a restart looks like to a VM runtime: the sandbox is gone, so the restart rebuilds it.
+	sandboxes.forget()
+	lost, err := svc.MarkLostSessions(ctx)
+	if err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
+	}
+
+	sandboxes.block = true
+	restartDone := make(chan struct{})
+	go func() {
+		defer close(restartDone)
+		svc.RestartSessions(ctx, lost)
+	}()
+	<-sandboxes.entered
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- svc.Stop(ctx, sess.ID)
+	}()
+	// Before the fix, Stop saw the session starting and returned at once, a no-op. Now it waits.
+	var stopErr error
+	stopReturnedEarly := false
+	select {
+	case stopErr = <-stopDone:
+		stopReturnedEarly = true
+		t.Error("Stop returned while the restart was still starting the session")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(sandboxes.release)
+	<-restartDone
+	if !stopReturnedEarly {
+		stopErr = <-stopDone
+	}
+	if stopErr != nil {
+		t.Fatalf("Stop: %v", stopErr)
+	}
+
+	got, err := svc.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusStopped {
+		t.Errorf("status = %q, want stopped: you stopped it while it was starting", got.Status)
+	}
+}
+
+func TestRestartSessions_FailedRestartAfterSetup(t *testing.T) {
+	ctx := context.Background()
+	database := db.OpenForTest(t)
+	lister := &listerSandbox{fakeSandbox: newFakeSandbox()}
+	sess := mustCreate(t, newServiceWithNamedRuntime(t, database, lister, RuntimeAppleVF), "claude")
+
+	restarted := NewService(NewDuckDBSessionRepository(database), nil)
+	restarted.MarkRuntimeMissing(RuntimeAppleVF, MissingKernel)
+	restarted.ReconcileSessions(ctx)
+	restarted.RegisterRuntime(RuntimeAppleVF, lister)
+	restarted.MarkRuntimeReady(RuntimeAppleVF)
+	queued := restarted.ReconcileSessions(ctx, RuntimeAppleVF)
+
+	lister.forget()
+	lister.startErr = errors.New("the VM would not boot")
+	restarted.RestartSessions(ctx, queued)
+
+	got, err := restarted.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusStopped || got.StopReason != "" {
+		t.Errorf("status, reason = %q, %q, want stopped with no reason: the setup it waited on is done",
+			got.Status, got.StopReason)
+	}
+}
+
+func TestRestartSessionsInBackground_EndsWithTheLifetime(t *testing.T) {
+	ctx := context.Background()
+	lifetime, endLifetime := context.WithCancel(ctx)
+	sandboxes := &blockingCreateSandbox{
+		listerSandbox: &listerSandbox{fakeSandbox: newFakeSandbox()},
+		entered:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	svc := newServiceWithRuntime(t, db.OpenForTest(t), sandboxes)
+	svc.SetLifetime(lifetime)
+	first := mustCreate(t, svc, "claude")
+	second := mustCreate(t, svc, "claude")
+	sandboxes.forget()
+	lost, err := svc.MarkLostSessions(ctx)
+	if err != nil {
+		t.Fatalf("MarkLostSessions: %v", err)
+	}
+
+	sandboxes.block = true
+	svc.RestartSessionsInBackground(lost)
+	<-sandboxes.entered
+	endLifetime()
+
+	waited := make(chan struct{})
+	go func() {
+		svc.WaitForRestarts()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForRestarts did not return after the lifetime ended")
+	}
+	if n := sandboxes.creates.Load(); n != 1 {
+		t.Errorf("began %d sandboxes, want only the one already starting when the lifetime ended", n)
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		got, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Status == StatusRunning {
+			t.Errorf("session %s is running after the lifetime ended", id)
+		}
+	}
+
+	// The next startup picks up both: one cut short mid-start, one never begun.
+	if queued := svc.ReconcileSessions(ctx); len(queued) != 2 {
+		t.Errorf("next startup queued %d sessions, want both whose restart was cut short", len(queued))
 	}
 }

@@ -211,6 +211,11 @@ func registerInstalledRuntime(
 		logger.Warn("requested default runtime is not provided on this node; picking the best default it has, which may be none",
 			"requested", cfg.DefaultRuntime, "err", err)
 	}
+	// Its sessions were skipped at startup. Not on the request's context: the runtime is registered now,
+	// so a client that leaves here must not cancel bringing them back.
+	if lost := svc.ReconcileSessions(context.WithoutCancel(ctx), entry.name); len(lost) > 0 {
+		svc.RestartSessionsInBackground(lost)
+	}
 	return nil
 }
 
