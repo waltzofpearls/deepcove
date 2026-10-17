@@ -53,7 +53,7 @@ func cmdStart(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := allowSandboxHosts.validateAddrs(); err != nil {
+	if err := allowSandboxHosts.validateAddrs(runtime.GOOS); err != nil {
 		return fmt.Errorf("sandbox-can-reach: %w", err)
 	}
 	cfg.AllowSandboxHosts = allowSandboxHosts

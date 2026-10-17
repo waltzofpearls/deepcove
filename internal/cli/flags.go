@@ -25,17 +25,26 @@ func (r *repeatedFlag) Set(value string) error {
 }
 
 // validateAddrs checks every entry is an IP or a CIDR, so a typo fails at startup rather than silently
-// leaving a session without the access the user thought they granted.
-func (r *repeatedFlag) validateAddrs() error {
+// leaving a session without the access the user thought they granted. IPv6 is refused on macOS, where the
+// VM network deepcove runs carries IPv4 only, so such an entry could never be reached.
+func (r *repeatedFlag) validateAddrs(goos string) error {
 	for _, entry := range *r {
+		var addr netip.Addr
 		if strings.Contains(entry, "/") {
-			if _, err := netip.ParsePrefix(entry); err != nil {
+			prefix, err := netip.ParsePrefix(entry)
+			if err != nil {
 				return fmt.Errorf("%q is not a CIDR: %w", entry, err)
 			}
-			continue
+			addr = prefix.Addr()
+		} else {
+			parsed, err := netip.ParseAddr(entry)
+			if err != nil {
+				return fmt.Errorf("%q is not an IP address or CIDR: %w", entry, err)
+			}
+			addr = parsed
 		}
-		if _, err := netip.ParseAddr(entry); err != nil {
-			return fmt.Errorf("%q is not an IP address or CIDR: %w", entry, err)
+		if goos == "darwin" && addr.Is6() {
+			return fmt.Errorf("%q is IPv6, which a sandbox on macOS cannot reach: its network is IPv4 only", entry)
 		}
 	}
 	return nil

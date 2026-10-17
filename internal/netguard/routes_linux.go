@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -40,14 +41,25 @@ func Apply(allow []string, alsoBlocked []netip.Prefix) (warnings []string, err e
 	defer func() { _ = nl.Close() }()
 
 	for _, prefix := range append(append([]netip.Prefix{}, blockedPrefixes...), alsoBlocked...) {
-		if err := nl.addRoute(prefix, unix.RTN_BLACKHOLE, netip.Addr{}); err != nil {
+		if err := nl.addRoute(prefix, unix.RTN_BLACKHOLE, netip.Addr{}, 0); err != nil {
 			return nil, fmt.Errorf("blackhole %s: %w", prefix, err)
 		}
 	}
 
-	return openAllowed(allowed, defaultGateway, func(prefix netip.Prefix, gateway netip.Addr) error {
-		return nl.addRoute(prefix, unix.RTN_UNICAST, gateway)
+	return openAllowed(allowed, defaultNextHop, func(prefix netip.Prefix, hop nextHop) error {
+		device, err := net.InterfaceByName(hop.device)
+		if err != nil {
+			return fmt.Errorf("find interface %s: %w", hop.device, err)
+		}
+		return nl.addRoute(prefix, unix.RTN_UNICAST, hop.gateway, device.Index)
 	}), nil
+}
+
+// nextHop is where the default route sends traffic: the gateway, and the interface it sits on. An IPv6
+// gateway is usually link local, fe80::, which the kernel only routes through together with its interface.
+type nextHop struct {
+	gateway netip.Addr
+	device  string
 }
 
 // openAllowed installs a route for each allowed address and reports the ones it could not, rather than
@@ -55,41 +67,41 @@ func Apply(allow []string, alsoBlocked []netip.Prefix) (warnings []string, err e
 // netlink socket.
 func openAllowed(
 	allowed []netip.Prefix,
-	gatewayFor func(ipv4 bool) (netip.Addr, error),
-	addRoute func(netip.Prefix, netip.Addr) error,
+	nextHopFor func(ipv4 bool) (nextHop, error),
+	addRoute func(netip.Prefix, nextHop) error,
 ) []string {
 	var warnings []string
 	for _, prefix := range allowed {
-		gateway, err := gatewayFor(prefix.Addr().Is4())
+		hop, err := nextHopFor(prefix.Addr().Is4())
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s stays blocked: %v", prefix, err))
 			continue
 		}
-		if err := addRoute(prefix, gateway); err != nil {
+		if err := addRoute(prefix, hop); err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s stays blocked: %v", prefix, err))
 		}
 	}
 	return warnings
 }
 
-// defaultGateway reads the next hop of the default route from /proc, which is where the DHCP client
+// defaultNextHop reads the next hop of the default route from /proc, which is where the DHCP client
 // left it. Reading the kernel's answer beats assuming the gateway is the first address in the subnet.
-func defaultGateway(ipv4 bool) (netip.Addr, error) {
-	path, parse := "/proc/net/ipv6_route", parseGateway6
+func defaultNextHop(ipv4 bool) (nextHop, error) {
+	path, parse := "/proc/net/ipv6_route", parseNextHop6
 	if ipv4 {
-		path, parse = "/proc/net/route", parseGateway4
+		path, parse = "/proc/net/route", parseNextHop4
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return netip.Addr{}, err
+		return nextHop{}, err
 	}
 	defer func() { _ = file.Close() }()
 	return parse(file)
 }
 
-// parseGateway4 pulls the next hop out of /proc/net/route. Addresses there are hex in host byte order,
+// parseNextHop4 pulls the next hop out of /proc/net/route. Addresses there are hex in host byte order,
 // which on every machine we run is little endian.
-func parseGateway4(routes io.Reader) (netip.Addr, error) {
+func parseNextHop4(routes io.Reader) (nextHop, error) {
 	scan := bufio.NewScanner(routes)
 	for scan.Scan() {
 		fields := strings.Fields(scan.Text())
@@ -102,34 +114,34 @@ func parseGateway4(routes io.Reader) (netip.Addr, error) {
 		}
 		var address [4]byte
 		binary.LittleEndian.PutUint32(address[:], uint32(raw))
-		return netip.AddrFrom4(address), nil
+		return nextHop{gateway: netip.AddrFrom4(address), device: fields[0]}, nil
 	}
 	if err := scan.Err(); err != nil {
-		return netip.Addr{}, err
+		return nextHop{}, err
 	}
-	return netip.Addr{}, fmt.Errorf("no default route")
+	return nextHop{}, fmt.Errorf("no default route")
 }
 
-// parseGateway6 pulls the next hop out of /proc/net/ipv6_route, whose default route is the entry with
-// an all zero destination and a zero prefix length.
-func parseGateway6(routes io.Reader) (netip.Addr, error) {
+// parseNextHop6 pulls the next hop out of /proc/net/ipv6_route, whose default route is the entry with
+// an all zero destination and a zero prefix length. The interface is its tenth and last field.
+func parseNextHop6(routes io.Reader) (nextHop, error) {
 	const zeroAddr = "00000000000000000000000000000000"
 	scan := bufio.NewScanner(routes)
 	for scan.Scan() {
 		fields := strings.Fields(scan.Text())
-		if len(fields) < 5 || fields[0] != zeroAddr || fields[1] != "00" {
+		if len(fields) < 10 || fields[0] != zeroAddr || fields[1] != "00" {
 			continue
 		}
 		var address [16]byte
 		if _, err := hex.Decode(address[:], []byte(fields[4])); err != nil {
 			continue
 		}
-		return netip.AddrFrom16(address), nil
+		return nextHop{gateway: netip.AddrFrom16(address), device: fields[9]}, nil
 	}
 	if err := scan.Err(); err != nil {
-		return netip.Addr{}, err
+		return nextHop{}, err
 	}
-	return netip.Addr{}, fmt.Errorf("no default route")
+	return nextHop{}, fmt.Errorf("no default route")
 }
 
 // netlinkConn is one rtnetlink socket. Routes are added by hand rather than by shelling out to `ip`,
@@ -154,10 +166,10 @@ func dialNetlink() (*netlinkConn, error) {
 func (c *netlinkConn) Close() error { return unix.Close(c.fd) }
 
 // addRoute installs one route, replacing any existing route for the same prefix so a re-run is
-// harmless and an allowed address can override the blackhole that covers it.
-func (c *netlinkConn) addRoute(dst netip.Prefix, kind uint8, gateway netip.Addr) error {
+// harmless and an allowed address can override the blackhole that covers it. ifIndex 0 names no interface.
+func (c *netlinkConn) addRoute(dst netip.Prefix, kind uint8, gateway netip.Addr, ifIndex int) error {
 	c.seq++
-	msg := encodeRoute(dst, kind, gateway, c.seq)
+	msg := encodeRoute(dst, kind, gateway, ifIndex, c.seq)
 	if err := unix.Sendto(c.fd, msg, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return err
 	}
@@ -189,7 +201,7 @@ func (c *netlinkConn) readAck() error {
 }
 
 // encodeRoute builds an RTM_NEWROUTE message. Kept separate from the socket so it can be tested.
-func encodeRoute(dst netip.Prefix, kind uint8, gateway netip.Addr, seq uint32) []byte {
+func encodeRoute(dst netip.Prefix, kind uint8, gateway netip.Addr, ifIndex int, seq uint32) []byte {
 	family := uint8(unix.AF_INET)
 	if dst.Addr().Is6() {
 		family = unix.AF_INET6
@@ -205,6 +217,9 @@ func encodeRoute(dst netip.Prefix, kind uint8, gateway netip.Addr, seq uint32) [
 	body = appendAttr(body, unix.RTA_DST, dst.Addr().AsSlice())
 	if gateway.IsValid() {
 		body = appendAttr(body, unix.RTA_GATEWAY, gateway.AsSlice())
+	}
+	if ifIndex > 0 {
+		body = appendAttr(body, unix.RTA_OIF, binary.LittleEndian.AppendUint32(nil, uint32(ifIndex)))
 	}
 
 	msg := make([]byte, unix.NLMSG_HDRLEN+len(body))
