@@ -13,7 +13,7 @@
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
   import { Switch } from '$lib/components/ui/switch';
-  import { api, preflightTimeoutMs } from '$lib/api/client';
+  import { api, ApiError, preflightTimeoutMs } from '$lib/api/client';
   import { discoveryRequired } from '$lib/api/transport';
   import { discovery } from '$lib/stores/discovery.svelte';
   import { friendlyError, type FriendlyError } from '$lib/api/errors';
@@ -26,7 +26,7 @@
   import LoginModePicker from './LoginModePicker.svelte';
   import { loginChoices, type LoginPlace } from '$lib/util/loginMode';
   import { shellQuote } from '$lib/util/shell';
-  import { pathInsideFolder } from '$lib/util/path';
+  import { looksLikePath, pathInsideFolder, sessionFolderIn } from '$lib/util/path';
   import type {
     Agent,
     LoginMode,
@@ -302,25 +302,64 @@
   let placement = $state<'workspace' | 'private'>('workspace');
   let workspaceVM = $state<WorkspaceVM | null>(null);
   let workspaceHostRoot = $state('');
-  let workspaceGuestRoot = $state('/workspace');
   let workspaceSize = $state(DEFAULT_VM_SIZE);
   let workDir = $state('');
-  // The session's folder on the workspace VM, as a path on this machine inside the VM's shared folder.
-  let workspaceFolder = $state('');
-  $effect(() => {
-    const hostRoot = workspaceVM?.host_root;
-    if (hostRoot && !untrack(() => workspaceFolder)) workspaceFolder = hostRoot + '/';
-  });
-  // What the server is sent: a name inside the shared folder, '' for the session's own name, or null when
-  // the folder is outside it.
-  const workspaceFolderName = $derived(
-    workspaceVM ? pathInsideFolder(workspaceVM.host_root, workspaceFolder) : '',
-  );
   // Only on a runtime that boots VMs. The Machine picker is hidden otherwise, so a node without one
   // would keep the default and ask for a workspace VM it cannot build.
   const onWorkspace = $derived(placement === 'workspace' && onVMRuntime);
   // No machine yet means this dialog creates it too, so it asks for the folder and size first.
   const creatingWorkspaceVM = $derived(onWorkspace && workspaceVM === null);
+  // The folder the workspace VM shares: the saved one, or the one this dialog is about to create it with.
+  const workspaceSharedRoot = $derived(
+    creatingWorkspaceVM ? workspaceHostRoot.trim() : (workspaceVM?.host_root ?? ''),
+  );
+  // The session's folder on the workspace VM, as a path on this machine. It follows the name until you
+  // change it, so the field always shows the folder the session gets.
+  let workspaceFolder = $state('');
+  let suggestedWorkspaceFolder = $state('');
+  $effect(() => {
+    const suggested = looksLikePath(workspaceSharedRoot)
+      ? sessionFolderIn(workspaceSharedRoot, name)
+      : '';
+    untrack(() => {
+      if (!workspaceFolder || workspaceFolder === suggestedWorkspaceFolder) {
+        workspaceFolder = suggested;
+      }
+      suggestedWorkspaceFolder = suggested;
+    });
+  });
+  // What the server is sent: a name inside the shared folder, '.' for the shared folder itself, or null
+  // when the folder is outside it.
+  const workspaceFolderName = $derived.by(() => {
+    if (!onWorkspace || !looksLikePath(workspaceSharedRoot)) return '';
+    const inside = pathInsideFolder(workspaceSharedRoot, workspaceFolder);
+    return inside === '' ? '.' : inside;
+  });
+  // Whether the session's folder is already there. Null until the node answers, or when it can't say.
+  let workspaceFolderExists = $state<boolean | null>(null);
+  $effect(() => {
+    const folder = workspaceFolder.trim();
+    const host = untrack(() => selectedHost);
+    workspaceFolderExists = null;
+    if (!onWorkspace || workspaceFolderName === null || !looksLikePath(folder)) return;
+    const ac = new AbortController();
+    const timer = setTimeout(() => {
+      api
+        .fsList(folder, host, ac.signal)
+        .then(() => {
+          if (!ac.signal.aborted) workspaceFolderExists = true;
+        })
+        .catch((e) => {
+          if (!ac.signal.aborted && e instanceof ApiError && e.status === 404) {
+            workspaceFolderExists = false;
+          }
+        });
+    }, 200);
+    return () => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+  });
   // Which controls this session shows. If a control is hidden, it cannot stop you from creating the
   // session, so the Create button checks these too.
   const showsImageControls = $derived(
@@ -736,13 +775,15 @@
     submitError = null;
 
     try {
+      // Built before the VM is saved: the server cleans the folder it shares, and the session folder is
+      // read against that folder as you typed it.
+      const payload = buildPayload();
       // The machine has to exist before a session can land on it. Recording it is instant; the VM boots
       // when this session starts, which the session page already shows.
       if (creatingWorkspaceVM) {
         workspaceVM = await api.saveWorkspaceVM(
           {
             host_root: workspaceHostRoot.trim(),
-            guest_root: workspaceGuestRoot.trim() || undefined,
             image: chosenImage(),
             // The machine is what installs the agent, so a custom setup belongs to it.
             setup_script: imageStrategy === 'custom' ? customSetup.trim() || undefined : undefined,
@@ -759,7 +800,7 @@
       // locally if it's the target, else proxies to the target over its own tailnet). This works in both
       // connected and dashboard mode without depending on the in-browser WASM node being signed in,
       // unlike host-routing the create, which would hang when WASM isn't up (connected mode).
-      const created = await api.createSession(buildPayload());
+      const created = await api.createSession(payload);
       sessions.add(created);
       open = false;
       resetForm();
@@ -970,6 +1011,10 @@
 
       {#if onWorkspace && !creatingWorkspaceVM}
         <div class="space-y-2">
+          <Label>Folder this VM can see</Label>
+          <p class="font-mono text-xs text-muted-foreground">{workspaceVM?.host_root}</p>
+        </div>
+        <div class="space-y-2">
           <Label>Image</Label>
           <p class="font-mono text-xs text-muted-foreground">{workspaceVM?.image}</p>
           <p class="text-xs text-muted-foreground">
@@ -986,23 +1031,30 @@
           </p>
           <WorkspaceVMFields
             bind:hostRoot={workspaceHostRoot}
-            bind:guestRoot={workspaceGuestRoot}
             bind:size={workspaceSize}
             sizes={runtimes?.workspace_vm_sizes}
             host={selectedHost}
           />
         </div>
-      {:else if onWorkspace}
+      {/if}
+
+      {#if onWorkspace}
         <div class="space-y-2">
-          <Label for="work-dir">Folder</Label>
-          <HostPathField id="work-dir" bind:value={workspaceFolder} host={selectedHost} />
+          <Label for="work-dir">Session folder</Label>
+          <!-- Filled in from the folder above, so it waits for that one rather than starting at home. -->
+          <HostPathField
+            id="work-dir"
+            bind:value={workspaceFolder}
+            placeholder="Pick the folder above first"
+            host={selectedHost}
+            startsEmpty
+            disabled={!looksLikePath(workspaceSharedRoot)}
+          />
           {#if workspaceFolderName === null}
-            <p class="text-xs text-destructive">Pick a folder inside {workspaceVM?.host_root}.</p>
-          {:else}
+            <p class="text-xs text-destructive">Must be inside {workspaceSharedRoot}.</p>
+          {:else if workspaceFolderExists !== null}
             <p class="text-xs text-muted-foreground">
-              A folder inside {workspaceVM?.host_root}, which the VM sees at {workspaceVM?.guest_root}.
-              Created if it isn't there; leaving it at {workspaceVM?.host_root}/ uses the session
-              name.
+              {workspaceFolderExists ? 'Existing folder' : 'New folder'}
             </p>
           {/if}
         </div>
@@ -1327,6 +1379,9 @@
       {/if}
 
       <div class="flex items-center justify-end gap-2">
+        {#if creatingWorkspaceVM && !looksLikePath(workspaceHostRoot)}
+          <p class="text-xs text-muted-foreground">Pick a folder this VM can see.</p>
+        {/if}
         <Button variant="ghost" onclick={() => (open = false)} disabled={submitting || pulling}>
           Cancel
         </Button>
@@ -1341,6 +1396,7 @@
             !runtimeKnown ||
             (onSandboxless && ownFolder && !workDir.trim()) ||
             (onWorkspace && workspaceFolderName === null) ||
+            (creatingWorkspaceVM && !looksLikePath(workspaceHostRoot)) ||
             (creatingWorkspaceVM && runtimes?.workspace_vm_sizes?.length === 0) ||
             (showsImageControls &&
               imageStrategy === 'official' &&

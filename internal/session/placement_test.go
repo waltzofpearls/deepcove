@@ -128,7 +128,8 @@ func TestWorkspaceWorkDir(t *testing.T) {
 		{name: "a bare name is a folder in the workspace", workDir: "deepcove", want: workspaceDir + "/deepcove"},
 		{name: "a nested name keeps its shape", workDir: "work/deepcove", want: workspaceDir + "/work/deepcove"},
 		{name: "an absolute path inside the workspace is kept", workDir: "/workspace/deepcove", want: workspaceDir + "/deepcove"},
-		{name: "the workspace root itself is refused", workDir: "/workspace", wantErr: true},
+		{name: "the workspace root itself is allowed", workDir: "/workspace", want: workspaceDir},
+		{name: "a dot is the workspace root", workDir: ".", want: workspaceDir},
 		{name: "escaping the workspace is refused", workDir: "../etc", wantErr: true},
 		{name: "somewhere else entirely is refused", workDir: "/etc", wantErr: true},
 	}
@@ -424,7 +425,7 @@ func TestWorkspaceWorkDirUsesTheMachinesRoot(t *testing.T) {
 		{name: "no name uses the session name", root: "/repos", want: "/repos/my-session"},
 		{name: "an absolute path inside it is kept", root: "/repos", workDir: "/repos/deepcove", want: "/repos/deepcove"},
 		{name: "the old default is still refused at its root", root: "/repos", workDir: "/workspace/x", wantErr: true},
-		{name: "the root itself is refused", root: "/repos", workDir: "/repos", wantErr: true},
+		{name: "the root itself is allowed", root: "/repos", workDir: "/repos", want: "/repos"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

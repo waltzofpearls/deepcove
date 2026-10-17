@@ -447,8 +447,7 @@ func (s *Service) ensureHostRoot(root string) error {
 }
 
 // workspaceWorkDir resolves a session's folder to an absolute path under the machine's root. A bare name
-// is taken as a folder there, and no name means one named after the session: sharing the root would put
-// every agent in the same directory.
+// is taken as a folder there, "." is the root itself, and no name means one named after the session.
 func workspaceWorkDir(root, workDir, sessionName string) (string, error) {
 	if strings.TrimSpace(workDir) == "" {
 		workDir = sessionName
@@ -457,7 +456,7 @@ func workspaceWorkDir(root, workDir, sessionName string) (string, error) {
 	if !path.IsAbs(full) {
 		full = path.Join(root, full)
 	}
-	if full == root || !strings.HasPrefix(full, root+"/") {
+	if full != root && !strings.HasPrefix(full, root+"/") {
 		return "", fmt.Errorf("%w: %s is not a folder inside %s", ErrInvalidInput, workDir, root)
 	}
 	return full, nil

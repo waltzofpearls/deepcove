@@ -21,16 +21,31 @@ export function looksLikePath(value: string): boolean {
 }
 
 // pathInsideFolder is where path sits inside folder: '' for the folder itself, the rest of the path for
-// something inside it, and null for anything outside.
+// something inside it, and null for anything outside or not a full path.
 export function pathInsideFolder(folder: string, path: string): string | null {
-  const root = withoutTrailingSlash(folder);
-  const target = withoutTrailingSlash(path.trim());
+  if (!looksLikePath(folder) || !looksLikePath(path)) return null;
+  const root = cleanPath(folder);
+  const target = cleanPath(path);
   if (target === root) return '';
-  if (!target.startsWith(root + '/')) return null;
-  return target.slice(root.length + 1);
+  const prefix = root === '/' ? '/' : root + '/';
+  if (!target.startsWith(prefix)) return null;
+  return target.slice(prefix.length);
 }
 
-// withoutTrailingSlash is path as the server saves it, so a typed "/Users/me/Dev/" matches "/Users/me/Dev".
-export function withoutTrailingSlash(path: string): string {
-  return path.replace(/\/+$/, '') || '/';
+// cleanPath is an absolute path as the server's filepath.Clean saves it, so a typed "/Users/me/Dev/." or
+// "/Users/me/code/../Dev/" matches "/Users/me/Dev".
+export function cleanPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.trim().split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return '/' + parts.join('/');
+}
+
+// sessionFolderIn is the folder a session named name gets inside root.
+export function sessionFolderIn(root: string, name: string): string {
+  const base = cleanPath(root);
+  return (base === '/' ? '' : base) + '/' + name.trim();
 }

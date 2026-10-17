@@ -14,7 +14,7 @@
   import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import { Label } from '$lib/components/ui/label';
   import { api, preflightTimeoutMs } from '$lib/api/client';
-  import { looksLikePath, withoutTrailingSlash } from '$lib/util/path';
+  import { cleanPath, looksLikePath } from '$lib/util/path';
   import { DEFAULT_VM_SIZE, describeVMSize, formatRunningSize } from '$lib/util/vmSize';
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
   import type { RuntimesInfo, SandboxView, WorkspaceVM } from '$lib/api/types';
@@ -63,7 +63,6 @@
   const sizesReady = $derived((sizeChoices?.length ?? 0) > 0);
 
   let hostRoot = $state('');
-  let guestRoot = $state('/workspace');
   let size = $state(DEFAULT_VM_SIZE);
   let setupScript = $state('');
   let error = $state<string | null>(null);
@@ -95,8 +94,7 @@
   );
   const changed = $derived(
     Boolean(savedVM) &&
-      (withoutTrailingSlash(hostRoot.trim()) !== savedVM?.host_root ||
-        withoutTrailingSlash(guestRoot.trim() || '/workspace') !== savedVM?.guest_root ||
+      (cleanPath(hostRoot) !== savedVM?.host_root ||
         size !== (savedVM?.resources?.size ?? '') ||
         setupScript.trim() !== (savedVM?.setup_script ?? '')),
   );
@@ -120,7 +118,6 @@
     if (!open) return;
     untrack(() => {
       hostRoot = vm?.host_root ?? '';
-      guestRoot = vm?.guest_root ?? '/workspace';
       size = vm?.resources?.size || DEFAULT_VM_SIZE;
       setupScript = vm?.setup_script ?? '';
       error = null;
@@ -137,7 +134,6 @@
       return await api.saveWorkspaceVM(
         {
           host_root: hostRoot.trim(),
-          guest_root: guestRoot.trim() || undefined,
           setup_script: setupScript.trim() || undefined,
           resources: { size },
         },
@@ -234,7 +230,7 @@
     </DialogHeader>
 
     <div class="space-y-4">
-      <WorkspaceVMFields bind:hostRoot bind:guestRoot bind:size {host} sizes={sizeChoices} />
+      <WorkspaceVMFields bind:hostRoot bind:size {host} sizes={sizeChoices} />
       <div class="space-y-2">
         <Label for="workspace-setup">Setup script</Label>
         <textarea

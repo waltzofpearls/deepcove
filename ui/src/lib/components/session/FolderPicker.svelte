@@ -7,7 +7,7 @@
     DialogTitle,
   } from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
-  import { api } from '$lib/api/client';
+  import { api, ApiError } from '$lib/api/client';
   import type { FsEntry, SessionHost } from '$lib/api/types';
   import Folder from '@lucide/svelte/icons/folder';
   import House from '@lucide/svelte/icons/house';
@@ -40,6 +40,14 @@
       parent = res.parent;
       entries = res.entries;
     } catch (e) {
+      // A folder that isn't there yet, like a new session's, opens at the nearest one that is.
+      if (p && e instanceof ApiError && e.status === 404) {
+        const up = p.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/';
+        if (up !== p) {
+          await load(up);
+          return;
+        }
+      }
       error = e instanceof Error ? e.message : String(e);
       entries = [];
     } finally {
