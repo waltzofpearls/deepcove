@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"slices"
 	"testing"
 )
@@ -8,6 +9,7 @@ import (
 func TestRepeatedFlagValidateAddrs(t *testing.T) {
 	cases := []struct {
 		name    string
+		goos    string
 		values  []string
 		wantErr bool
 	}{
@@ -22,6 +24,9 @@ func TestRepeatedFlagValidateAddrs(t *testing.T) {
 		{name: "a hostname is rejected", values: []string{"vm.example.ts.net"}, wantErr: true},
 		{name: "a typo is rejected", values: []string{"100.95.206"}, wantErr: true},
 		{name: "a bad prefix length is rejected", values: []string{"10.0.0.0/99"}, wantErr: true},
+		{name: "IPv6 is refused on macOS", goos: "darwin", values: []string{"fd7a:115c:a1e0::1"}, wantErr: true},
+		{name: "an IPv6 CIDR is refused on macOS", goos: "darwin", values: []string{"fd7a::/48"}, wantErr: true},
+		{name: "IPv4 is fine on macOS", goos: "darwin", values: []string{"100.95.206.36"}},
 	}
 
 	for _, tc := range cases {
@@ -32,7 +37,7 @@ func TestRepeatedFlagValidateAddrs(t *testing.T) {
 					t.Fatalf("Set(%q): %v", v, err)
 				}
 			}
-			err := flag.validateAddrs()
+			err := flag.validateAddrs(cmp.Or(tc.goos, "linux"))
 			if tc.wantErr && err == nil {
 				t.Error("expected an error")
 			}

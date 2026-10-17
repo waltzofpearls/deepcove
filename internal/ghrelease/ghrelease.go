@@ -116,10 +116,10 @@ func (c *Client) release(ctx context.Context, apiPath string) (Release, error) {
 
 	var rel Release
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return Release{}, fmt.Errorf("upgrade: could not read the release: %w", err)
+		return Release{}, fmt.Errorf("ghrelease: could not read the release: %w", err)
 	}
 	if rel.Tag == "" {
-		return Release{}, errors.New("upgrade: the release has no tag")
+		return Release{}, errors.New("ghrelease: the release has no tag")
 	}
 	return rel, nil
 }
@@ -136,7 +136,7 @@ func (c *Client) get(ctx context.Context, addr, accept string) (*http.Response, 
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("upgrade: %s: %w", addr, err)
+		return nil, fmt.Errorf("ghrelease: %s: %w", addr, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
@@ -144,11 +144,11 @@ func (c *Client) get(ctx context.Context, addr, accept string) (*http.Response, 
 			// GitHub answers 404 both for no such release and for no access, so the advice depends on
 			// whether a token was sent at all.
 			if c.token == "" {
-				return nil, fmt.Errorf("upgrade: %s: not found, either there is no such release or a private repository needs GITHUB_TOKEN or GH_TOKEN", addr)
+				return nil, fmt.Errorf("ghrelease: %s: not found, either there is no such release or a private repository needs GITHUB_TOKEN or GH_TOKEN", addr)
 			}
-			return nil, fmt.Errorf("upgrade: %s: not found, there is no such release", addr)
+			return nil, fmt.Errorf("ghrelease: %s: not found, there is no such release", addr)
 		}
-		return nil, fmt.Errorf("upgrade: %s: %s", addr, resp.Status)
+		return nil, fmt.Errorf("ghrelease: %s: %s", addr, resp.Status)
 	}
 	return resp, nil
 }
@@ -164,7 +164,7 @@ func (c *Client) get(ctx context.Context, addr, accept string) (*http.Response, 
 func (c *Client) Download(ctx context.Context, rel Release, name, dir string, report func(complete, total int64)) (string, error) {
 	found, ok := rel.asset(name)
 	if !ok {
-		return "", fmt.Errorf("upgrade: release %s has no %s", rel.Tag, name)
+		return "", fmt.Errorf("ghrelease: release %s has no %s", rel.Tag, name)
 	}
 	want, err := c.checksum(ctx, rel, name)
 	if err != nil {
@@ -181,7 +181,7 @@ func (c *Client) Download(ctx context.Context, rel Release, name, dir string, re
 	// left behind by a crash identifiable.
 	file, err := os.CreateTemp(dir, ".deepcove-download-*-"+name)
 	if err != nil {
-		return "", fmt.Errorf("upgrade: %w", err)
+		return "", fmt.Errorf("ghrelease: %w", err)
 	}
 	digest := sha256.New()
 	watched := io.Writer(digest)
@@ -192,11 +192,11 @@ func (c *Client) Download(ctx context.Context, rel Release, name, dir string, re
 	closeErr := file.Close()
 	if err := firstError(copyErr, closeErr); err != nil {
 		_ = os.Remove(file.Name())
-		return "", fmt.Errorf("upgrade: could not save %s: %w", name, err)
+		return "", fmt.Errorf("ghrelease: could not save %s: %w", name, err)
 	}
 	if got := hex.EncodeToString(digest.Sum(nil)); got != want {
 		_ = os.Remove(file.Name())
-		return "", fmt.Errorf("upgrade: %s does not match its checksum, wanted %s, got %s", name, want, got)
+		return "", fmt.Errorf("ghrelease: %s does not match its checksum, wanted %s, got %s", name, want, got)
 	}
 	return file.Name(), nil
 }
@@ -218,7 +218,7 @@ func (w *progressWriter) Write(chunk []byte) (int, error) {
 func (c *Client) checksum(ctx context.Context, rel Release, name string) (string, error) {
 	found, ok := rel.asset(checksumsAsset)
 	if !ok {
-		return "", fmt.Errorf("upgrade: release %s has no %s, so nothing can be verified", rel.Tag, checksumsAsset)
+		return "", fmt.Errorf("ghrelease: release %s has no %s, so nothing can be verified", rel.Tag, checksumsAsset)
 	}
 	resp, err := c.get(ctx, found.URL, "application/octet-stream")
 	if err != nil {
@@ -228,7 +228,7 @@ func (c *Client) checksum(ctx context.Context, rel Release, name string) (string
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("upgrade: could not read %s: %w", checksumsAsset, err)
+		return "", fmt.Errorf("ghrelease: could not read %s: %w", checksumsAsset, err)
 	}
 	return checksumFor(body, name)
 }
@@ -241,7 +241,7 @@ func checksumFor(sums []byte, name string) (string, error) {
 			return strings.ToLower(fields[0]), nil
 		}
 	}
-	return "", fmt.Errorf("upgrade: %s does not list %s", checksumsAsset, name)
+	return "", fmt.Errorf("ghrelease: %s does not list %s", checksumsAsset, name)
 }
 
 // ExtractBinary writes the named binary from the archive into dir and returns its path. The caller
@@ -266,13 +266,13 @@ func ExtractBinary(archivePath, name, dir string) (string, error) {
 
 	newFile, err := os.CreateTemp(dir, ".deepcove-new-*")
 	if err != nil {
-		return "", fmt.Errorf("upgrade: %w", err)
+		return "", fmt.Errorf("ghrelease: %w", err)
 	}
 	_, copyErr := io.Copy(newFile, source)
 	closeErr := newFile.Close()
 	if err := firstError(copyErr, closeErr); err != nil {
 		_ = os.Remove(newFile.Name())
-		return "", fmt.Errorf("upgrade: could not unpack %s: %w", name, err)
+		return "", fmt.Errorf("ghrelease: could not unpack %s: %w", name, err)
 	}
 	return newFile.Name(), nil
 }
@@ -280,7 +280,7 @@ func ExtractBinary(archivePath, name, dir string) (string, error) {
 func openZip(archivePath, name string) (io.Reader, func(), error) {
 	zipReader, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("upgrade: %s: %w", archivePath, err)
+		return nil, nil, fmt.Errorf("ghrelease: %s: %w", archivePath, err)
 	}
 	for _, entry := range zipReader.File {
 		if path.Base(entry.Name) != name {
@@ -289,7 +289,7 @@ func openZip(archivePath, name string) (io.Reader, func(), error) {
 		entryReader, err := entry.Open()
 		if err != nil {
 			_ = zipReader.Close()
-			return nil, nil, fmt.Errorf("upgrade: %s: %w", archivePath, err)
+			return nil, nil, fmt.Errorf("ghrelease: %s: %w", archivePath, err)
 		}
 		return entryReader, func() {
 			_ = entryReader.Close()
@@ -297,18 +297,18 @@ func openZip(archivePath, name string) (io.Reader, func(), error) {
 		}, nil
 	}
 	_ = zipReader.Close()
-	return nil, nil, fmt.Errorf("upgrade: %s holds no %s", archivePath, name)
+	return nil, nil, fmt.Errorf("ghrelease: %s holds no %s", archivePath, name)
 }
 
 func openTarGz(archivePath, name string) (io.Reader, func(), error) {
 	file, err := os.Open(archivePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("upgrade: %w", err)
+		return nil, nil, fmt.Errorf("ghrelease: %w", err)
 	}
 	gzipReader, err := gzip.NewReader(file)
 	if err != nil {
 		_ = file.Close()
-		return nil, nil, fmt.Errorf("upgrade: %s: %w", archivePath, err)
+		return nil, nil, fmt.Errorf("ghrelease: %s: %w", archivePath, err)
 	}
 	tarReader := tar.NewReader(gzipReader)
 	for {
@@ -317,9 +317,9 @@ func openTarGz(archivePath, name string) (io.Reader, func(), error) {
 			_ = gzipReader.Close()
 			_ = file.Close()
 			if errors.Is(err, io.EOF) {
-				return nil, nil, fmt.Errorf("upgrade: %s holds no %s", archivePath, name)
+				return nil, nil, fmt.Errorf("ghrelease: %s holds no %s", archivePath, name)
 			}
-			return nil, nil, fmt.Errorf("upgrade: %s: %w", archivePath, err)
+			return nil, nil, fmt.Errorf("ghrelease: %s: %w", archivePath, err)
 		}
 		if header.Typeflag == tar.TypeReg && path.Base(header.Name) == name {
 			return tarReader, func() {
@@ -334,12 +334,12 @@ func openTarGz(archivePath, name string) (io.Reader, func(), error) {
 func isZip(path string) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return false, fmt.Errorf("upgrade: %w", err)
+		return false, fmt.Errorf("ghrelease: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 	var magic [2]byte
 	if _, err := io.ReadFull(file, magic[:]); err != nil {
-		return false, fmt.Errorf("upgrade: %s: %w", path, err)
+		return false, fmt.Errorf("ghrelease: %s: %w", path, err)
 	}
 	return string(magic[:]) == "PK", nil
 }

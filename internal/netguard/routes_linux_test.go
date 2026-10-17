@@ -11,40 +11,41 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestParseGateway4(t *testing.T) {
+func TestParseNextHop4(t *testing.T) {
 	// Real /proc/net/route output. Addresses are hex in host byte order.
 	const proc = `Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
 eth0	0042A8C0	00000000	0001	0	0	0	00FFFFFF	0	0	0
 eth0	00000000	0142A8C0	0003	0	0	202	00000000	0	0	0
 `
-	got, err := parseGateway4(strings.NewReader(proc))
+	got, err := parseNextHop4(strings.NewReader(proc))
 	if err != nil {
-		t.Fatalf("parseGateway4: %v", err)
+		t.Fatalf("parseNextHop4: %v", err)
 	}
-	if got.String() != "192.168.66.1" {
-		t.Errorf("gateway: got %s, want 192.168.66.1", got)
+	if got.gateway.String() != "192.168.66.1" || got.device != "eth0" {
+		t.Errorf("next hop: got %s on %q, want 192.168.66.1 on eth0", got.gateway, got.device)
 	}
 }
 
-func TestParseGateway6(t *testing.T) {
+func TestParseNextHop6(t *testing.T) {
 	// Real /proc/net/ipv6_route output; the default route is the all zero destination with plen 00.
 	const proc = `fd8e070cf2c384aa0000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 004c0001     eth0
 00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe80000000000000a4fc14fffe10d164 00000400 00000001 00000000 00450003     eth0
 `
-	got, err := parseGateway6(strings.NewReader(proc))
+	got, err := parseNextHop6(strings.NewReader(proc))
 	if err != nil {
-		t.Fatalf("parseGateway6: %v", err)
+		t.Fatalf("parseNextHop6: %v", err)
 	}
-	if got.String() != "fe80::a4fc:14ff:fe10:d164" {
-		t.Errorf("gateway: got %s, want fe80::a4fc:14ff:fe10:d164", got)
+	// Link local, so the route is useless without the interface that goes with it.
+	if got.gateway.String() != "fe80::a4fc:14ff:fe10:d164" || got.device != "eth0" {
+		t.Errorf("next hop: got %s on %q, want fe80::a4fc:14ff:fe10:d164 on eth0", got.gateway, got.device)
 	}
 }
 
 func TestNoDefaultRouteIsAnError(t *testing.T) {
-	if _, err := parseGateway4(strings.NewReader("Iface\tDestination\n")); err == nil {
+	if _, err := parseNextHop4(strings.NewReader("Iface\tDestination\n")); err == nil {
 		t.Error("expected an error when there is no default route")
 	}
-	if _, err := parseGateway6(strings.NewReader("")); err == nil {
+	if _, err := parseNextHop6(strings.NewReader("")); err == nil {
 		t.Error("expected an error when there is no default route")
 	}
 }
@@ -55,9 +56,11 @@ func TestEncodeRoute(t *testing.T) {
 		dst        string
 		kind       uint8
 		gateway    string
+		ifIndex    int
 		wantFamily uint8
 		wantBits   uint8
 		wantGw     bool
+		wantOIF    bool
 	}{
 		{
 			name: "an IPv4 blackhole", dst: "10.0.0.0/8", kind: unix.RTN_BLACKHOLE,
@@ -69,7 +72,11 @@ func TestEncodeRoute(t *testing.T) {
 		},
 		{
 			name: "an allowed host via the gateway", dst: "100.95.206.36/32", kind: unix.RTN_UNICAST,
-			gateway: "192.168.66.1", wantFamily: unix.AF_INET, wantBits: 32, wantGw: true,
+			gateway: "192.168.66.1", ifIndex: 2, wantFamily: unix.AF_INET, wantBits: 32, wantGw: true, wantOIF: true,
+		},
+		{
+			name: "an allowed IPv6 host via a link local gateway", dst: "fd7a:115c:a1e0::1/128", kind: unix.RTN_UNICAST,
+			gateway: "fe80::1", ifIndex: 2, wantFamily: unix.AF_INET6, wantBits: 128, wantGw: true, wantOIF: true,
 		},
 	}
 
@@ -79,7 +86,7 @@ func TestEncodeRoute(t *testing.T) {
 			if tc.gateway != "" {
 				gw = netip.MustParseAddr(tc.gateway)
 			}
-			msg := encodeRoute(netip.MustParsePrefix(tc.dst), tc.kind, gw, 7)
+			msg := encodeRoute(netip.MustParsePrefix(tc.dst), tc.kind, gw, tc.ifIndex, 7)
 
 			if got := int(msg[0]) | int(msg[1])<<8; got != len(msg) {
 				t.Errorf("header length %d does not match the message length %d", got, len(msg))
@@ -104,6 +111,9 @@ func TestEncodeRoute(t *testing.T) {
 			}
 			if !containsAttr(body[12:], unix.RTA_DST) {
 				t.Error("destination attribute missing")
+			}
+			if hasOIF := containsAttr(body[12:], unix.RTA_OIF); hasOIF != tc.wantOIF {
+				t.Errorf("interface attribute present = %v, want %v", hasOIF, tc.wantOIF)
 			}
 		})
 	}
@@ -138,19 +148,19 @@ func TestOpenAllowedReportsRatherThanGivesUp(t *testing.T) {
 		netip.MustParsePrefix("192.168.1.10/32"),
 	}
 	// No IPv6 default route, which is the real case: vmnet gives the guest no path to the IPv6 internet.
-	gatewayFor := func(ipv4 bool) (netip.Addr, error) {
+	nextHopFor := func(ipv4 bool) (nextHop, error) {
 		if !ipv4 {
-			return netip.Addr{}, errors.New("no default route")
+			return nextHop{}, errors.New("no default route")
 		}
-		return netip.MustParseAddr("192.168.64.1"), nil
+		return nextHop{gateway: netip.MustParseAddr("192.168.64.1"), device: "eth0"}, nil
 	}
 	var installed []netip.Prefix
-	addRoute := func(prefix netip.Prefix, _ netip.Addr) error {
+	addRoute := func(prefix netip.Prefix, _ nextHop) error {
 		installed = append(installed, prefix)
 		return nil
 	}
 
-	warnings := openAllowed(allowed, gatewayFor, addRoute)
+	warnings := openAllowed(allowed, nextHopFor, addRoute)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "fd7a") {
 		t.Fatalf("warnings = %v, want one about the IPv6 address", warnings)
 	}
