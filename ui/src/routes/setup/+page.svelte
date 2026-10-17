@@ -56,7 +56,6 @@
   // The workspace VM, offered here so a first run can set one up before creating anything. Skippable:
   // without one, every session gets a VM of its own, which is how deepcove worked before.
   let workspaceHostRoot = $state('');
-  let workspaceGuestRoot = $state('/workspace');
   let workspaceSize = $state(DEFAULT_VM_SIZE);
   let workspaceError = $state<string | null>(null);
   let savingWorkspace = $state(false);
@@ -68,7 +67,6 @@
     try {
       await api.saveWorkspaceVM({
         host_root: workspaceHostRoot.trim(),
-        guest_root: workspaceGuestRoot.trim() || undefined,
         resources: { size: workspaceSize },
       });
       step = 3;
@@ -303,11 +301,7 @@
             One VM your sessions share, each working in its own folder inside the folder you pick.
             Skip this and every session gets a VM of its own instead.
           </p>
-          <WorkspaceVMFields
-            bind:hostRoot={workspaceHostRoot}
-            bind:guestRoot={workspaceGuestRoot}
-            bind:size={workspaceSize}
-          />
+          <WorkspaceVMFields bind:hostRoot={workspaceHostRoot} bind:size={workspaceSize} />
           {#if workspaceError}
             <p class="text-sm text-destructive">{workspaceError}</p>
           {/if}

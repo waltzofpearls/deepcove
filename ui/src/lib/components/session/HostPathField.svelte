@@ -17,7 +17,17 @@
     id,
     placeholder = '/Users/you/code/myrepo',
     host,
-  }: { value?: string; id?: string; placeholder?: string; host?: SessionHost } = $props();
+    startsEmpty = false,
+    disabled = false,
+  }: {
+    value?: string;
+    id?: string;
+    placeholder?: string;
+    host?: SessionHost;
+    // Leaves an empty field empty instead of filling in home, for a folder where home is never right.
+    startsEmpty?: boolean;
+    disabled?: boolean;
+  } = $props();
 
   // Render up to MAX_SUGGEST (the dropdown scrolls); moreCount and the header
   // make it read as a filter of one directory, not the only folders you're
@@ -45,6 +55,7 @@
     const key = host?.dns_name ?? '';
     const seeded = untrack(() => seededFor);
     const bound = untrack(() => value);
+    if (startsEmpty) return;
     // Never seeded is not a change of node. Reading it as one is what overwrote a saved folder a moment
     // after the dialog opened.
     const nodeChanged = seeded !== null && seeded !== key;
@@ -124,6 +135,7 @@
       {id}
       bind:value
       {placeholder}
+      {disabled}
       autocomplete="off"
       spellcheck={false}
       oninput={() => (picked = '')}
@@ -135,7 +147,13 @@
       }}
       onkeydown={onKeydown}
     />
-    <Button type="button" variant="outline" class="shrink-0" onclick={() => (pickerOpen = true)}>
+    <Button
+      type="button"
+      variant="outline"
+      class="shrink-0"
+      {disabled}
+      onclick={() => (pickerOpen = true)}
+    >
       <FolderOpen class="size-4" />
       Browse
     </Button>

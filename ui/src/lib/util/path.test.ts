@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { looksLikePath, pathInsideFolder, splitPath, withoutTrailingSlash } from './path';
+import { cleanPath, looksLikePath, pathInsideFolder, sessionFolderIn, splitPath } from './path';
 
 describe('splitPath', () => {
   it.each([
@@ -34,20 +34,45 @@ describe('pathInsideFolder', () => {
     { name: 'deeper inside', path: '/Users/me/Dev/work/app/', want: 'work/app' },
     { name: 'outside', path: '/Users/me/', want: null },
     { name: 'a name that only starts the same', path: '/Users/me/Devtools', want: null },
+    { name: 'a dot is the folder itself', path: '/Users/me/Dev/.', want: '' },
+    { name: 'a detour through another folder', path: '/Users/me/code/../Dev/app', want: 'app' },
+    { name: 'climbing out', path: '/Users/me/Dev/../x', want: null },
+    { name: 'a path that is not a full path', path: 'Users/me/Dev/app', want: null },
+    { name: 'a relative climb', path: '../Users/me/Dev/app', want: null },
   ];
   for (const tc of cases) {
     it(tc.name, () => {
       expect(pathInsideFolder('/Users/me/Dev', tc.path)).toBe(tc.want);
     });
   }
+
+  it('cleans the folder too', () => {
+    expect(pathInsideFolder('/Users/me/Dev/.', '/Users/me/Dev/app')).toBe('app');
+    expect(pathInsideFolder('/', '/Users')).toBe('Users');
+  });
 });
 
-describe('withoutTrailingSlash', () => {
+describe('cleanPath', () => {
   it.each([
     ['/Users/me/Dev/', '/Users/me/Dev'],
     ['/Users/me/Dev', '/Users/me/Dev'],
     ['/', '/'],
+    ['/Users/me/Dev/.', '/Users/me/Dev'],
+    ['/Users/me/code/../Dev', '/Users/me/Dev'],
+    ['//Users//me', '/Users/me'],
+    ['/..', '/'],
   ])('%s becomes %s', (path, want) => {
-    expect(withoutTrailingSlash(path)).toBe(want);
+    expect(cleanPath(path)).toBe(want);
+  });
+});
+
+describe('sessionFolderIn', () => {
+  it.each([
+    ['/Users/me/Dev', 'test123', '/Users/me/Dev/test123'],
+    ['/Users/me/Dev/', 'test123', '/Users/me/Dev/test123'],
+    ['/Users/me/Dev', ' org/repo ', '/Users/me/Dev/org/repo'],
+    ['/', 'test123', '/test123'],
+  ])('%s and %s give %s', (root, name, want) => {
+    expect(sessionFolderIn(root, name)).toBe(want);
   });
 });

@@ -1,10 +1,8 @@
 <script lang="ts">
   import type { SessionHost, WorkspaceVMSizeChoice } from '$lib/api/types';
-  // The workspace VM's own settings: the folder it shares, where that folder appears inside the VM, and
-  // how big the machine is. Used by the new-session dialog, the Nodes page and the setup wizard, so
-  // the three never drift into asking for the same thing differently.
+  // The workspace VM's own settings: the folder it shares and how big the machine is. Used by the
+  // new-session dialog, the Nodes page and the setup wizard, so the three never drift apart.
   import { Label } from '$lib/components/ui/label';
-  import { Input } from '$lib/components/ui/input';
   import HostPathField from './HostPathField.svelte';
   import { preflight } from '$lib/stores/preflight.svelte';
   import { looksLikePath } from '$lib/util/path';
@@ -17,13 +15,11 @@
 
   let {
     hostRoot = $bindable(''),
-    guestRoot = $bindable('/workspace'),
     size = $bindable(DEFAULT_VM_SIZE),
     host,
     sizes,
   }: {
     hostRoot?: string;
-    guestRoot?: string;
     size?: string;
     host?: SessionHost;
     // The sizes the machine the VM goes on can have. This node's when not given and host is this node.
@@ -44,23 +40,24 @@
 </script>
 
 <div class="space-y-2">
-  <Label for="workspace-root">Folder to share</Label>
-  <HostPathField id="workspace-root" bind:value={hostRoot} placeholder="/Users/you/Dev" {host} />
+  <Label for="workspace-root">
+    Folder this VM can see
+    <span class="font-normal text-muted-foreground">(required)</span>
+  </Label>
+  <HostPathField
+    id="workspace-root"
+    bind:value={hostRoot}
+    placeholder="Pick a folder, like /Users/you/Dev"
+    {host}
+    startsEmpty
+  />
   {#if hostRootTyped && !looksLikePath(hostRoot)}
     <p class="text-xs text-destructive">Enter a full path, starting with /.</p>
   {:else}
     <p class="text-xs text-muted-foreground">
-      Every session on this VM works in its own folder inside this one.
+      Every session on this VM can read and change everything in here.
     </p>
   {/if}
-</div>
-
-<div class="space-y-2">
-  <Label for="workspace-guest-root">Mounted in the VM at</Label>
-  <Input id="workspace-guest-root" bind:value={guestRoot} placeholder="/workspace" />
-  <p class="text-xs text-muted-foreground">
-    Where that folder appears inside the VM, and where each session's folder lives.
-  </p>
 </div>
 
 {#if sizeChoices === undefined}
