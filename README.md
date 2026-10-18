@@ -37,6 +37,9 @@ One machine needs nothing but deepcove. To use more than one, sign each of them 
 network and they find each other on their own: the dashboard lists every session on every machine, and
 starting one somewhere else is the same click.
 
+You can also open https://app.deepcove.dev from any browser, such as your phone's, with nothing
+installed. Sign in with your Tailscale account and it finds your machines.
+
 Nothing is published to the internet. The dashboard listens on 127.0.0.1, and over your tailnet only
 your own Tailscale identity is let in.
 
