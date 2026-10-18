@@ -205,8 +205,18 @@ release-darwin: ## Build, sign and notarize the darwin binaries for distribution
 
 RELEASE_DIR := dist/release
 
+# go-licenses writes THIRD_PARTY_NOTICES. Built for this machine whatever OS a package is for, since it
+# runs here and only reads the other OS's code.
+GO_LICENSES_VERSION := v2.0.1
+GO_LICENSES := dist/tools/go-licenses-$(GO_LICENSES_VERSION)
+
+$(GO_LICENSES):
+	@mkdir -p dist/tools
+	GOOS= GOARCH= GOBIN=$(CURDIR)/dist/tools go install github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION)
+	@mv dist/tools/go-licenses $@
+
 .PHONY: package
-package: ## Archive one platform's binary, e.g. make package OS=darwin ARCH=arm64
+package: $(GO_LICENSES) ## Archive one platform's binary, e.g. make package OS=darwin ARCH=arm64
 	@test -n "$(OS)$(ARCH)" || { echo "set OS=<darwin|linux|windows> and ARCH=<arm64|amd64>"; exit 1; }
 	@mkdir -p $(RELEASE_DIR) && rm -rf dist/stage && mkdir -p dist/stage
 	@case "$(OS)" in \
@@ -214,9 +224,15 @@ package: ## Archive one platform's binary, e.g. make package OS=darwin ARCH=arm6
 		*)       cp dist/$(OS)-$(ARCH)/deepcove dist/stage/ ;; \
 	esac
 	@cp LICENSE README.md dist/stage/
+	@GOOS=$(OS) GOARCH=$(ARCH) $(GO_LICENSES) report --template build/third_party_notices.tpl ./cmd/deepcove \
+		> dist/stage/THIRD_PARTY_NOTICES 2> dist/go-licenses.log || { cat dist/go-licenses.log; exit 1; }
+	@# Fetched rather than read from GOROOT, which Homebrew's Go ships without a LICENSE.
+	@{ echo; echo "Go standard library $$(go env GOVERSION) (BSD-3-Clause)"; echo; \
+		curl -sfL "https://raw.githubusercontent.com/golang/go/$$(go env GOVERSION)/LICENSE"; \
+	} >> dist/stage/THIRD_PARTY_NOTICES
 	@case "$(OS)" in \
 		darwin)  ditto -c -k --norsrc --noextattr dist/stage $(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).zip ;; \
-		windows) (cd dist/stage && zip -q ../../$(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).zip deepcove.exe LICENSE README.md) ;; \
+		windows) (cd dist/stage && zip -q ../../$(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).zip deepcove.exe LICENSE README.md THIRD_PARTY_NOTICES) ;; \
 		*)       tar -czf $(RELEASE_DIR)/deepcove_$(VERSION)_$(OS)-$(ARCH).tar.gz -C dist/stage . ;; \
 	esac
 	@rm -rf dist/stage

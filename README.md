@@ -7,6 +7,18 @@ The dashboard shows a live preview of every session, so you can see what each ag
 opening it. Sessions keep running after you close the browser, and a session on another machine
 behaves exactly like one on your laptop.
 
+## Install
+
+```sh
+curl -fsSL https://deepcove.dev/install.sh | sh
+```
+
+Runs on macOS, or Linux with KVM. It installs to `~/.local/bin` with no sudo, checks the download
+against the release's checksums, and starts deepcove in the background.
+
+Then open http://127.0.0.1:9000. To add your other machines, run `deepcove network login` on each one
+and sign in to Tailscale.
+
 ## Sandboxes
 
 **Virtual machine** (Apple Virtualization on macOS, Cloud Hypervisor on Linux). Each session boots its
@@ -23,7 +35,7 @@ starting one somewhere else is the same click.
 Nothing is published to the internet. The dashboard listens on 127.0.0.1, and over your tailnet only
 your own Tailscale identity is let in.
 
-## Build
+## Build from source
 
 You need Go and Node, at the versions pinned in `go.mod` and `ui/package.json`.
 
