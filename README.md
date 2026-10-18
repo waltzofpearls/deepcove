@@ -2,6 +2,11 @@
 
 A web dashboard for running coding agent sessions in isolated sandboxes across your own machines.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="website/assets/dashboard-dark.png">
+  <img alt="The deepcove dashboard with Claude Code and Codex sessions on two machines" src="website/assets/dashboard-light.png">
+</picture>
+
 deepcove runs each agent in a sandbox on one of your machines and puts its terminal in your browser.
 The dashboard shows a live preview of every session, so you can see what each agent is doing without
 opening it. Sessions keep running after you close the browser, and a session on another machine
