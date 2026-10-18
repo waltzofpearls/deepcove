@@ -1,6 +1,6 @@
 // Command website builds deepcove.dev into website/dist. Each page in website/pages is rendered inside
-// website/templates/base.html, next to the stylesheet, the logos and the install scripts. It runs from
-// the repository root.
+// website/templates/base.html, next to the stylesheet, the screenshots, the logos and the install
+// scripts. It runs from the repository root.
 package main
 
 import (
@@ -15,6 +15,9 @@ import (
 // logosFromApp come from the app, so the site never carries a second copy that drifts.
 var logosFromApp = []string{"deepcove-logo-light.svg", "deepcove-logo-dark.svg", "favicon.svg"}
 
+var siteAssets = []string{"style.css", "dashboard-light.png", "dashboard-dark.png"}
+
+// install.ps1 is still served for anyone with the link, though the page no longer shows it.
 var installScripts = []string{"install.sh", "install.ps1"}
 
 func main() {
@@ -37,8 +40,10 @@ func build(repoRoot, dist string) error {
 	}
 
 	copies := map[string]string{
-		filepath.Join(site, "_headers"):            filepath.Join(dist, "_headers"),
-		filepath.Join(site, "assets", "style.css"): filepath.Join(dist, "assets", "style.css"),
+		filepath.Join(site, "_headers"): filepath.Join(dist, "_headers"),
+	}
+	for _, name := range siteAssets {
+		copies[filepath.Join(site, "assets", name)] = filepath.Join(dist, "assets", name)
 	}
 	for _, name := range logosFromApp {
 		copies[filepath.Join(repoRoot, "ui", "static", name)] = filepath.Join(dist, "assets", name)

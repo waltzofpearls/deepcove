@@ -19,22 +19,23 @@
   color-scheme: dark;
 }
 
-/* The logo is an image, which light-dark() cannot swap, so it follows the same choice by hand. */
-.logo-dark,
-:root[data-theme='dark'] .logo-light {
+/* Images such as the logo and the screenshot cannot be swapped by light-dark(), so they follow the same
+   choice by hand. */
+.only-dark,
+:root[data-theme='dark'] .only-light {
   display: none;
 }
 
-:root[data-theme='dark'] .logo-dark {
+:root[data-theme='dark'] .only-dark {
   display: block;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .logo-light {
+  :root:not([data-theme='light']) .only-light {
     display: none;
   }
 
-  :root:not([data-theme='light']) .logo-dark {
+  :root:not([data-theme='light']) .only-dark {
     display: block;
   }
 }
@@ -77,6 +78,22 @@ main,
 
 .brand {
   display: inline-flex;
+}
+
+.header-links {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.github {
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+
+.github:hover {
+  color: var(--foreground);
 }
 
 /* Both buttons stay hidden until the script has wired them up. */
@@ -149,7 +166,7 @@ main {
 
 .command {
   position: relative;
-  margin: 0 0 24px;
+  margin: 0 0 12px;
 }
 
 .command .copy.ready {
@@ -178,6 +195,17 @@ main {
   color: var(--code-fg);
   font-family: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Monaco, Consolas, monospace;
   font-size: 0.9375rem;
+}
+
+.screenshot {
+  padding-bottom: 64px;
+}
+
+.screenshot img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 
 .features {
