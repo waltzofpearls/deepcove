@@ -56,8 +56,8 @@ type SandboxView struct {
 	// its own defaults or cannot report them, so the UI shows the session's request instead.
 	Resources Resources `json:"resources"`
 	CreatedAt time.Time `json:"created_at"`
-	// Mounts are the host folders this sandbox shares, as the driver reports them.
-	Mounts []SandboxMount `json:"mounts"`
+	// SharedFolders are the host folders this sandbox shares, as the driver reports them.
+	SharedFolders []SandboxSharedFolder `json:"shared_folders"`
 	// Sessions are the sessions living on this sandbox, in creation order. A shared machine has several.
 	// Empty is a leak: something is still allocated for work that is over, and it will not go away on
 	// its own.
@@ -67,8 +67,8 @@ type SandboxView struct {
 	IsWorkspaceVM bool `json:"is_workspace_vm,omitempty"`
 }
 
-// SandboxMount is one host folder shared into a sandbox, and where it lands inside it.
-type SandboxMount struct {
+// SandboxSharedFolder is one host folder shared into a sandbox, and where it lands inside it.
+type SandboxSharedFolder struct {
 	HostPath  string `json:"host_path"`
 	GuestPath string `json:"guest_path"`
 	ReadOnly  bool   `json:"read_only,omitempty"`
@@ -193,7 +193,7 @@ func (s *Service) runtimeView(
 			Image:         inst.Image,
 			Resources:     fromSandboxResources(inst.Resources),
 			CreatedAt:     inst.CreatedAt,
-			Mounts:        sandboxMounts(inst.Mounts),
+			SharedFolders: sandboxSharedFolders(inst.SharedFolders),
 			Sessions:      []SandboxSession{},
 			IsWorkspaceVM: workspaceVM != nil && sandboxID == workspaceVM.SandboxID,
 		}
@@ -228,12 +228,12 @@ func (s *Service) runtimeView(
 // session is the operation that cleans up both.
 var ErrSandboxHasSession = errors.New("session: this sandbox belongs to a session; delete the session instead")
 
-// sandboxMounts converts the driver's mounts into the view's shape, host path first because that is the
-// side you recognise.
-func sandboxMounts(mounts []sandbox.Mount) []SandboxMount {
-	out := make([]SandboxMount, 0, len(mounts))
-	for _, m := range mounts {
-		out = append(out, SandboxMount{HostPath: m.Source, GuestPath: m.Target, ReadOnly: m.ReadOnly})
+// sandboxSharedFolders converts the driver's shared folders into the view's shape, host path first because
+// that is the side you recognise.
+func sandboxSharedFolders(sharedFolders []sandbox.SharedFolder) []SandboxSharedFolder {
+	out := make([]SandboxSharedFolder, 0, len(sharedFolders))
+	for _, m := range sharedFolders {
+		out = append(out, SandboxSharedFolder{HostPath: m.HostPath, GuestPath: m.GuestPath, ReadOnly: m.ReadOnly})
 	}
 	return out
 }

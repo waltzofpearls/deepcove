@@ -23,7 +23,7 @@ func Assets() embed.FS {
 }
 
 // Migrations returns the embedded SQL migration files. Paths are rooted at
-// the module (e.g., "db/migrations/0001_init.sql"). internal/db walks
+// the module (e.g., "db/migrations/0001_schema.sql"). internal/db walks
 // these in sorted order.
 func Migrations() embed.FS {
 	return migrations

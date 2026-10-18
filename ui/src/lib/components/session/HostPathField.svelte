@@ -11,7 +11,7 @@
 
   // Host-path input with directory autocomplete + a Browse modal. value is the
   // absolute host path (two-way). Listing is scoped to $HOME server-side.
-  // host (optional) browses a remote node's filesystem (editing a peer-hosted session's mounts).
+  // host (optional) browses a remote node's filesystem (editing a peer-hosted session's shared folders).
   let {
     value = $bindable(''),
     id,

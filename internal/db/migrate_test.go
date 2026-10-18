@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"errors"
-	"io/fs"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -11,8 +10,6 @@ import (
 	"testing/fstest"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
-
-	"github.com/waltzofpearls/deepcove"
 )
 
 // fakeMigrations builds an in-memory migration filesystem rooted at
@@ -204,72 +201,5 @@ func TestMigrateRollsBackWithoutTheDirective(t *testing.T) {
 	}
 	if applied := mustLoadApplied(t, database); applied["0001_broken.sql"] {
 		t.Error("a failed migration was recorded as applied")
-	}
-}
-
-// The real rename, over a database holding a session, which is the case that crashed.
-func TestSessionSandboxIDMigration(t *testing.T) {
-	database := onDisk(t)
-	if err := Migrate(database); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	if _, err := database.Exec(`INSERT INTO sessions (id, name, agent, image, owner_email, sandbox_id)
-		VALUES ('019ff000', 'placement', 'claude', 'alpine:3.20', 'local', 'applevf-abc123')`); err != nil {
-		t.Fatalf("insert a session: %v", err)
-	}
-
-	var sandboxID string
-	if err := database.QueryRow(`SELECT sandbox_id FROM sessions WHERE id = '019ff000'`).Scan(&sandboxID); err != nil {
-		t.Fatalf("read sandbox_id: %v", err)
-	}
-	if sandboxID != "applevf-abc123" {
-		t.Errorf("sandbox id %q, want applevf-abc123", sandboxID)
-	}
-	var indexes int
-	if err := database.QueryRow(
-		`SELECT count(*) FROM duckdb_indexes() WHERE table_name = 'sessions'`).Scan(&indexes); err != nil {
-		t.Fatalf("count indexes: %v", err)
-	}
-	// 0016 dropped them all: a table this small never needed one, and a lost index hides every row.
-	if indexes != 0 {
-		t.Errorf("%d indexes on sessions, want none", indexes)
-	}
-}
-
-func TestSessionLoginModeMigration(t *testing.T) {
-	database := onDisk(t)
-	before := fstest.MapFS{}
-	names, err := listMigrations(deepcove.Migrations(), migrationsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range names {
-		if name < "0019" {
-			body, _ := fs.ReadFile(deepcove.Migrations(), migrationsDir+"/"+name)
-			before[migrationsDir+"/"+name] = &fstest.MapFile{Data: body}
-		}
-	}
-	if err := migrate(database, before, migrationsDir); err != nil {
-		t.Fatalf("migrate to 0018: %v", err)
-	}
-	if _, err := database.Exec(`INSERT INTO sessions (id, name, agent, image, owner_email, runtime, use_llm_proxy) VALUES
-		('proxied', 'a', 'claude', '', 'local', 'applevf', true),
-		('no-sandbox', 'b', 'claude', '', 'local', 'sandboxless', false),
-		('vm', 'c', 'claude', '', 'local', 'applevf', false)`); err != nil {
-		t.Fatalf("insert sessions: %v", err)
-	}
-
-	if err := Migrate(database); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	want := map[string]string{"proxied": "llm_proxy", "no-sandbox": "in_session", "vm": "shared"}
-	for id, mode := range want {
-		var got string
-		if err := database.QueryRow(`SELECT login_mode FROM sessions WHERE id = ?`, id).Scan(&got); err != nil {
-			t.Fatalf("read %s: %v", id, err)
-		}
-		if got != mode {
-			t.Errorf("%s login_mode = %q, want %q", id, got, mode)
-		}
 	}
 }

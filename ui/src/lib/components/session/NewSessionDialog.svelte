@@ -30,10 +30,10 @@
   import type {
     Agent,
     LoginMode,
-    MountRequest,
     NodeInfo,
     RuntimesInfo,
     SessionResources,
+    SharedFolder,
     SharedLoginStatus,
     WorkspaceVM,
   } from '$lib/api/types';
@@ -56,7 +56,8 @@
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
-  type FormMount = { host_path: string; container_path: string; read_only: boolean };
+  // read_only is required here so the checkbox binds to a boolean.
+  type FolderRow = Required<SharedFolder>;
   type ImageStrategy = 'install' | 'official' | 'custom';
 
   let agents = $state<Agent[]>([]);
@@ -93,8 +94,8 @@
   let suggestedName = $state('');
   // Prefer-setting: start with one folder row ready to fill (the conventional
   // /workspace). The user can opt out ("Run without a folder") to clear it.
-  let mounts = $state<FormMount[]>([
-    { host_path: '', container_path: '/workspace', read_only: false },
+  let folders = $state<FolderRow[]>([
+    { host_path: '', guest_path: '/workspace', read_only: false },
   ]);
   // The deepcove host's home dir, where the host-path picker/autocomplete starts.
   // Fetched on open so we can pre-fill the host-path field (with a trailing slash
@@ -265,7 +266,7 @@
   const onVMRuntime = $derived(bootsVMs(effectiveRuntime));
 
   // No sandbox means no image and no size caps, and the folder is a real folder on that machine rather
-  // than something mounted into a guest.
+  // than something shared into a guest.
   const onSandboxless = $derived(effectiveRuntime === RUNTIME_SANDBOXLESS);
   // Where that runtime puts the folder it makes, so the form can show it before the session exists.
   const sandboxlessRoot = $derived(runtimes?.workspace_roots?.[effectiveRuntime] ?? '');
@@ -410,7 +411,7 @@
         homeDir = res.path;
         untrack(() => {
           // Never clobber a folder you typed, only a blank row or the last node's home.
-          const first = mounts[0];
+          const first = folders[0];
           if (first && (!first.host_path || first.host_path === previous + '/')) {
             first.host_path = res.path + '/';
           }
@@ -466,7 +467,7 @@
     // Matches buildPayload, which sends a runtime only while the picker is on screen.
     if (showRuntimePicker && effectiveRuntime) parts.push('--runtime', effectiveRuntime);
     if (onSandboxless) {
-      // No image, no setup script and no mounts on this runtime, so the folder is all that is left.
+      // No image, no setup script and no shared folders on this runtime, so the folder is all that is left.
       if (ownFolder && workDir.trim()) parts.push('--work-dir', shellQuote(workDir.trim()));
       return parts.join(' ');
     }
@@ -484,38 +485,38 @@
         parts.push('--setup-script', shellQuote(setupScript));
       }
     }
-    for (const m of mounts) {
-      if (!m.host_path || !m.container_path) continue;
-      const seg = m.read_only
-        ? `${m.host_path}:${m.container_path}:ro`
-        : `${m.host_path}:${m.container_path}`;
-      parts.push('--mount', shellQuote(seg));
+    for (const folder of folders) {
+      if (!folder.host_path || !folder.guest_path) continue;
+      const seg = folder.read_only
+        ? `${folder.host_path}:${folder.guest_path}:ro`
+        : `${folder.host_path}:${folder.guest_path}`;
+      parts.push('--share', shellQuote(seg));
     }
     return parts.join(' ');
   });
 
   // A fresh folder row, pre-filled at the host home dir (with trailing slash) when known.
-  function newMountRow(): FormMount {
+  function newFolderRow(): FolderRow {
     return {
       host_path: homeDir ? homeDir + '/' : '',
-      container_path: '/workspace',
+      guest_path: '/workspace',
       read_only: false,
     };
   }
 
-  function addMount() {
-    mounts = [...mounts, newMountRow()];
+  function addFolder() {
+    folders = [...folders, newFolderRow()];
   }
 
-  function removeMount(i: number) {
-    mounts = mounts.filter((_, idx) => idx !== i);
+  function removeFolder(i: number) {
+    folders = folders.filter((_, idx) => idx !== i);
   }
 
   // The "Use a folder" header toggle: off clears the rows (the session runs with an
   // empty /workspace in the guest), on restores one pre-filled row.
-  const useFolder = $derived(mounts.length > 0);
+  const useFolder = $derived(folders.length > 0);
   function toggleFolder() {
-    mounts = useFolder ? [] : [newMountRow()];
+    folders = useFolder ? [] : [newFolderRow()];
   }
 
   // Roll a fresh suggested name (the ↻ button).
@@ -531,7 +532,7 @@
 
   function resetForm() {
     name = '';
-    mounts = [newMountRow()];
+    folders = [newFolderRow()];
     submitError = null;
     submitting = false;
     pulling = false;
@@ -626,7 +627,7 @@
 
   function buildPayload() {
     // A session on the workspace VM takes none of the machine settings: its runtime, size, image and
-    // mounts are already decided.
+    // shared folder are already decided.
     if (onWorkspace) {
       return {
         agent,
@@ -635,7 +636,7 @@
         on_workspace_vm: true,
         work_dir: workspaceFolderName || undefined,
         login_mode: pickedLogin,
-        mounts: [],
+        shared_folders: [],
       };
     }
     if (onSandboxless) {
@@ -646,13 +647,13 @@
         runtime: effectiveRuntime,
         work_dir: ownFolder ? workDir.trim() : undefined,
         login_mode: pickedLogin,
-        mounts: [],
+        shared_folders: [],
       };
     }
     const payload: {
       agent: string;
       name?: string;
-      mounts: MountRequest[];
+      shared_folders: SharedFolder[];
       image?: string;
       setup_script?: string;
       node_id?: string;
@@ -669,14 +670,8 @@
       login_mode: pickedLogin,
       // Only send a target when there's a real choice; on a single node the backend creates here.
       node_id: hostNodes.length > 1 ? nodeId || undefined : undefined,
-      mounts: mounts
-        // Drop incomplete rows; server would 400 anyway.
-        .filter((m) => m.host_path && m.container_path)
-        .map<MountRequest>((m) => ({
-          host_path: m.host_path,
-          container_path: m.container_path,
-          mode: m.read_only ? 'ro' : 'rw',
-        })),
+      // Drop incomplete rows; server would 400 anyway.
+      shared_folders: folders.filter((folder) => folder.host_path && folder.guest_path),
     };
     if (imageStrategy === 'official' && selectedAgent?.sandboxed.official_image) {
       payload.image = selectedAgent.sandboxed.official_image;
@@ -1222,29 +1217,29 @@
           {#if !useFolder}
             <p class="text-xs text-muted-foreground">
               No folder. The agent starts in an empty <code>/workspace</code>
-              . Turn on "Use a folder" to mount your code.
+              . Turn on "Use a folder" to share your code.
             </p>
           {:else}
             <p class="text-xs text-muted-foreground">
-              The agent works in this folder (mounted at <code>/workspace</code>
+              The agent works in this folder (shared at <code>/workspace</code>
               ).
             </p>
-            {#each mounts as m, i (i)}
+            {#each folders as folder, i (i)}
               <div class="space-y-2 rounded-md border border-border p-2.5">
                 <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
                   <div class="min-w-0 space-y-1 sm:col-span-2">
-                    <Label class="text-xs" for="mount-host-{i}">Host path</Label>
+                    <Label class="text-xs" for="folder-host-{i}">Host path</Label>
                     <HostPathField
-                      id="mount-host-{i}"
-                      bind:value={m.host_path}
+                      id="folder-host-{i}"
+                      bind:value={folder.host_path}
                       host={selectedHost}
                     />
                   </div>
                   <div class="min-w-0 space-y-1">
-                    <Label class="text-xs" for="mount-container-{i}">Mounts to</Label>
+                    <Label class="text-xs" for="folder-guest-{i}">Guest path</Label>
                     <Input
-                      id="mount-container-{i}"
-                      bind:value={m.container_path}
+                      id="folder-guest-{i}"
+                      bind:value={folder.guest_path}
                       placeholder="/workspace"
                     />
                   </div>
@@ -1253,7 +1248,7 @@
                   <label class="flex cursor-pointer select-none items-center gap-1.5 text-xs">
                     <input
                       type="checkbox"
-                      bind:checked={m.read_only}
+                      bind:checked={folder.read_only}
                       class="size-3.5 rounded border-input"
                     />
                     Read-only
@@ -1261,7 +1256,7 @@
                   <Button
                     size="sm"
                     variant="ghost"
-                    onclick={() => removeMount(i)}
+                    onclick={() => removeFolder(i)}
                     aria-label="Remove folder"
                   >
                     <X class="size-4" />
@@ -1269,7 +1264,7 @@
                 </div>
               </div>
             {/each}
-            <Button size="sm" variant="ghost" onclick={addMount}>
+            <Button size="sm" variant="ghost" onclick={addFolder}>
               <Plus class="size-4" />
               Add another folder
             </Button>

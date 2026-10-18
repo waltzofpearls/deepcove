@@ -35,7 +35,7 @@ func (r *fakeRepo) UpdateLoginMode(context.Context, string, string, LoginMode, t
 func (r *fakeRepo) UpdateResources(context.Context, string, string, Resources, time.Time) error {
 	return nil
 }
-func (r *fakeRepo) UpdateMountsAndSandbox(context.Context, string, string, []MountRequest, string, time.Time) error {
+func (r *fakeRepo) UpdateSharedFoldersAndSandbox(context.Context, string, string, []SharedFolderRequest, string, time.Time) error {
 	return nil
 }
 func (r *fakeRepo) Delete(context.Context, string, string) error { return nil }

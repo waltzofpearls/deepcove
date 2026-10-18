@@ -40,11 +40,11 @@ func (SandboxedProvisioner) AgentLaunchCommand(_ ID, agent string) ([]string, er
 	return []string{SandboxedAgentLaunchPath(agent)}, nil
 }
 
-func (SandboxedProvisioner) WorkDir(_ string, mounts []Mount) string {
-	return SandboxedWorkDirFor(mounts)
+func (SandboxedProvisioner) WorkDir(_ string, sharedFolders []SharedFolder) string {
+	return SandboxedWorkDirFor(sharedFolders)
 }
 
-// Empty: a session's folder here is a mount, not a folder the runtime makes.
+// Empty: a session's folder here is a shared folder, not a folder the runtime makes.
 func (SandboxedProvisioner) WorkspaceRoot() string {
 	return ""
 }
@@ -99,10 +99,11 @@ func readSandboxedFile(ctx context.Context, sb Sandbox, sandboxID ID, cmd ...str
 	return out, true
 }
 
-// SandboxedWorkDirFor is where a sandboxed agent works: the first mount's target, else SandboxedWorkDir.
-func SandboxedWorkDirFor(mounts []Mount) string {
-	if len(mounts) > 0 {
-		return mounts[0].Target
+// SandboxedWorkDirFor is where a sandboxed agent works: the first shared folder's guest path, else
+// SandboxedWorkDir.
+func SandboxedWorkDirFor(sharedFolders []SharedFolder) string {
+	if len(sharedFolders) > 0 {
+		return sharedFolders[0].GuestPath
 	}
 	return SandboxedWorkDir
 }

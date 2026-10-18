@@ -40,7 +40,7 @@ describe('folderAwaitingRestart', () => {
       want: true,
     },
     {
-      name: 'saved another mount point',
+      name: 'saved another guest path',
       hostRoot: '/Users/me/Dev',
       guestRoot: '/code',
       want: true,

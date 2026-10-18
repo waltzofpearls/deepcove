@@ -106,7 +106,7 @@
   );
   const folderWaiting = $derived(
     savedVM !== null &&
-      folderAwaitingRestart(runningSandbox?.mounts, savedVM.host_root, savedVM.guest_root),
+      folderAwaitingRestart(runningSandbox?.shared_folders, savedVM.host_root, savedVM.guest_root),
   );
 
   // Seeded on open rather than on mount: the dialog outlives each use, so a stale form would show the
@@ -262,7 +262,7 @@
                 {describeVMSize(savedVM.resources, sizeChoices)}.
               {/if}
               {#if folderWaiting}
-                It still shares {runningSandbox.mounts?.[0]?.host_path}, not {savedVM.host_root}.
+                It still shares {runningSandbox.shared_folders?.[0]?.host_path}, not {savedVM.host_root}.
               {/if}
               Restarting applies them and interrupts {sessionsToInterrupt} on this VM.
             </p>

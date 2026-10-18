@@ -170,8 +170,8 @@ func TestService_Create(t *testing.T) {
 			name: "invalid mount rejects before sandbox + persist",
 			req: CreateRequest{
 				Agent: "claude",
-				Mounts: []MountRequest{
-					{HostPath: "/tmp/x", ContainerPath: "/root"},
+				SharedFolders: []SharedFolderRequest{
+					{HostPath: "/tmp/x", GuestPath: "/root"},
 				},
 			},
 			wantErrContains:  "reserved for the agent home",
@@ -592,14 +592,14 @@ func TestService_Create_MotdInEntrypoint(t *testing.T) {
 	}
 }
 
-func TestService_Create_PersistsMounts(t *testing.T) {
+func TestService_Create_PersistsSharedFolders(t *testing.T) {
 	svc, _, _, _ := newTestService(t)
 
 	req := CreateRequest{
 		Agent: "claude",
-		Mounts: []MountRequest{
-			{HostPath: "/Users/x/a", ContainerPath: "/in-ct/a", Mode: "rw"},
-			{HostPath: "/Users/x/b", ContainerPath: "/in-ct/b", Mode: "ro"},
+		SharedFolders: []SharedFolderRequest{
+			{HostPath: "/Users/x/a", GuestPath: "/in-ct/a"},
+			{HostPath: "/Users/x/b", GuestPath: "/in-ct/b", ReadOnly: true},
 		},
 	}
 	sess, err := svc.Create(context.Background(), req)
@@ -611,14 +611,14 @@ func TestService_Create_PersistsMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if len(got.Mounts) != 2 {
-		t.Fatalf("Mounts len: want 2, got %d (%+v)", len(got.Mounts), got.Mounts)
+	if len(got.SharedFolders) != 2 {
+		t.Fatalf("SharedFolders len: want 2, got %d (%+v)", len(got.SharedFolders), got.SharedFolders)
 	}
-	if got.Mounts[0].HostPath != "/Users/x/a" || got.Mounts[0].Mode != "rw" {
-		t.Errorf("Mounts[0]: %+v", got.Mounts[0])
+	if got.SharedFolders[0].HostPath != "/Users/x/a" || got.SharedFolders[0].ReadOnly {
+		t.Errorf("SharedFolders[0]: %+v", got.SharedFolders[0])
 	}
-	if got.Mounts[1].HostPath != "/Users/x/b" || got.Mounts[1].Mode != "ro" {
-		t.Errorf("Mounts[1]: %+v", got.Mounts[1])
+	if got.SharedFolders[1].HostPath != "/Users/x/b" || !got.SharedFolders[1].ReadOnly {
+		t.Errorf("SharedFolders[1]: %+v", got.SharedFolders[1])
 	}
 }
 
@@ -641,37 +641,37 @@ func TestService_Create_WorkdirAndNoScratch(t *testing.T) {
 	// defaults to /workspace. A session with a user mount points DEEPCOVE_WORKDIR at
 	// the first mount's target.
 	tests := []struct {
-		name                 string
-		mounts               []MountRequest
-		wantWorkdir          string
-		wantNoWorkspaceMount bool // assert the spec has no mount targeting /workspace
+		name                         string
+		sharedFolders                []SharedFolderRequest
+		wantWorkdir                  string
+		wantNothingSharedAtWorkspace bool // assert the spec shares nothing at /workspace
 	}{
 		{
-			name:                 "no mounts: workdir defaults to /workspace, no scratch bind",
-			mounts:               nil,
-			wantWorkdir:          "/workspace",
-			wantNoWorkspaceMount: true,
+			name:                         "no shared folders: workdir defaults to /workspace, no scratch bind",
+			sharedFolders:                nil,
+			wantWorkdir:                  "/workspace",
+			wantNothingSharedAtWorkspace: true,
 		},
 		{
-			name:        "first user mount drives the workdir",
-			mounts:      []MountRequest{{HostPath: "/Users/x/code", ContainerPath: "/code"}},
-			wantWorkdir: "/code",
+			name:          "first user mount drives the workdir",
+			sharedFolders: []SharedFolderRequest{{HostPath: "/Users/x/code", GuestPath: "/code"}},
+			wantWorkdir:   "/code",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, fake, _, _ := newTestService(t)
-			if _, err := svc.Create(context.Background(), CreateRequest{Agent: "claude", Mounts: tc.mounts}); err != nil {
+			if _, err := svc.Create(context.Background(), CreateRequest{Agent: "claude", SharedFolders: tc.sharedFolders}); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			spec := fake.specs[len(fake.specs)-1]
 			if got := spec.Env["DEEPCOVE_WORKDIR"]; got != tc.wantWorkdir {
 				t.Errorf("DEEPCOVE_WORKDIR: want %q, got %q", tc.wantWorkdir, got)
 			}
-			if tc.wantNoWorkspaceMount {
-				for _, m := range spec.Mounts {
-					if m.Target == "/workspace" {
+			if tc.wantNothingSharedAtWorkspace {
+				for _, m := range spec.SharedFolders {
+					if m.GuestPath == "/workspace" {
 						t.Errorf("expected no mount targeting /workspace; got %+v", m)
 					}
 				}
@@ -680,26 +680,26 @@ func TestService_Create_WorkdirAndNoScratch(t *testing.T) {
 	}
 }
 
-func TestService_EditMounts(t *testing.T) {
+func TestService_EditSharedFolders(t *testing.T) {
 	tests := []struct {
-		name            string
-		setup           func(t *testing.T, svc *Service) string // returns session id
-		newMounts       []MountRequest
-		wantErrIs       error
-		wantErrContains string
-		wantSandboxOps  string // expected sandbox call sequence DURING EditMounts (excludes setup)
-		wantMountsLen   int
+		name                 string
+		setup                func(t *testing.T, svc *Service) string // returns session id
+		newSharedFolders     []SharedFolderRequest
+		wantErrIs            error
+		wantErrContains      string
+		wantSandboxOps       string // expected sandbox call sequence DURING EditSharedFolders (excludes setup)
+		wantSharedFoldersLen int
 	}{
 		{
-			name: "happy path: replaces mounts on a running session (stop, destroy, create, start)",
+			name: "happy path: replaces shared folders on a running session (stop, destroy, create, start)",
 			setup: func(t *testing.T, svc *Service) string {
 				return mustCreate(t, svc, "claude").ID
 			},
-			newMounts: []MountRequest{
-				{HostPath: "/Users/x/repo", ContainerPath: "/workspace"},
+			newSharedFolders: []SharedFolderRequest{
+				{HostPath: "/Users/x/repo", GuestPath: "/workspace"},
 			},
-			wantSandboxOps: "Stop,Destroy,Create,Start",
-			wantMountsLen:  1,
+			wantSandboxOps:       "Stop,Destroy,Create,Start",
+			wantSharedFoldersLen: 1,
 		},
 		{
 			name: "stopped session: skips stop, recreates without start",
@@ -710,33 +710,33 @@ func TestService_EditMounts(t *testing.T) {
 				}
 				return sess.ID
 			},
-			newMounts: []MountRequest{
-				{HostPath: "/Users/x/repo", ContainerPath: "/workspace"},
+			newSharedFolders: []SharedFolderRequest{
+				{HostPath: "/Users/x/repo", GuestPath: "/workspace"},
 			},
-			wantSandboxOps: "Destroy,Create",
-			wantMountsLen:  1,
+			wantSandboxOps:       "Destroy,Create",
+			wantSharedFoldersLen: 1,
 		},
 		{
 			name: "invalid mount rejected before any sandbox work",
 			setup: func(t *testing.T, svc *Service) string {
 				return mustCreate(t, svc, "claude").ID
 			},
-			newMounts: []MountRequest{
-				{HostPath: "/x", ContainerPath: "/root"}, // reserved (agent home)
+			newSharedFolders: []SharedFolderRequest{
+				{HostPath: "/x", GuestPath: "/root"}, // reserved (agent home)
 			},
-			wantErrIs:       ErrMountInvalid,
-			wantErrContains: "reserved for the agent home",
-			wantSandboxOps:  "",
-			wantMountsLen:   0, // not relevant; we check err
+			wantErrIs:            ErrSharedFolderInvalid,
+			wantErrContains:      "reserved for the agent home",
+			wantSandboxOps:       "",
+			wantSharedFoldersLen: 0, // not relevant; we check err
 		},
 		{
 			name: "unknown session id returns ErrNotFound",
 			setup: func(t *testing.T, svc *Service) string {
 				return "no-such-id"
 			},
-			newMounts:      nil,
-			wantErrIs:      ErrNotFound,
-			wantSandboxOps: "",
+			newSharedFolders: nil,
+			wantErrIs:        ErrNotFound,
+			wantSandboxOps:   "",
 		},
 	}
 
@@ -745,12 +745,12 @@ func TestService_EditMounts(t *testing.T) {
 			svc, fake, _, _ := newTestService(t)
 			id := tc.setup(t, svc)
 			// Reset call sequence after setup so the assertion only
-			// reflects what EditMounts itself did.
+			// reflects what EditSharedFolders itself did.
 			fake.mu.Lock()
 			fake.calls = nil
 			fake.mu.Unlock()
 
-			updated, err := svc.EditMounts(context.Background(), id, tc.newMounts)
+			updated, err := svc.EditSharedFolders(context.Background(), id, tc.newSharedFolders)
 			if tc.wantErrIs != nil {
 				if !errors.Is(err, tc.wantErrIs) {
 					t.Fatalf("err: want errors.Is(_, %v), got %v", tc.wantErrIs, err)
@@ -760,13 +760,13 @@ func TestService_EditMounts(t *testing.T) {
 				}
 			} else {
 				if err != nil {
-					t.Fatalf("EditMounts: %v", err)
+					t.Fatalf("EditSharedFolders: %v", err)
 				}
 				if updated == nil {
 					t.Fatal("got nil session on success")
 				}
-				if len(updated.Mounts) != tc.wantMountsLen {
-					t.Errorf("updated.Mounts len: want %d, got %d (%+v)", tc.wantMountsLen, len(updated.Mounts), updated.Mounts)
+				if len(updated.SharedFolders) != tc.wantSharedFoldersLen {
+					t.Errorf("updated.SharedFolders len: want %d, got %d (%+v)", tc.wantSharedFoldersLen, len(updated.SharedFolders), updated.SharedFolders)
 				}
 				if updated.SandboxID == "" {
 					t.Errorf("updated.SandboxID should be non-empty after recreate")
@@ -774,129 +774,119 @@ func TestService_EditMounts(t *testing.T) {
 			}
 
 			if got := fake.callSequence(); got != tc.wantSandboxOps {
-				t.Errorf("sandbox ops during EditMounts: want %q, got %q", tc.wantSandboxOps, got)
+				t.Errorf("sandbox ops during EditSharedFolders: want %q, got %q", tc.wantSandboxOps, got)
 			}
 		})
 	}
 }
 
-func TestValidateMountRequests(t *testing.T) {
+func TestValidateSharedFolderRequests(t *testing.T) {
 	tests := []struct {
 		name             string
-		reqs             []MountRequest
+		reqs             []SharedFolderRequest
 		wantErrIs        error    // matched via errors.Is when non-nil
 		wantErrContains  string   // substring match; empty = no substring requirement
-		wantLen          int      // expected len of returned []sandbox.Mount
+		wantLen          int      // expected len of returned []sandbox.SharedFolder
 		wantReadOnlyMask []bool   // per-index ReadOnly assertion; nil = skip
-		wantTargets      []string // per-index Target assertion (cleaned); nil = skip
+		wantTargets      []string // per-index GuestPath assertion (cleaned); nil = skip
 	}{
 		{
-			name:    "nil input is fine, sessions without user mounts",
+			name:    "nil input is fine, sessions without shared folders",
 			reqs:    nil,
 			wantLen: 0,
 		},
 		{
-			name: "happy path: single RW mount",
-			reqs: []MountRequest{
-				{HostPath: "/Users/foo/proj", ContainerPath: "/deepcove"},
+			name: "happy path: one read and write folder",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/Users/foo/proj", GuestPath: "/deepcove"},
 			},
 			wantLen:          1,
 			wantReadOnlyMask: []bool{false},
 			wantTargets:      []string{"/deepcove"},
 		},
 		{
-			name: "mode rw and ro both accepted; default empty = rw",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/x", Mode: "rw"},
-				{HostPath: "/b", ContainerPath: "/y", Mode: "ro"},
-				{HostPath: "/c", ContainerPath: "/z", Mode: ""},
-				{HostPath: "/d", ContainerPath: "/q", Mode: "RO"}, // case-insensitive
+			name: "read only is carried through",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/x"},
+				{HostPath: "/b", GuestPath: "/y", ReadOnly: true},
 			},
-			wantLen:          4,
-			wantReadOnlyMask: []bool{false, true, false, true},
+			wantLen:          2,
+			wantReadOnlyMask: []bool{false, true},
 		},
 		{
-			name: "container_path cleaned to canonical form on output",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/foo/bar/../bar"},
+			name: "guest_path cleaned to canonical form on output",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/foo/bar/../bar"},
 			},
 			wantLen:     1,
 			wantTargets: []string{"/foo/bar"},
 		},
 		{
 			name:            "empty host_path rejects",
-			reqs:            []MountRequest{{HostPath: "", ContainerPath: "/x"}},
-			wantErrIs:       ErrMountInvalid,
+			reqs:            []SharedFolderRequest{{HostPath: "", GuestPath: "/x"}},
+			wantErrIs:       ErrSharedFolderInvalid,
 			wantErrContains: "host_path is required",
 		},
 		{
-			name:            "empty container_path rejects",
-			reqs:            []MountRequest{{HostPath: "/a", ContainerPath: ""}},
-			wantErrIs:       ErrMountInvalid,
-			wantErrContains: "container_path is required",
+			name:            "empty guest_path rejects",
+			reqs:            []SharedFolderRequest{{HostPath: "/a", GuestPath: ""}},
+			wantErrIs:       ErrSharedFolderInvalid,
+			wantErrContains: "guest_path is required",
 		},
 		{
-			name: "container_path = /workspace is allowed (the conventional target)",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/workspace"},
+			name: "guest_path = /workspace is allowed (the conventional target)",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/workspace"},
 			},
 			wantLen:     1,
 			wantTargets: []string{"/workspace"},
 		},
 		{
-			name: "container_path = /root reserved for the agent home",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/root"},
+			name: "guest_path = /root reserved for the agent home",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/root"},
 			},
-			wantErrIs:       ErrMountInvalid,
+			wantErrIs:       ErrSharedFolderInvalid,
 			wantErrContains: "reserved for the agent home",
 		},
 		{
-			name: "container_path that cleans to /root also rejected",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/root/"},
+			name: "guest_path that cleans to /root also rejected",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/root/"},
 			},
-			wantErrIs:       ErrMountInvalid,
+			wantErrIs:       ErrSharedFolderInvalid,
 			wantErrContains: "reserved for the agent home",
 		},
 		{
-			name: "container_path under /root rejected, where the guest writes the login",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/root/.claude"},
+			name: "guest_path under /root rejected, where the guest writes the login",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/root/.claude"},
 			},
-			wantErrIs:       ErrMountInvalid,
+			wantErrIs:       ErrSharedFolderInvalid,
 			wantErrContains: "reserved for the agent home",
 		},
 		{
-			name: "container_path = / rejected",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/"},
+			name: "guest_path = / rejected",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/"},
 			},
-			wantErrIs:       ErrMountInvalid,
+			wantErrIs:       ErrSharedFolderInvalid,
 			wantErrContains: "cannot be /",
 		},
 		{
-			name: "duplicate container_path rejected",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/deepcove"},
-				{HostPath: "/b", ContainerPath: "/deepcove"},
+			name: "duplicate guest_path rejected",
+			reqs: []SharedFolderRequest{
+				{HostPath: "/a", GuestPath: "/deepcove"},
+				{HostPath: "/b", GuestPath: "/deepcove"},
 			},
-			wantErrIs:       ErrMountInvalid,
-			wantErrContains: "also used by mounts[0]",
-		},
-		{
-			name: "invalid mode rejected",
-			reqs: []MountRequest{
-				{HostPath: "/a", ContainerPath: "/x", Mode: "readonly"},
-			},
-			wantErrIs:       ErrMountInvalid,
-			wantErrContains: `must be "rw" or "ro"`,
+			wantErrIs:       ErrSharedFolderInvalid,
+			wantErrContains: "also used by shared_folders[0]",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := validateMountRequests(tc.reqs)
+			got, err := validateSharedFolderRequests(tc.reqs)
 			if tc.wantErrIs != nil {
 				if !errors.Is(err, tc.wantErrIs) {
 					t.Fatalf("err: want errors.Is(_, %v), got %v", tc.wantErrIs, err)
@@ -926,8 +916,8 @@ func TestValidateMountRequests(t *testing.T) {
 					t.Errorf("Target[%d]: out of range", i)
 					continue
 				}
-				if got[i].Target != want {
-					t.Errorf("Target[%d]: want %q, got %q", i, want, got[i].Target)
+				if got[i].GuestPath != want {
+					t.Errorf("Target[%d]: want %q, got %q", i, want, got[i].GuestPath)
 				}
 			}
 		})
@@ -1155,16 +1145,16 @@ func TestSharedFolderCreatedOnlyWhenNamed(t *testing.T) {
 	root := t.TempDir()
 	svc := &Service{shareRoots: sandbox.ShareRoots{Allowed: []string{root}}}
 	missing := filepath.Join(root, "project")
-	rows := []MountRequest{{HostPath: missing, ContainerPath: "/workspace"}}
+	rows := []SharedFolderRequest{{HostPath: missing, GuestPath: "/workspace"}}
 
-	if _, err := svc.prepareMountsRequiringFolders(rows); !errors.Is(err, ErrMountInvalid) {
-		t.Fatalf("starting with a folder that is gone: got %v, want ErrMountInvalid", err)
+	if _, err := svc.prepareSharedFoldersRequiringExisting(rows); !errors.Is(err, ErrSharedFolderInvalid) {
+		t.Fatalf("starting with a folder that is gone: got %v, want ErrSharedFolderInvalid", err)
 	}
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Fatal("starting a session created the folder")
 	}
 
-	if _, err := svc.prepareMountsCreatingFolders(rows); err != nil {
+	if _, err := svc.prepareSharedFoldersCreatingMissing(rows); err != nil {
 		t.Fatalf("naming a folder: %v", err)
 	}
 	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
@@ -1172,7 +1162,7 @@ func TestSharedFolderCreatedOnlyWhenNamed(t *testing.T) {
 	}
 
 	// And once it is there, starting is happy.
-	if _, err := svc.prepareMountsRequiringFolders(rows); err != nil {
+	if _, err := svc.prepareSharedFoldersRequiringExisting(rows); err != nil {
 		t.Errorf("starting with the folder there: %v", err)
 	}
 }

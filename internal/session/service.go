@@ -33,10 +33,10 @@ func toSandboxResources(r Resources) sandbox.Resources {
 	return out
 }
 
-// workspaceDir is the conventional working directory. A user mount can target it (your
-// code lives there), and it's the default the New Session form pre-fills. When no mount
-// targets it, the entrypoint creates an empty /workspace so the agent always has a
-// landing dir. The agent cd's to DEEPCOVE_WORKDIR (the first user mount, else this).
+// workspaceDir is the conventional working directory. A shared folder can land on it (your
+// code lives there), and it's the default the New Session form pre-fills. When no shared folder
+// lands on it, the entrypoint creates an empty /workspace so the agent always has a
+// landing dir. The agent cd's to DEEPCOVE_WORKDIR (the first shared folder, else this).
 const workspaceDir = sandbox.SandboxedWorkDir
 
 // underAgentHome reports whether a guest path is the agent's home or inside it. Nothing may be shared
@@ -45,10 +45,10 @@ func underAgentHome(guestPath string) bool {
 	return guestPath == sandbox.SandboxedAgentHome || strings.HasPrefix(guestPath, sandbox.SandboxedAgentHome+"/")
 }
 
-// ErrMountInvalid is the sentinel for user mount validation failures.
+// ErrSharedFolderInvalid is the sentinel for shared folder validation failures.
 // HTTP handlers map this to 400. The wrapped error message tells the
-// caller which mount and why.
-var ErrMountInvalid = errors.New("session: mount invalid")
+// caller which folder and why.
+var ErrSharedFolderInvalid = errors.New("session: shared folder invalid")
 
 // ErrInvalidInput is a user error rather than a failure. HTTP handlers map it to 400.
 var ErrInvalidInput = errors.New("session: invalid input")
@@ -194,9 +194,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	}
 
 	// Validate before any sandbox work so bad input fails as a clean 400 without
-	// rollback. Owns session-layer concerns (reserved /root target, dup targets, mode);
+	// rollback. Owns session-layer concerns (reserved /root target, duplicate guest paths);
 	// the sandbox layer's validator owns host-path concerns (absolute, allowed root).
-	if _, err := validateMountRequests(req.Mounts); err != nil {
+	if _, err := validateSharedFolderRequests(req.SharedFolders); err != nil {
 		return nil, err
 	}
 	if err := req.Resources.Validate(); err != nil {
@@ -225,7 +225,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		OwnerEmail:     placeholderOwner,
 		Status:         StatusCreated,
 		Env:            req.Env,
-		Mounts:         req.Mounts,
+		SharedFolders:  req.SharedFolders,
 		SetupScript:    req.SetupScript,
 		Resources:      req.Resources,
 		CreatedAt:      now,
@@ -286,7 +286,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	}
 
 	// Made once the runtime is known, so a refused create leaves no folders behind.
-	userMounts, err := s.prepareMountsCreatingFolders(req.Mounts)
+	userSharedFolders, err := s.prepareSharedFoldersCreatingMissing(req.SharedFolders)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +305,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 			return nil, err
 		}
 	} else {
-		sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userMounts, runtime))
+		sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userSharedFolders, runtime))
 		if err != nil {
 			return nil, fmt.Errorf("session: create sandbox: %w", err)
 		}
@@ -479,8 +479,8 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	// Checked, not used: a session whose mounted folder went away should say so instead of starting.
-	if _, err := s.prepareMountsRequiringFolders(sess.Mounts); err != nil {
+	// Checked, not used: a session whose shared folder went away should say so instead of starting.
+	if _, err := s.prepareSharedFoldersRequiringExisting(sess.SharedFolders); err != nil {
 		return err
 	}
 	if sess.OnWorkspaceVM {
@@ -563,7 +563,7 @@ func (s *Service) Stop(ctx context.Context, id string) error {
 }
 
 // Destroy stops the sandbox (if running), removes it and the session's own storage, and removes the
-// row. Any user-mounted folder is the user's own host dir and is never touched.
+// row. Any shared folder is the user's own host dir and is never touched.
 func (s *Service) Destroy(ctx context.Context, id string) error {
 	// Held until the row is gone, or a login change could start an agent nothing will ever stop.
 	unlock, err := s.lockAgent(ctx, id)
@@ -607,10 +607,10 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	return nil
 }
 
-// EditMounts recreates the sandbox with the new mounts. The session id and the agent's /root home
+// EditSharedFolders recreates the sandbox with the new shared folders. The session id and the agent's /root home
 // survive. Everything else in the guest (installed packages, /etc edits, an unshared /workspace) does
-// NOT survive. A shared folder lives on the host, so its contents are unaffected. Accepts 0..n mounts.
-func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRequest) (*Session, error) {
+// NOT survive. A shared folder lives on the host, so its contents are unaffected. Accepts 0..n shared folders.
+func (s *Service) EditSharedFolders(ctx context.Context, id string, newSharedFolders []SharedFolderRequest) (*Session, error) {
 	// Held while the old machine goes and the new one comes, since that ends the agent too.
 	unlock, err := s.lockAgent(ctx, id)
 	if err != nil {
@@ -626,24 +626,24 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	if sess.OnWorkspaceVM {
 		return nil, fmt.Errorf("%w: this session is on the workspace VM, whose folder is edited on the machine itself", ErrInvalidInput)
 	}
-	if _, err := validateMountRequests(newMounts); err != nil {
+	if _, err := validateSharedFolderRequests(newSharedFolders); err != nil {
 		return nil, err
 	}
 
-	// The recreate stays on the session's existing runtime: changing mounts must not silently move a
+	// The recreate stays on the session's existing runtime: changing shared folders must not silently move a
 	// session between runtimes.
 	runtime, err := s.runtimeFor(sess)
 	if err != nil {
 		return nil, err
 	}
-	// Refused here, before the old sandbox goes: this runtime takes no mounts, so the recreate below
+	// Refused here, before the old sandbox goes: this runtime takes no shared folders, so the recreate below
 	// would fail and leave the session with nothing to run on.
 	if workDirIsOnThisMachine(runtime) {
 		return nil, fmt.Errorf("%w: a session with no sandbox runs the agent on the machine itself, which shares no folders",
 			ErrInvalidInput)
 	}
 	// Made once the refusals are past, so a rejected edit leaves no folders behind.
-	userMounts, err := s.prepareMountsCreatingFolders(newMounts)
+	userSharedFolders, err := s.prepareSharedFoldersCreatingMissing(newSharedFolders)
 	if err != nil {
 		return nil, err
 	}
@@ -665,7 +665,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 		return nil, fmt.Errorf("session: %w", err)
 	}
 
-	spec := s.buildSandboxSpec(sess, agent, userMounts, runtime)
+	spec := s.buildSandboxSpec(sess, agent, userSharedFolders, runtime)
 
 	newHandle, err := runtime.Create(ctx, spec)
 	if err != nil {
@@ -682,8 +682,8 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	}
 
 	now := time.Now().UTC()
-	if err := s.repo.UpdateMountsAndSandbox(ctx, placeholderOwner, id, newMounts, string(newHandle), now); err != nil {
-		return nil, fmt.Errorf("session: update mounts row: %w", err)
+	if err := s.repo.UpdateSharedFoldersAndSandbox(ctx, placeholderOwner, id, newSharedFolders, string(newHandle), now); err != nil {
+		return nil, fmt.Errorf("session: update shared folders row: %w", err)
 	}
 	// Keep the just-reconfigured session at the top of the canvas.
 	_ = s.repo.UpdateActivity(ctx, placeholderOwner, id, now)
@@ -692,7 +692,7 @@ func (s *Service) EditMounts(ctx context.Context, id string, newMounts []MountRe
 	if err != nil {
 		return nil, err
 	}
-	s.logger.Info("session mounts edited", "id", id, "name", sess.Name, "mounts", len(newMounts))
+	s.logger.Info("session shared folders edited", "id", id, "name", sess.Name, "shared_folders", len(newSharedFolders))
 	return updated, nil
 }
 
@@ -704,13 +704,13 @@ type sandboxRequest struct {
 	Name  string
 	Agent AgentSpec
 	// Agents are every agent the machine runs. Empty means Agent alone, which is a session's own machine.
-	Agents    []AgentSpec
-	Image     string
-	Resources Resources
-	Setup     string
-	Env       map[string]string
-	Mounts    []sandbox.Mount
-	WorkDir   string
+	Agents        []AgentSpec
+	Image         string
+	Resources     Resources
+	Setup         string
+	Env           map[string]string
+	SharedFolders []sandbox.SharedFolder
+	WorkDir       string
 	// OnThisMachine is a runtime with no guest, where the agent uses the user's own home.
 	OnThisMachine bool
 }
@@ -775,23 +775,23 @@ func newSandboxSpec(req sandboxRequest) sandbox.SandboxSpec {
 		Resources:         toSandboxResources(req.Resources),
 		Cmd:               buildEntrypoint(req.Name, setup, launchers),
 		Env:               env,
-		Mounts:            req.Mounts,
+		SharedFolders:     req.SharedFolders,
 	}
 }
 
 // buildSandboxSpec describes a session's own machine. The runtime decides how LLM traffic leaves.
-func (s *Service) buildSandboxSpec(sess *Session, agent AgentSpec, userMounts []sandbox.Mount, runtime sandbox.Sandbox) sandbox.SandboxSpec {
+func (s *Service) buildSandboxSpec(sess *Session, agent AgentSpec, userSharedFolders []sandbox.SharedFolder, runtime sandbox.Sandbox) sandbox.SandboxSpec {
 	return newSandboxSpec(sandboxRequest{
-		ID:        sess.ID,
-		Name:      sess.Name,
-		Agent:     agent,
-		Image:     sess.Image,
-		Resources: sess.Resources.withSizeApplied(SessionVMSizes),
-		Setup:     sess.SetupScript,
-		Env:       sess.Env,
-		Mounts:    userMounts,
+		ID:            sess.ID,
+		Name:          sess.Name,
+		Agent:         agent,
+		Image:         sess.Image,
+		Resources:     sess.Resources.withSizeApplied(SessionVMSizes),
+		Setup:         sess.SetupScript,
+		Env:           sess.Env,
+		SharedFolders: userSharedFolders,
 		// The folder the agent is started in, which its launch script cds into first.
-		WorkDir:       workDirOf(sess, userMounts, runtime),
+		WorkDir:       workDirOf(sess, userSharedFolders, runtime),
 		OnThisMachine: workDirIsOnThisMachine(runtime),
 	})
 }
@@ -816,7 +816,7 @@ cat > /etc/deepcove-motd <<'DEEPCOVE_MOTD_END'
 
 Welcome to deepcove session "%s".
 
-  /workspace  ← your working folder (your mounted code, or empty scratch)
+  /workspace  ← your working folder (your shared code, or empty scratch)
   /root       ← your home dir (persists across restarts)
 
 The agent runs in the Agent tab once setup finishes.
@@ -888,7 +888,7 @@ func unusedOnThisMachine(req CreateRequest) string {
 	switch {
 	case req.Image != "":
 		return "image"
-	case len(req.Mounts) > 0:
+	case len(req.SharedFolders) > 0:
 		return "shared folders"
 	case req.SetupScript != "":
 		return "setup script"
@@ -898,9 +898,9 @@ func unusedOnThisMachine(req CreateRequest) string {
 	return ""
 }
 
-// workDirOf asks the runtime where this session's agent works, with the mounts it is being created
-// with rather than the ones on the row, which a recreate is about to change.
-func workDirOf(sess *Session, userMounts []sandbox.Mount, runtime sandbox.Sandbox) string {
+// workDirOf asks the runtime where this session's agent works, with the shared folders it is being
+// created with rather than the ones on the row, which a recreate is about to change.
+func workDirOf(sess *Session, userSharedFolders []sandbox.SharedFolder, runtime sandbox.Sandbox) string {
 	if sess.WorkDir != "" {
 		return sess.WorkDir
 	}
@@ -908,30 +908,30 @@ func workDirOf(sess *Session, userMounts []sandbox.Mount, runtime sandbox.Sandbo
 	if !ok {
 		return sandbox.SandboxedWorkDir
 	}
-	return provisioner.WorkDir(sess.ID, userMounts)
+	return provisioner.WorkDir(sess.ID, userSharedFolders)
 }
 
 var errFolderGone = errors.New("the folder is not there")
 
-func (s *Service) prepareMountsCreatingFolders(reqs []MountRequest) ([]sandbox.Mount, error) {
-	return s.prepareMounts(reqs, s.ensureSharedFolder)
+func (s *Service) prepareSharedFoldersCreatingMissing(reqs []SharedFolderRequest) ([]sandbox.SharedFolder, error) {
+	return s.prepareSharedFolders(reqs, s.ensureSharedFolder)
 }
 
-func (s *Service) prepareMountsRequiringFolders(reqs []MountRequest) ([]sandbox.Mount, error) {
-	return s.prepareMounts(reqs, s.requireSharedFolder)
+func (s *Service) prepareSharedFoldersRequiringExisting(reqs []SharedFolderRequest) ([]sandbox.SharedFolder, error) {
+	return s.prepareSharedFolders(reqs, s.requireSharedFolder)
 }
 
-func (s *Service) prepareMounts(reqs []MountRequest, folder func(string) error) ([]sandbox.Mount, error) {
-	mounts, err := validateMountRequests(reqs)
+func (s *Service) prepareSharedFolders(reqs []SharedFolderRequest, folder func(string) error) ([]sandbox.SharedFolder, error) {
+	sharedFolders, err := validateSharedFolderRequests(reqs)
 	if err != nil {
 		return nil, err
 	}
-	for i, m := range mounts {
-		if err := folder(m.Source); err != nil {
-			return nil, fmt.Errorf("%w: mounts[%d]: %s", ErrMountInvalid, i, err)
+	for i, m := range sharedFolders {
+		if err := folder(m.HostPath); err != nil {
+			return nil, fmt.Errorf("%w: shared_folders[%d]: %s", ErrSharedFolderInvalid, i, err)
 		}
 	}
-	return mounts, nil
+	return sharedFolders, nil
 }
 
 func (s *Service) requireSharedFolder(path string) error {
@@ -952,7 +952,7 @@ func requireFolder(path string, roots sandbox.ShareRoots) error {
 	if len(roots.Allowed) == 0 {
 		return nil
 	}
-	if err := sandbox.MountSourceAllowed(path, roots); err != nil {
+	if err := sandbox.SharedFolderAllowed(path, roots); err != nil {
 		return err
 	}
 	switch info, err := os.Stat(path); {
@@ -978,56 +978,45 @@ func ensureFolder(path string, roots sandbox.ShareRoots) error {
 	return nil
 }
 
-// Errors wrap ErrMountInvalid with a [N] index so the UI can point at the bad row.
+// Errors wrap ErrSharedFolderInvalid with a [N] index so the UI can point at the bad row.
 // Host-path checks (absolute, cleaned, under an allowed root) live in the sandbox
 // layer's validator.
-func validateMountRequests(reqs []MountRequest) ([]sandbox.Mount, error) {
+func validateSharedFolderRequests(reqs []SharedFolderRequest) ([]sandbox.SharedFolder, error) {
 	if len(reqs) == 0 {
 		return nil, nil
 	}
-	out := make([]sandbox.Mount, 0, len(reqs))
+	out := make([]sandbox.SharedFolder, 0, len(reqs))
 	seenTargets := make(map[string]int, len(reqs))
 	for i, m := range reqs {
 		if m.HostPath == "" {
-			return nil, fmt.Errorf("%w: mounts[%d]: host_path is required", ErrMountInvalid, i)
+			return nil, fmt.Errorf("%w: shared_folders[%d]: host_path is required", ErrSharedFolderInvalid, i)
 		}
-		if m.ContainerPath == "" {
-			return nil, fmt.Errorf("%w: mounts[%d]: container_path is required", ErrMountInvalid, i)
+		if m.GuestPath == "" {
+			return nil, fmt.Errorf("%w: shared_folders[%d]: guest_path is required", ErrSharedFolderInvalid, i)
 		}
-		target := filepath.Clean(m.ContainerPath)
+		target := filepath.Clean(m.GuestPath)
 		// /root and anything under it may not be shared (see underAgentHome). /workspace is
-		// intentionally NOT reserved: it's the conventional place to mount your code.
+		// intentionally NOT reserved: it's the conventional place to share your code.
 		if underAgentHome(target) {
-			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q is reserved for the agent home",
-				ErrMountInvalid, i, m.ContainerPath)
+			return nil, fmt.Errorf("%w: shared_folders[%d]: guest_path %q is reserved for the agent home",
+				ErrSharedFolderInvalid, i, m.GuestPath)
 		}
 		// Sub-paths of system dirs are deliberately allowed; only the root itself
-		// is blocked (mounting over / would clobber the whole filesystem).
+		// is blocked (sharing over / would clobber the whole filesystem).
 		if target == "/" {
-			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q cannot be /",
-				ErrMountInvalid, i, m.ContainerPath)
+			return nil, fmt.Errorf("%w: shared_folders[%d]: guest_path %q cannot be /",
+				ErrSharedFolderInvalid, i, m.GuestPath)
 		}
 		if prev, dup := seenTargets[target]; dup {
-			return nil, fmt.Errorf("%w: mounts[%d]: container_path %q is also used by mounts[%d]",
-				ErrMountInvalid, i, m.ContainerPath, prev)
+			return nil, fmt.Errorf("%w: shared_folders[%d]: guest_path %q is also used by shared_folders[%d]",
+				ErrSharedFolderInvalid, i, m.GuestPath, prev)
 		}
 		seenTargets[target] = i
 
-		var readOnly bool
-		switch strings.ToLower(m.Mode) {
-		case "", "rw":
-			readOnly = false
-		case "ro":
-			readOnly = true
-		default:
-			return nil, fmt.Errorf("%w: mounts[%d]: mode %q must be \"rw\" or \"ro\"",
-				ErrMountInvalid, i, m.Mode)
-		}
-
-		out = append(out, sandbox.Mount{
-			Source:   filepath.Clean(m.HostPath),
-			Target:   target,
-			ReadOnly: readOnly,
+		out = append(out, sandbox.SharedFolder{
+			HostPath:  filepath.Clean(m.HostPath),
+			GuestPath: target,
+			ReadOnly:  m.ReadOnly,
 		})
 	}
 	return out, nil

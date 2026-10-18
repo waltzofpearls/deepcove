@@ -606,7 +606,7 @@
     </div>
   </div>
 
-  <!-- Edit-mounts sheet. Bind session so the sheet can write the
+  <!-- Session settings sheet. Bind session so the sheet can write the
        updated row back after a successful PUT, which keeps the toolbar
        and the rest of the page in sync without an extra fetch. -->
   {#if session}
