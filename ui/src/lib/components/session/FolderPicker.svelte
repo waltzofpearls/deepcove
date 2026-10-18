@@ -79,7 +79,7 @@
   >
     <DialogHeader class="border-b border-border px-5 py-3.5">
       <DialogTitle>Choose a folder</DialogTitle>
-      <DialogDescription>Pick a directory under your home folder to mount.</DialogDescription>
+      <DialogDescription>Pick a directory under your home folder to share.</DialogDescription>
     </DialogHeader>
 
     <div class="flex min-w-0 flex-col gap-3 px-5 py-4">

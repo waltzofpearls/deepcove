@@ -73,7 +73,7 @@ func (s *Service) saveVMSize(ctx context.Context, id, size string) (*Session, er
 			return nil, fmt.Errorf("session: drop the old VM: %w", err)
 		}
 		// No sandbox on the row is what makes Start build a new one.
-		if err := s.repo.UpdateMountsAndSandbox(ctx, placeholderOwner, id, sess.Mounts, "", now); err != nil {
+		if err := s.repo.UpdateSharedFoldersAndSandbox(ctx, placeholderOwner, id, sess.SharedFolders, "", now); err != nil {
 			return nil, err
 		}
 		sess.SandboxID = ""

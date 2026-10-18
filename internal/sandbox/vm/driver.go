@@ -250,7 +250,7 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 		d.mu.Unlock()
 	}()
 
-	shares, guestMounts := hostShares(spec.Mounts)
+	shares, guestMounts := hostShares(spec.SharedFolders)
 	shares, closeSharedFolders, err := openSharedFolders(shares, d.shareRoots)
 	if err != nil {
 		return err
@@ -405,13 +405,13 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 			instanceState = sandbox.InstanceStarting
 		}
 		out = append(out, sandbox.Instance{
-			ID:           sandboxID,
-			State:        instanceState,
-			Unresponsive: state.machine != nil && state.machine.Unresponsive(),
-			Image:        state.spec.Image,
-			Mounts:       slices.Clone(state.spec.Mounts),
-			Resources:    actualResources(state.spec.Resources),
-			CreatedAt:    state.createdAt,
+			ID:            sandboxID,
+			State:         instanceState,
+			Unresponsive:  state.machine != nil && state.machine.Unresponsive(),
+			Image:         state.spec.Image,
+			SharedFolders: slices.Clone(state.spec.SharedFolders),
+			Resources:     actualResources(state.spec.Resources),
+			CreatedAt:     state.createdAt,
 		})
 	}
 	// Map iteration order is random, so sort for a view that does not reshuffle on every poll. Newest
@@ -425,14 +425,14 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 	return out, nil
 }
 
-// hostShares turns the spec's mounts into virtio-fs shares and the matching guest side mount list.
-func hostShares(mounts []sandbox.Mount) ([]Share, []guestcfg.Mount) {
+// hostShares turns the spec's shared folders into virtio-fs shares and the matching guest side mount list.
+func hostShares(sharedFolders []sandbox.SharedFolder) ([]Share, []guestcfg.Mount) {
 	var shares []Share
 	var guest []guestcfg.Mount
-	for _, m := range mounts {
+	for _, m := range sharedFolders {
 		tag := shareTag(len(shares))
-		shares = append(shares, Share{Tag: tag, HostPath: m.Source, ReadOnly: m.ReadOnly})
-		guest = append(guest, guestcfg.Mount{Tag: tag, Target: m.Target, ReadOnly: m.ReadOnly})
+		shares = append(shares, Share{Tag: tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly})
+		guest = append(guest, guestcfg.Mount{Tag: tag, Target: m.GuestPath, ReadOnly: m.ReadOnly})
 	}
 	return shares, guest
 }
@@ -440,12 +440,12 @@ func hostShares(mounts []sandbox.Mount) ([]Share, []guestcfg.Mount) {
 // withResolvedShares is spec with every shared folder's links followed, so the path that is checked and
 // the path the VM opens are the same string.
 func withResolvedShares(spec sandbox.SandboxSpec) sandbox.SandboxSpec {
-	mounts := make([]sandbox.Mount, len(spec.Mounts))
-	for i, m := range spec.Mounts {
-		m.Source = sandbox.ResolveSymlinks(m.Source)
-		mounts[i] = m
+	sharedFolders := make([]sandbox.SharedFolder, len(spec.SharedFolders))
+	for i, m := range spec.SharedFolders {
+		m.HostPath = sandbox.ResolveSymlinks(m.HostPath)
+		sharedFolders[i] = m
 	}
-	spec.Mounts = mounts
+	spec.SharedFolders = sharedFolders
 	return spec
 }
 
@@ -634,11 +634,11 @@ func (d *Driver) validateSpec(spec sandbox.SandboxSpec) error {
 	if len(spec.Cmd) == 0 {
 		return fmt.Errorf("vm: spec.Cmd is required; it is the session entrypoint the guest runs")
 	}
-	for _, m := range spec.Mounts {
-		target := filepath.Clean(m.Target)
+	for _, m := range spec.SharedFolders {
+		target := filepath.Clean(m.GuestPath)
 		if target == sandbox.SandboxedAgentHome || strings.HasPrefix(target, sandbox.SandboxedAgentHome+"/") {
 			return fmt.Errorf("vm: %s is the agent's home, so no folder can be shared at %s",
-				sandbox.SandboxedAgentHome, m.Target)
+				sandbox.SandboxedAgentHome, m.GuestPath)
 		}
 	}
 	return nil

@@ -137,9 +137,9 @@ func (d *Driver) Create(_ context.Context, spec sandbox.SandboxSpec) (sandbox.ID
 	if len(spec.Cmd) == 0 {
 		return "", fmt.Errorf("sandboxless: spec.Cmd is empty, so the spec did not come from the session layer")
 	}
-	if len(spec.Mounts) > 0 {
+	if len(spec.SharedFolders) > 0 {
 		return "", fmt.Errorf("a session with no sandbox cannot share %s: the agent already works on this machine's own files",
-			spec.Mounts[0].Source)
+			spec.SharedFolders[0].HostPath)
 	}
 	instanceID, socket, err := d.mintID()
 	if err != nil {
@@ -349,11 +349,11 @@ func (d *Driver) ListSandboxes(context.Context) ([]sandbox.Instance, error) {
 			state = sandbox.InstanceRunning
 		}
 		out = append(out, sandbox.Instance{
-			ID:        instanceID,
-			State:     state,
-			Image:     inst.spec.Image,
-			Mounts:    inst.spec.Mounts,
-			CreatedAt: inst.createdAt,
+			ID:            instanceID,
+			State:         state,
+			Image:         inst.spec.Image,
+			SharedFolders: inst.spec.SharedFolders,
+			CreatedAt:     inst.createdAt,
 		})
 	}
 	return out, nil

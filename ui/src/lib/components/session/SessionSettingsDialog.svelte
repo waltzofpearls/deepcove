@@ -88,7 +88,7 @@
     return () => ac.abort();
   });
 
-  // No guest, so there is nothing to mount into and no shared folder to edit.
+  // No guest, so there is nothing to share into and no shared folder to edit.
   const onThisMachine = $derived(session.runtime === RUNTIME_SANDBOXLESS);
   // The picked mode, saved by its button. Keyed on the id: the dialog outlives each use.
   let loginMode = $state<LoginMode>('in_session');
@@ -308,7 +308,7 @@
         nodeRuntimes?.workspace_vm_sizes,
       ) ||
         folderAwaitingRestart(
-          runningSandbox.mounts,
+          runningSandbox.shared_folders,
           workspaceVM.host_root,
           workspaceVM.guest_root,
         )),
@@ -365,10 +365,12 @@
           {/if}
         {:else if onThisMachine}
           {session.agent_work_dir || 'a folder deepcove made for this session'}
-        {:else if session.mounts?.length}
-          {session.mounts.map((m) => `${m.host_path} → ${m.container_path}`).join(', ')}
+        {:else if session.shared_folders?.length}
+          {session.shared_folders
+            .map((folder) => `${folder.host_path} → ${folder.guest_path}`)
+            .join(', ')}
         {:else}
-          /workspace <span class="text-muted-foreground">(nothing mounted)</span>
+          /workspace <span class="text-muted-foreground">(nothing shared)</span>
         {/if}
       </dd>
 
@@ -527,7 +529,7 @@
         {/if}
       {:else if onThisMachine}
         <p class="text-xs leading-relaxed text-muted-foreground">
-          This session runs on the machine, so there is nothing to mount: the agent reads the folder
+          This session runs on the machine, so there is nothing to share: the agent reads the folder
           it works in directly.
         </p>
       {:else}

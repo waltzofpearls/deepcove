@@ -42,7 +42,7 @@ func (s *Service) AttachRoutes(mux *http.ServeMux) {
 	inner.HandleFunc("DELETE /api/sessions/{id}", s.handleDestroy)
 	inner.HandleFunc("GET /api/sessions/{id}/attach", s.handleAttach)
 	inner.HandleFunc("GET /api/sessions/{id}/bootstrap", s.handleBootstrap)
-	inner.HandleFunc("PUT /api/sessions/{id}/mounts", s.handleEditMounts)
+	inner.HandleFunc("PUT /api/sessions/{id}/shared-folders", s.handleEditSharedFolders)
 	inner.HandleFunc("PUT /api/sessions/{id}/uploads", s.handleUpload)
 	inner.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreview)
 	inner.HandleFunc("GET /api/sessions/{id}/tmux-windows", s.handleListTmuxWindows)
@@ -93,7 +93,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Sandbox sentinels get a precise status and a stable code the SPA can act on (runtime down →
-		// 503). Mount and other user input failures fall through to 400. See writeSandboxError.
+		// 503). Shared folder and other user input failures fall through to 400. See writeSandboxError.
 		writeSandboxError(w, err)
 		return
 	}
@@ -253,27 +253,27 @@ func (s *Service) handleStop(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// EditMountsRequest is the body shape of PUT /api/sessions/{id}/mounts.
-// We accept the whole new mount list (not a diff) so the wire format matches what the UI's edit
+// EditSharedFoldersRequest is the body shape of PUT /api/sessions/{id}/shared-folders.
+// We accept the whole new list (not a diff) so the wire format matches what the UI's edit
 // panel renders: fewer round-trips to keep in sync, simpler conflict semantics.
-type EditMountsRequest struct {
-	Mounts []MountRequest `json:"mounts"`
+type EditSharedFoldersRequest struct {
+	SharedFolders []SharedFolderRequest `json:"shared_folders"`
 }
 
-func (s *Service) handleEditMounts(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleEditSharedFolders(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req EditMountsRequest
+	var req EditSharedFoldersRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	sess, err := s.EditMounts(r.Context(), id, req.Mounts)
+	sess, err := s.EditSharedFolders(r.Context(), id, req.SharedFolders)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeNotHostedHere(w)
 			return
 		}
-		if errors.Is(err, ErrMountInvalid) {
+		if errors.Is(err, ErrSharedFolderInvalid) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

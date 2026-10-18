@@ -348,8 +348,8 @@ func TestRuntimeViewListsEverySessionOnASandbox(t *testing.T) {
 }
 
 // The view says what each machine is working on, so a reader can tell two VMs apart without opening a
-// session. The mounts come from the driver, not from the session row.
-func TestRuntimeViewReportsMounts(t *testing.T) {
+// session. The shared folders come from the driver, not from the session row.
+func TestRuntimeViewReportsSharedFolders(t *testing.T) {
 	svc, lister := newListerService(t)
 	ctx := context.Background()
 
@@ -357,9 +357,9 @@ func TestRuntimeViewReportsMounts(t *testing.T) {
 	lister.instances = []sandbox.Instance{{
 		ID:    sandbox.ID(sess.SandboxID),
 		State: sandbox.InstanceRunning,
-		Mounts: []sandbox.Mount{
-			{Source: "/Users/rollie/Dev", Target: "/workspace"},
-			{Source: "/Users/rollie/notes", Target: "/notes", ReadOnly: true},
+		SharedFolders: []sandbox.SharedFolder{
+			{HostPath: "/Users/rollie/Dev", GuestPath: "/workspace"},
+			{HostPath: "/Users/rollie/notes", GuestPath: "/notes", ReadOnly: true},
 		},
 	}}
 
@@ -367,15 +367,15 @@ func TestRuntimeViewReportsMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RuntimeViews: %v", err)
 	}
-	got := viewFor(t, views, runtimeFake).Sandboxes[0].Mounts
+	got := viewFor(t, views, runtimeFake).Sandboxes[0].SharedFolders
 	if len(got) != 2 {
-		t.Fatalf("got %d mounts, want 2: %+v", len(got), got)
+		t.Fatalf("got %d shared folders, want 2: %+v", len(got), got)
 	}
 	if got[0].HostPath != "/Users/rollie/Dev" || got[0].GuestPath != "/workspace" || got[0].ReadOnly {
-		t.Errorf("first mount %+v, want the writable Dev share", got[0])
+		t.Errorf("first shared folder %+v, want the writable Dev share", got[0])
 	}
 	if !got[1].ReadOnly {
-		t.Errorf("second mount %+v, want it marked read only", got[1])
+		t.Errorf("second shared folder %+v, want it marked read only", got[1])
 	}
 }
 
@@ -413,7 +413,7 @@ func TestOrphanedSkipsSessionsWithNoSandbox(t *testing.T) {
 	svc, lister := newListerService(t)
 
 	sess := mustCreate(t, svc, "claude")
-	if err := svc.repo.UpdateMountsAndSandbox(ctx, placeholderOwner, sess.ID, sess.Mounts, "", time.Now().UTC()); err != nil {
+	if err := svc.repo.UpdateSharedFoldersAndSandbox(ctx, placeholderOwner, sess.ID, sess.SharedFolders, "", time.Now().UTC()); err != nil {
 		t.Fatalf("clear the sandbox: %v", err)
 	}
 	lister.instances = nil

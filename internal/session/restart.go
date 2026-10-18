@@ -96,7 +96,7 @@ func (s *Service) savedSpecFor(ctx context.Context, sandboxID string) (sandbox.S
 	if err != nil {
 		return sandbox.SandboxSpec{}, fmt.Errorf("session: %w", err)
 	}
-	userMounts, err := s.prepareMountsRequiringFolders(sess.Mounts)
+	userSharedFolders, err := s.prepareSharedFoldersRequiringExisting(sess.SharedFolders)
 	if err != nil {
 		return sandbox.SandboxSpec{}, err
 	}
@@ -104,7 +104,7 @@ func (s *Service) savedSpecFor(ctx context.Context, sandboxID string) (sandbox.S
 	if err != nil {
 		return sandbox.SandboxSpec{}, err
 	}
-	return s.buildSandboxSpec(sess, agent, userMounts, runtime), nil
+	return s.buildSandboxSpec(sess, agent, userSharedFolders, runtime), nil
 }
 
 // filterRunningSessionsOnly keeps the sessions whose row says running.

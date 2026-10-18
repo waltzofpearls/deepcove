@@ -222,8 +222,8 @@ func registerInstalledRuntime(
 // shareRoots are the host folders a session may share, applied to every runtime.
 //
 // $HOME covers the common case of a project under the home dir (~/projects/foo, ~/code). System dirs
-// (/etc, /usr, /var, ...) stay blocked because they are not under it. Power users who need to mount
-// outside $HOME will get a config flag override as a follow-up. The sandbox layer's mount-source
+// (/etc, /usr, /var, ...) stay blocked because they are not under it. Power users who need to share
+// outside $HOME will get a config flag override as a follow-up. The sandbox layer's host path
 // validator enforces this.
 //
 // Refused: the data dir (tailnet key, logins), and the files deepcove runs from (its program, its service

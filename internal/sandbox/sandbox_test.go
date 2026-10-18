@@ -34,8 +34,8 @@ func TestValidateSpec(t *testing.T) {
 	otherCase := filepath.Join(home, ".config", "DEEPCOVE")
 	_, err = os.Stat(otherCase)
 	ignoresCase := err == nil
-	withMount := func(source, target string) SandboxSpec {
-		return SandboxSpec{Image: "img", Mounts: []Mount{{Source: source, Target: target}}}
+	withSharedFolder := func(hostPath, guestPath string) SandboxSpec {
+		return SandboxSpec{Image: "img", SharedFolders: []SharedFolder{{HostPath: hostPath, GuestPath: guestPath}}}
 	}
 	cases := []struct {
 		name     string
@@ -44,31 +44,31 @@ func TestValidateSpec(t *testing.T) {
 		wantText string // part of the error, when the wording matters to the user
 	}{
 		{name: "no folders", spec: SandboxSpec{Image: "img"}},
-		{name: "a folder inside an allowed root", spec: withMount(home+"/code", "/workspace")},
-		{name: "a folder that only shares a prefix with a refused one", spec: withMount(home+"/.configx", "/workspace")},
+		{name: "a folder inside an allowed root", spec: withSharedFolder(home+"/code", "/workspace")},
+		{name: "a folder that only shares a prefix with a refused one", spec: withSharedFolder(home+"/.configx", "/workspace")},
 		{name: "no image", spec: SandboxSpec{}, wantErr: true},
-		{name: "a folder outside every root", spec: withMount("/etc", "/workspace"), wantErr: true},
-		{name: "a sibling that only shares a prefix", spec: withMount(home+"2", "/workspace"), wantErr: true},
-		{name: "a relative source", spec: withMount("code", "/workspace"), wantErr: true},
-		{name: "a source not in cleaned form", spec: withMount(home+"/../other", "/workspace"), wantErr: true},
-		{name: "an empty source", spec: withMount("", "/workspace"), wantErr: true},
-		{name: "a relative target", spec: withMount(home+"/code", "workspace"), wantErr: true},
+		{name: "a folder outside every root", spec: withSharedFolder("/etc", "/workspace"), wantErr: true},
+		{name: "a sibling that only shares a prefix", spec: withSharedFolder(home+"2", "/workspace"), wantErr: true},
+		{name: "a relative host path", spec: withSharedFolder("code", "/workspace"), wantErr: true},
+		{name: "a host path not in cleaned form", spec: withSharedFolder(home+"/../other", "/workspace"), wantErr: true},
+		{name: "an empty host path", spec: withSharedFolder("", "/workspace"), wantErr: true},
+		{name: "a relative guest path", spec: withSharedFolder(home+"/code", "workspace"), wantErr: true},
 		{
-			name: "a link inside the root that points out of it", spec: withMount(home+"/escape/etc", "/workspace"),
+			name: "a link inside the root that points out of it", spec: withSharedFolder(home+"/escape/etc", "/workspace"),
 			wantErr: true, wantText: "it is a link to",
 		},
-		{name: "the refused folder", spec: withMount(dataDir, "/workspace"), wantErr: true},
-		{name: "a folder inside the refused one", spec: withMount(dataDir+"/tailnet", "/workspace"), wantErr: true},
-		{name: "the allowed root, which holds the refused folder", spec: withMount(home, "/workspace"), wantErr: true},
-		{name: "a parent of the refused folder", spec: withMount(home+"/.config", "/workspace"), wantErr: true},
-		{name: "the folder that holds a refused file", spec: withMount(home+"/bin", "/workspace"), wantErr: true},
+		{name: "the refused folder", spec: withSharedFolder(dataDir, "/workspace"), wantErr: true},
+		{name: "a folder inside the refused one", spec: withSharedFolder(dataDir+"/tailnet", "/workspace"), wantErr: true},
+		{name: "the allowed root, which holds the refused folder", spec: withSharedFolder(home, "/workspace"), wantErr: true},
+		{name: "a parent of the refused folder", spec: withSharedFolder(home+"/.config", "/workspace"), wantErr: true},
+		{name: "the folder that holds a refused file", spec: withSharedFolder(home+"/bin", "/workspace"), wantErr: true},
 		{
 			name:    "a refused folder that does not exist yet, typed in other case",
-			spec:    withMount(filepath.Join(home, "library", "launchagents"), "/workspace"),
+			spec:    withSharedFolder(filepath.Join(home, "library", "launchagents"), "/workspace"),
 			wantErr: runtime.GOOS == "darwin",
 		},
-		{name: "the refused folder typed in other case", spec: withMount(otherCase, "/workspace"), wantErr: ignoresCase},
-		{name: "a folder inside it typed in other case", spec: withMount(otherCase+"/tailnet", "/workspace"), wantErr: ignoresCase},
+		{name: "the refused folder typed in other case", spec: withSharedFolder(otherCase, "/workspace"), wantErr: ignoresCase},
+		{name: "a folder inside it typed in other case", spec: withSharedFolder(otherCase+"/tailnet", "/workspace"), wantErr: ignoresCase},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -132,11 +132,11 @@ func TestCreate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "a mount, which there is nothing here to mount into",
+			name: "a shared folder, which there is nothing here to share into",
 			spec: sandbox.SandboxSpec{
-				Cmd:    []string{"/bin/sh"},
-				Agent:  testAgent(),
-				Mounts: []sandbox.Mount{{Source: "/home/deep/code", Target: "/workspace"}},
+				Cmd:           []string{"/bin/sh"},
+				Agent:         testAgent(),
+				SharedFolders: []sandbox.SharedFolder{{HostPath: "/home/deep/code", GuestPath: "/workspace"}},
 			},
 			wantErr: "/home/deep/code",
 		},

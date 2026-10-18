@@ -17,9 +17,9 @@ export interface Session {
   // Why deepcove stopped this session on its own. Absent when you stopped it.
   stop_reason?: 'unresponsive' | 'runtime_missing' | 'sandbox_lost';
   env: Record<string, string> | null;
-  // User mounts currently attached to the sandbox. The agent's /root
+  // The user's folders shared into the sandbox. The agent's /root
   // home is NOT included, because deepcove manages it, not the user.
-  mounts: MountRequest[] | null;
+  shared_folders: SharedFolder[] | null;
   // Empty means "use the agent registry's default".
   setup_script: string;
   sandbox_id?: string;
@@ -73,7 +73,7 @@ export interface CreateSessionRequest {
   agent: string;
   name?: string;
   env?: Record<string, string>;
-  mounts?: MountRequest[];
+  shared_folders?: SharedFolder[];
   // Empty falls back to agent registry defaults.
   image?: string;
   setup_script?: string;
@@ -86,7 +86,7 @@ export interface CreateSessionRequest {
   // Omitted, or with any field zero, leaves that cap to the runtime.
   resources?: SessionResources;
   // Put the session on this node's shared machine instead of building it one. The machine owns the
-  // mounts, its runtime and its size, so those are ignored.
+  // shared folder, its runtime and its size, so those are ignored.
   on_workspace_vm?: boolean;
   // Omitted means the node's default.
   login_mode?: LoginMode;
@@ -142,15 +142,13 @@ export interface WorkspaceVMRequest {
   resources?: SessionResources;
 }
 
-// MountRequest mirrors internal/session.MountRequest. host_path must
-// be absolute on the deepcove host; container_path must be absolute
-// inside the sandbox. /workspace is the conventional target (your
-// code, where the agent starts); /root is reserved. Mode defaults to
-// "rw" if omitted.
-export interface MountRequest {
+// SharedFolder is a host folder shared into a sandbox, both what a session asks for and what a sandbox
+// reports. host_path must be absolute on the deepcove host and guest_path absolute inside the sandbox.
+// /workspace is the usual guest path (your code, where the agent starts); /root is reserved.
+export interface SharedFolder {
   host_path: string;
-  container_path: string;
-  mode?: 'rw' | 'ro';
+  guest_path: string;
+  read_only?: boolean;
 }
 
 // FsEntry / FsListResponse mirror internal/session. GET /api/fs/list
@@ -366,19 +364,12 @@ export interface SandboxView {
   resources: SessionResources;
   created_at: string; // ISO-8601
   // The host folders this sandbox shares, as the driver reports them.
-  mounts?: SandboxMount[];
+  shared_folders?: SharedFolder[];
   // The sessions on this sandbox; a shared machine has several. Empty means it leaked: still allocated
   // for finished work.
   sessions: SandboxSession[];
   // This node's shared machine. Allowed to have no sessions on it, and never a leak.
   is_workspace_vm?: boolean;
-}
-
-// SandboxMount is one host folder shared into a sandbox, and where it lands inside it.
-export interface SandboxMount {
-  host_path: string;
-  guest_path: string;
-  read_only?: boolean;
 }
 
 // SandboxSession is one session on a sandbox, enough to name it and link to it.

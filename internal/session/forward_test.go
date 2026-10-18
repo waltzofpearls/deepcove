@@ -304,7 +304,7 @@ func TestNewForwardRequestKeepsASmallBody(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest("PUT", "/api/sessions/abc/mounts", strings.NewReader(tc.body))
+			r := httptest.NewRequest("PUT", "/api/sessions/abc/shared-folders", strings.NewReader(tc.body))
 			r.ContentLength = cmp.Or(tc.length, int64(len(tc.body)))
 			f := newForwardRequest("abc", NodeRef{DNSName: "peer"}, r)
 

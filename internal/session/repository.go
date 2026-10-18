@@ -49,9 +49,9 @@ type SessionRepository interface {
 	// Rename sets the session's display name and bumps updated_at.
 	Rename(ctx context.Context, owner, id, name string, now time.Time) error
 
-	// UpdateMountsAndSandbox replaces the mounts JSON and sandbox id on a session, and bumps
+	// UpdateSharedFoldersAndSandbox replaces the shared folders JSON and sandbox id on a session, and bumps
 	// updated_at. The sandbox changes; the row, above all its id and name, is preserved.
-	UpdateMountsAndSandbox(ctx context.Context, owner, id string, mounts []MountRequest, sandboxID string, now time.Time) error
+	UpdateSharedFoldersAndSandbox(ctx context.Context, owner, id string, sharedFolders []SharedFolderRequest, sandboxID string, now time.Time) error
 
 	// UpdateLoginMode records how this session's agent logs in.
 	UpdateLoginMode(ctx context.Context, owner, id string, mode LoginMode, now time.Time) error
@@ -89,28 +89,28 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 	if err != nil {
 		return fmt.Errorf("session: marshal env: %w", err)
 	}
-	// Same nil→"[]" rule for mounts: the column is NOT NULL DEFAULT
+	// Same nil→"[]" rule for shared folders: the column is NOT NULL DEFAULT
 	// '[]' on disk; marshal nil to "[]" so a session created with
-	// no user mounts gets an explicit empty array rather than the
+	// no shared folders gets an explicit empty array rather than the
 	// scanner ever having to special-case the DB default.
-	mounts := sess.Mounts
-	if mounts == nil {
-		mounts = []MountRequest{}
+	sharedFolders := sess.SharedFolders
+	if sharedFolders == nil {
+		sharedFolders = []SharedFolderRequest{}
 	}
-	mountsJSON, err := json.Marshal(mounts)
+	sharedFoldersJSON, err := json.Marshal(sharedFolders)
 	if err != nil {
-		return fmt.Errorf("session: marshal mounts: %w", err)
+		return fmt.Errorf("session: marshal shared folders: %w", err)
 	}
 	resourcesJSON, err := json.Marshal(sess.Resources)
 	if err != nil {
 		return fmt.Errorf("session: marshal resources: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, agent, image, owner_email, status, mounts, env, setup_script, runtime, resources, sandbox_id, on_workspace_vm, login_mode, work_dir, created_at, updated_at, last_activity_at)
+		INSERT INTO sessions (id, name, agent, image, owner_email, status, shared_folders, env, setup_script, runtime, resources, sandbox_id, on_workspace_vm, login_mode, work_dir, created_at, updated_at, last_activity_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sess.ID, sess.Name, sess.Agent, sess.Image, sess.OwnerEmail,
-		string(sess.Status), string(mountsJSON), string(envJSON), sess.SetupScript, sess.Runtime, string(resourcesJSON), sess.SandboxID,
+		string(sess.Status), string(sharedFoldersJSON), string(envJSON), sess.SetupScript, sess.Runtime, string(resourcesJSON), sess.SandboxID,
 		sess.OnWorkspaceVM, string(sess.LoginMode), sess.WorkDir,
 		sess.CreatedAt, sess.UpdatedAt, sess.LastActivityAt,
 	)
@@ -122,7 +122,7 @@ func (r *duckdbSessionRepository) Insert(ctx context.Context, sess *Session) err
 
 func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*Session, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, agent, image, owner_email, status, stop_reason, mounts, env, setup_script, runtime, resources,
+		SELECT id, name, agent, image, owner_email, status, stop_reason, shared_folders, env, setup_script, runtime, resources,
 		       sandbox_id, on_workspace_vm, login_mode, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions WHERE id = ? AND owner_email = ?
 	`, id, owner)
@@ -138,7 +138,7 @@ func (r *duckdbSessionRepository) Get(ctx context.Context, owner, id string) (*S
 
 func (r *duckdbSessionRepository) List(ctx context.Context, owner string, includeAll bool) ([]*Session, error) {
 	query := `
-		SELECT id, name, agent, image, owner_email, status, stop_reason, mounts, env, setup_script, runtime, resources,
+		SELECT id, name, agent, image, owner_email, status, stop_reason, shared_folders, env, setup_script, runtime, resources,
 		       sandbox_id, on_workspace_vm, login_mode, work_dir, created_at, updated_at, last_activity_at
 		FROM sessions
 		WHERE owner_email = ?
@@ -241,23 +241,23 @@ func (r *duckdbSessionRepository) UpdateLoginMode(ctx context.Context, owner, id
 	return rowsAffectedOrNotFound(res)
 }
 
-func (r *duckdbSessionRepository) UpdateMountsAndSandbox(
+func (r *duckdbSessionRepository) UpdateSharedFoldersAndSandbox(
 	ctx context.Context, owner, id string,
-	mounts []MountRequest, sandboxID string, now time.Time,
+	sharedFolders []SharedFolderRequest, sandboxID string, now time.Time,
 ) error {
-	if mounts == nil {
-		mounts = []MountRequest{}
+	if sharedFolders == nil {
+		sharedFolders = []SharedFolderRequest{}
 	}
-	mountsJSON, err := json.Marshal(mounts)
+	sharedFoldersJSON, err := json.Marshal(sharedFolders)
 	if err != nil {
-		return fmt.Errorf("session: marshal mounts: %w", err)
+		return fmt.Errorf("session: marshal shared folders: %w", err)
 	}
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE sessions SET mounts = ?, sandbox_id = ?, updated_at = ?
+		`UPDATE sessions SET shared_folders = ?, sandbox_id = ?, updated_at = ?
 		 WHERE id = ? AND owner_email = ?`,
-		string(mountsJSON), sandboxID, now, id, owner)
+		string(sharedFoldersJSON), sandboxID, now, id, owner)
 	if err != nil {
-		return fmt.Errorf("session: update mounts: %w", err)
+		return fmt.Errorf("session: update shared folders: %w", err)
 	}
 	return rowsAffectedOrNotFound(res)
 }
@@ -294,23 +294,23 @@ type rowScanner interface {
 
 func scanRow(r rowScanner) (*Session, error) {
 	var (
-		sess           Session
-		mountsJSON     sql.NullString
-		envJSON        sql.NullString
-		setupScript    sql.NullString
-		runtime        sql.NullString
-		resourcesJSON  sql.NullString
-		sandboxID      sql.NullString
-		onWorkspaceVM  sql.NullBool
-		loginMode      sql.NullString
-		workDir        sql.NullString
-		status         string
-		stopReason     sql.NullString
-		lastActivityAt sql.NullTime
+		sess              Session
+		sharedFoldersJSON sql.NullString
+		envJSON           sql.NullString
+		setupScript       sql.NullString
+		runtime           sql.NullString
+		resourcesJSON     sql.NullString
+		sandboxID         sql.NullString
+		onWorkspaceVM     sql.NullBool
+		loginMode         sql.NullString
+		workDir           sql.NullString
+		status            string
+		stopReason        sql.NullString
+		lastActivityAt    sql.NullTime
 	)
 	if err := r.Scan(
 		&sess.ID, &sess.Name, &sess.Agent, &sess.Image, &sess.OwnerEmail,
-		&status, &stopReason, &mountsJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &sandboxID,
+		&status, &stopReason, &sharedFoldersJSON, &envJSON, &setupScript, &runtime, &resourcesJSON, &sandboxID,
 		&onWorkspaceVM, &loginMode, &workDir,
 		&sess.CreatedAt, &sess.UpdatedAt, &lastActivityAt,
 	); err != nil {
@@ -354,13 +354,13 @@ func scanRow(r rowScanner) (*Session, error) {
 			return nil, fmt.Errorf("session: unmarshal env: %w", err)
 		}
 	}
-	// Mounts: same null-token defense as env. Empty array on disk
+	// Shared folders: same null-token defense as env. Empty array on disk
 	// unmarshals to a nil slice, which the JSON encoder serializes as
 	// `null` on the wire; that's fine because the API consumer just
-	// reads it as "no user mounts".
-	if mountsJSON.Valid && strings.TrimSpace(mountsJSON.String) != "" && mountsJSON.String != "null" {
-		if err := json.Unmarshal([]byte(mountsJSON.String), &sess.Mounts); err != nil {
-			return nil, fmt.Errorf("session: unmarshal mounts: %w", err)
+	// reads it as "no shared folders".
+	if sharedFoldersJSON.Valid && strings.TrimSpace(sharedFoldersJSON.String) != "" && sharedFoldersJSON.String != "null" {
+		if err := json.Unmarshal([]byte(sharedFoldersJSON.String), &sess.SharedFolders); err != nil {
+			return nil, fmt.Errorf("session: unmarshal shared folders: %w", err)
 		}
 	}
 	return &sess, nil

@@ -96,12 +96,12 @@ func TestCreateOnWorkspaceVM(t *testing.T) {
 		}
 	})
 
-	t.Run("mounts are refused", func(t *testing.T) {
+	t.Run("shared folders are refused", func(t *testing.T) {
 		svc, _ := workspaceService(t)
 		_, err := svc.Create(ctx, CreateRequest{
 			Agent:         "claude",
 			OnWorkspaceVM: true,
-			Mounts:        []MountRequest{{HostPath: t.TempDir(), ContainerPath: "/workspace/x"}},
+			SharedFolders: []SharedFolderRequest{{HostPath: t.TempDir(), GuestPath: "/workspace/x"}},
 		})
 		if !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("got %v, want ErrInvalidInput", err)

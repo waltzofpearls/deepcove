@@ -6,8 +6,8 @@
 //   - The interface accommodates per-session VMs (Cloud Hypervisor, Apple Virtualization.framework)
 //     as well as running on the machine itself (sandboxless). Snapshot/Restore are optional and
 //     return ErrNotSupported on backends that lack them.
-//   - SandboxSpec.Mounts only ever points at host paths this node owns. Sessions never cross host
-//     boundaries. The VM driver enforces this with ValidateSpec; sandboxless takes no mounts.
+//   - SandboxSpec.SharedFolders only ever points at host paths this node owns. Sessions never cross host
+//     boundaries. The VM driver enforces this with ValidateSpec; sandboxless takes no shared folders.
 //   - Tailscale membership (tsnet) is the node's, not the sandbox's.
 package sandbox
 
@@ -111,7 +111,7 @@ type Lister interface {
 }
 
 // Restarter is a runtime that can stop and start a sandbox in place, picking up a new spec. A VM reads
-// its size and mounts at boot, so this applies changes without losing the sandbox.
+// its size and shared folders at boot, so this applies changes without losing the sandbox.
 type Restarter interface {
 	Restart(ctx context.Context, sandboxID ID, spec SandboxSpec) error
 }
@@ -140,7 +140,7 @@ type AgentProvisioner interface {
 	AgentLaunchCommand(sandboxID ID, agent string) ([]string, error)
 	// WorkDir is the folder the agent works in. Keyed by session, not sandbox, because the spec that
 	// names it is built before the sandbox exists.
-	WorkDir(sessionID string, mounts []Mount) string
+	WorkDir(sessionID string, sharedFolders []SharedFolder) string
 	// WorkspaceRoot is where a runtime that makes folders for sessions keeps them, and empty for one
 	// that does not. The create form shows it before a session exists.
 	WorkspaceRoot() string
@@ -214,9 +214,9 @@ type Instance struct {
 	// Image is the reference the sandbox was built from, for spotting a sandbox left over from an
 	// image you no longer use.
 	Image string
-	// Mounts are the host folders shared into this sandbox, so a view can say what a machine is working
+	// SharedFolders are the host folders shared into this sandbox, so a view can say what a machine is working
 	// on without joining against a session.
-	Mounts []Mount
+	SharedFolders []SharedFolder
 	// Resources are what the sandbox was actually given, which is not always what was asked for: a VM
 	// rounds CPU up to whole cores, and a zero field means the driver's own default applied.
 	Resources Resources
@@ -286,9 +286,9 @@ type SandboxSpec struct {
 	// session's machine, every agent on the machine sessions share.
 	SharedLoginAgents []string
 
-	// Mounts are host paths shared with the sandbox. Source paths must be owned by this node;
+	// SharedFolders are host paths shared with the sandbox. Host paths must be owned by this node;
 	// sessions never cross host boundaries. ValidateSpec enforces this.
-	Mounts []Mount
+	SharedFolders []SharedFolder
 
 	// Env is the process environment seen by the sandbox's entry
 	// process. ExecSpec.Env layers on top for individual Exec calls.
@@ -299,11 +299,12 @@ type SandboxSpec struct {
 	Resources Resources
 }
 
-// Mount is a single host→sandbox path mapping.
-type Mount struct {
-	Source   string // host path (must be absolute, cleaned, and under an allowed root)
-	Target   string // path inside the sandbox (must be absolute)
-	ReadOnly bool
+// SharedFolder is a host folder shared into the sandbox. HostPath must be absolute, cleaned, and under an
+// allowed root. GuestPath must be absolute.
+type SharedFolder struct {
+	HostPath  string
+	GuestPath string
+	ReadOnly  bool
 }
 
 // Resources limits CPU, memory, and disk for a sandbox.
@@ -373,47 +374,48 @@ type ShareRoots struct {
 	Refused []string
 }
 
-// ValidateSpec checks a spec before a driver builds anything from it: it needs an image, and every mount
-// source must be absolute, cleaned, and allowed by roots. Drivers that share host folders call it, so the
-// same policy holds regardless of backend; sandboxless takes no image and no mounts, so it does not.
+// ValidateSpec checks a spec before a driver builds anything from it: it needs an image, and every shared
+// folder's host path must be absolute, cleaned, and allowed by roots. Drivers that share host folders call
+// it, so the same policy holds regardless of backend; sandboxless takes no image and no shared folders, so
+// it does not.
 func ValidateSpec(s SandboxSpec, roots ShareRoots) error {
 	if s.Image == "" {
 		return fmt.Errorf("sandbox: spec.Image is required")
 	}
-	for i, m := range s.Mounts {
-		if err := validateMount(m, roots); err != nil {
-			return fmt.Errorf("sandbox: spec.Mounts[%d]: %w", i, err)
+	for i, m := range s.SharedFolders {
+		if err := validateSharedFolder(m, roots); err != nil {
+			return fmt.Errorf("sandbox: spec.SharedFolders[%d]: %w", i, err)
 		}
 	}
 	return nil
 }
 
-// MountSourceAllowed reports whether a host folder may be shared into a sandbox. Exported so the
+// SharedFolderAllowed reports whether a host folder may be shared into a sandbox. Exported so the
 // session layer can refuse one up front, by the same rule the drivers enforce at create time.
-func MountSourceAllowed(source string, roots ShareRoots) error {
-	return validateMount(Mount{Source: source, Target: "/mnt"}, roots)
+func SharedFolderAllowed(hostPath string, roots ShareRoots) error {
+	return validateSharedFolder(SharedFolder{HostPath: hostPath, GuestPath: "/mnt"}, roots)
 }
 
-func validateMount(m Mount, roots ShareRoots) error {
-	if m.Source == "" {
-		return fmt.Errorf("mount source is empty")
+func validateSharedFolder(m SharedFolder, roots ShareRoots) error {
+	if m.HostPath == "" {
+		return fmt.Errorf("host path is empty")
 	}
-	if !filepath.IsAbs(m.Target) {
-		return fmt.Errorf("mount target %q is not absolute", m.Target)
+	if !filepath.IsAbs(m.GuestPath) {
+		return fmt.Errorf("guest path %q is not absolute", m.GuestPath)
 	}
-	if !filepath.IsAbs(m.Source) {
-		return fmt.Errorf("mount source %q is not absolute", m.Source)
+	if !filepath.IsAbs(m.HostPath) {
+		return fmt.Errorf("host path %q is not absolute", m.HostPath)
 	}
-	cleaned := filepath.Clean(m.Source)
-	if cleaned != m.Source {
-		return fmt.Errorf("mount source %q is not in cleaned form (want %q)", m.Source, cleaned)
+	cleaned := filepath.Clean(m.HostPath)
+	if cleaned != m.HostPath {
+		return fmt.Errorf("host path %q is not in cleaned form (want %q)", m.HostPath, cleaned)
 	}
 	source := ResolveSymlinks(cleaned)
 	for _, refused := range roots.Refused {
 		folder := ResolveSymlinks(filepath.Clean(refused))
 		if isSameFolderOrInside(source, folder) || isSameFolderOrInside(folder, source) {
 			return fmt.Errorf("%s can't be shared: %s holds deepcove's own files, and a session could change them",
-				m.Source, refused)
+				m.HostPath, refused)
 		}
 	}
 	for _, root := range roots.Allowed {
@@ -426,10 +428,10 @@ func validateMount(m Mount, roots ShareRoots) error {
 	for _, root := range roots.Allowed {
 		if isSameFolderOrInside(cleaned, filepath.Clean(root)) {
 			return fmt.Errorf("%s can't be shared: it is a link to %s, which is outside %s. Only folders inside %s can be shared",
-				m.Source, source, allowed, allowed)
+				m.HostPath, source, allowed, allowed)
 		}
 	}
-	return fmt.Errorf("%s can't be shared: only folders inside %s can", m.Source, allowed)
+	return fmt.Errorf("%s can't be shared: only folders inside %s can", m.HostPath, allowed)
 }
 
 // isSameFolderOrInside reports whether path is folder or inside it. The spellings are compared first,

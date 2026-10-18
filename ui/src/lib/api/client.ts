@@ -15,7 +15,6 @@ import type {
   LoginMode,
   Me,
   SharedLoginStatus,
-  MountRequest,
   NodeInfo,
   Preflight,
   RuntimesViewResponse,
@@ -23,6 +22,7 @@ import type {
   SessionHost,
   SessionListResponse,
   SessionPreview,
+  SharedFolder,
   TmuxWindow,
   WorkspaceVM,
   WorkspaceVMRequest,
@@ -446,10 +446,10 @@ export const api = {
   },
 
   // fsList returns the subdirectories of a host path (scoped to $HOME on
-  // the deepcove host) for the mount host-path autocomplete + Browse modal.
+  // the deepcove host) for the shared folder host-path autocomplete + Browse modal.
   // Omit path to start at the home directory.
   // host (optional) browses a remote node's filesystem instead of this one, e.g. when editing the
-  // mounts of a session that lives on a peer. Omit for this node.
+  // shared folders of a session that lives on a peer. Omit for this node.
   fsList(path?: string, host?: SessionHost, signal?: AbortSignal): Promise<FsListResponse> {
     const q = path ? `?path=${encodeURIComponent(path)}` : '';
     return request(`/fs/list${q}`, { signal }, transportForHost(host));
@@ -666,20 +666,24 @@ export const api = {
     );
   },
 
-  // editMounts replaces the session's user mounts. Server-side this
+  // editSharedFolders replaces the session's shared folders. Server-side this
   // destroys the running sandbox and recreates it with the new
   // spec. The agent's home (/root) survives, but the
-  // writable layer (installed packages, and a no-mount
-  // /workspace's scratch contents) is gone. A user-mounted folder is
+  // writable layer (installed packages, and an unshared
+  // /workspace's scratch contents) is gone. A shared folder is
   // host-owned and unaffected. UI is expected to warn before calling.
   // Returns the updated Session.
-  editMounts(id: string, mounts: MountRequest[], host?: SessionHost): Promise<Session> {
+  editSharedFolders(
+    id: string,
+    sharedFolders: SharedFolder[],
+    host?: SessionHost,
+  ): Promise<Session> {
     return request(
-      `/sessions/${encodeURIComponent(id)}/mounts`,
+      `/sessions/${encodeURIComponent(id)}/shared-folders`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mounts }),
+        body: JSON.stringify({ shared_folders: sharedFolders }),
       },
       transportForHost(host),
     );

@@ -1,4 +1,4 @@
-import type { SandboxMount, SessionResources, VMSize } from '$lib/api/types';
+import type { SessionResources, SharedFolder, VMSize } from '$lib/api/types';
 import { formatRunningSize, runsAtSize } from './vmSize';
 
 // A running VM keeps the settings it booted with. These report a saved setting it only picks up when it
@@ -20,11 +20,11 @@ export function sizeAwaitingRestart(
 // folderAwaitingRestart reports whether a running workspace VM still shares another folder than the one
 // saved for it.
 export function folderAwaitingRestart(
-  runningMounts: SandboxMount[] | undefined,
+  runningSharedFolders: SharedFolder[] | undefined,
   hostRoot: string,
   guestRoot: string,
 ): boolean {
-  const shared = runningMounts?.[0];
+  const shared = runningSharedFolders?.[0];
   if (!shared) return false;
   return shared.host_path !== hostRoot || shared.guest_path !== guestRoot;
 }

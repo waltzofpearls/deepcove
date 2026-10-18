@@ -172,11 +172,11 @@ func (s *Service) sessionWorkDir(sess *Session) string {
 	if err != nil {
 		return ""
 	}
-	mounts, err := validateMountRequests(sess.Mounts)
+	sharedFolders, err := validateSharedFolderRequests(sess.SharedFolders)
 	if err != nil {
 		return ""
 	}
-	return provisioner.WorkDir(sess.ID, mounts)
+	return provisioner.WorkDir(sess.ID, sharedFolders)
 }
 
 // setupPollInterval is how often the machine is asked whether its setup has finished.

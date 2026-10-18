@@ -44,9 +44,9 @@ func (d *Driver) AgentLaunchCommand(instanceID sandbox.ID, _ string) ([]string, 
 }
 
 // WorkDir is a folder on the machine, made for this session. Kept outside the instance folder, so
-// destroying the sandbox does not take the work with it. Mounts say nothing here: there is no guest to
-// mount anything into.
-func (d *Driver) WorkDir(sessionID string, _ []sandbox.Mount) string {
+// destroying the sandbox does not take the work with it. Shared folders say nothing here: there is no
+// guest to share anything into.
+func (d *Driver) WorkDir(sessionID string, _ []sandbox.SharedFolder) string {
 	dir, err := d.workspacePath(sessionID)
 	if err != nil {
 		return ""

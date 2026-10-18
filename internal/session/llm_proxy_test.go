@@ -331,13 +331,13 @@ func TestLLMProxyURLIsSafeUnderConcurrentUse(t *testing.T) {
 	wg.Wait()
 }
 
-func TestEditMountsRefusesAWorkspaceSession(t *testing.T) {
+func TestEditSharedFoldersRefusesAWorkspaceSession(t *testing.T) {
 	svc, lister := workspaceService(t)
 	sess := onWorkspace(t, svc, "shared-one", "")
 	before := lister.liveCount()
 
-	_, err := svc.EditMounts(context.Background(), sess.ID,
-		[]MountRequest{{HostPath: t.TempDir(), ContainerPath: "/workspace"}})
+	_, err := svc.EditSharedFolders(context.Background(), sess.ID,
+		[]SharedFolderRequest{{HostPath: t.TempDir(), GuestPath: "/workspace"}})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("err = %v, want ErrInvalidInput", err)
 	}

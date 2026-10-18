@@ -22,7 +22,7 @@ function sess(host?: SessionHost): Session {
     owner_email: '',
     status: 'running',
     env: null,
-    mounts: null,
+    shared_folders: null,
     setup_script: '',
     login_mode: 'shared',
     created_at: '',

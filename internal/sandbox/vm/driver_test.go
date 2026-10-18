@@ -98,9 +98,9 @@ func TestCreateRequiresAnEntrypoint(t *testing.T) {
 func TestDriver_RefusesAFolderOutsideTheAllowedRoots(t *testing.T) {
 	cmd := []string{"sh", "-c", "true"}
 	outside := sandbox.SandboxSpec{
-		Image:  "img:tag",
-		Cmd:    cmd,
-		Mounts: []sandbox.Mount{{Source: "/etc", Target: "/workspace"}},
+		Image:         "img:tag",
+		Cmd:           cmd,
+		SharedFolders: []sandbox.SharedFolder{{HostPath: "/etc", GuestPath: "/workspace"}},
 	}
 
 	t.Run("create", func(t *testing.T) {
@@ -126,8 +126,8 @@ func TestDriver_RefusesAFolderOutsideTheAllowedRoots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("lookup: %v", err)
 		}
-		if len(state.spec.Mounts) != 0 {
-			t.Errorf("the refused folders were stored anyway: %v", state.spec.Mounts)
+		if len(state.spec.SharedFolders) != 0 {
+			t.Errorf("the refused folders were stored anyway: %v", state.spec.SharedFolders)
 		}
 	})
 }
@@ -148,9 +148,9 @@ func TestDriver_RefusesAShareUnderTheGuestHome(t *testing.T) {
 			d := newTestDriver(t)
 			d.shareRoots = sandbox.ShareRoots{Allowed: []string{"/Users/me"}}
 			_, err := d.Create(context.Background(), sandbox.SandboxSpec{
-				Image:  "img:tag",
-				Cmd:    []string{"sh", "-c", "true"},
-				Mounts: []sandbox.Mount{{Source: "/Users/me/code", Target: tc.target}},
+				Image:         "img:tag",
+				Cmd:           []string{"sh", "-c", "true"},
+				SharedFolders: []sandbox.SharedFolder{{HostPath: "/Users/me/code", GuestPath: tc.target}},
 			})
 			refused := err != nil && strings.Contains(err.Error(), "agent's home")
 			if refused != tc.wantRefused {
@@ -175,9 +175,9 @@ func TestDriver_Start_RechecksTheShares(t *testing.T) {
 	d := newTestDriver(t)
 	d.shareRoots = sandbox.ShareRoots{Allowed: []string{home}, Refused: []string{dataDir}}
 	id, err := d.Create(context.Background(), sandbox.SandboxSpec{
-		Image:  "img:tag",
-		Cmd:    []string{"sh", "-c", "true"},
-		Mounts: []sandbox.Mount{{Source: project, Target: "/workspace"}},
+		Image:         "img:tag",
+		Cmd:           []string{"sh", "-c", "true"},
+		SharedFolders: []sandbox.SharedFolder{{HostPath: project, GuestPath: "/workspace"}},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -383,17 +383,17 @@ func TestListSandboxes(t *testing.T) {
 
 // The spec's folders were checked at create or restart, and Start shares them without checking again. A
 // caller editing the list it was handed must not change what the VM gets.
-func TestListSandboxes_HandsOutACopyOfTheMounts(t *testing.T) {
-	shared := []sandbox.Mount{{Source: "/Users/me/code", Target: "/workspace"}}
-	d := &Driver{sandboxes: map[sandbox.ID]*sandboxState{"vm": {spec: sandbox.SandboxSpec{Mounts: shared}}}}
+func TestListSandboxes_HandsOutACopyOfTheSharedFolders(t *testing.T) {
+	shared := []sandbox.SharedFolder{{HostPath: "/Users/me/code", GuestPath: "/workspace"}}
+	d := &Driver{sandboxes: map[sandbox.ID]*sandboxState{"vm": {spec: sandbox.SandboxSpec{SharedFolders: shared}}}}
 
 	got, err := d.ListSandboxes(context.Background())
 	if err != nil {
 		t.Fatalf("ListSandboxes: %v", err)
 	}
-	got[0].Mounts[0].Source = "/etc"
+	got[0].SharedFolders[0].HostPath = "/etc"
 
-	if source := d.sandboxes["vm"].spec.Mounts[0].Source; source != "/Users/me/code" {
+	if source := d.sandboxes["vm"].spec.SharedFolders[0].HostPath; source != "/Users/me/code" {
 		t.Errorf("the driver's own spec now shares %q", source)
 	}
 }
@@ -447,11 +447,11 @@ type noStdinProcess struct{ sandbox.Process }
 
 func (noStdinProcess) Stdin() io.WriteCloser { return nil }
 
-// Mounts become virtio-fs shares.
+// Shared folders become virtio-fs shares.
 func TestHostShares(t *testing.T) {
-	shares, guest := hostShares([]sandbox.Mount{
-		{Source: "/Users/me/code", Target: "/workspace"},
-		{Source: "/Users/me/notes", Target: "/notes", ReadOnly: true},
+	shares, guest := hostShares([]sandbox.SharedFolder{
+		{HostPath: "/Users/me/code", GuestPath: "/workspace"},
+		{HostPath: "/Users/me/notes", GuestPath: "/notes", ReadOnly: true},
 	})
 
 	if len(shares) != 2 || len(guest) != 2 {
@@ -477,11 +477,11 @@ func TestHostShares(t *testing.T) {
 	}
 }
 
-// No mounts must not produce an empty device list that the VM config would still be handed.
-func TestHostSharesWithNoMounts(t *testing.T) {
+// No shared folders must not produce an empty device list that the VM config would still be handed.
+func TestHostSharesWithNoSharedFolders(t *testing.T) {
 	shares, guest := hostShares(nil)
 	if shares != nil || guest != nil {
-		t.Errorf("got %v / %v, want nil for no mounts", shares, guest)
+		t.Errorf("got %v / %v, want nil for no shared folders", shares, guest)
 	}
 }
 

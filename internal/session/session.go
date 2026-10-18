@@ -44,8 +44,8 @@ const StopReasonRuntimeMissing StopReason = "runtime_missing"
 // died with the previous process. Startup restarts it.
 const StopReasonSandboxLost StopReason = "sandbox_lost"
 
-// Mounts only holds USER-supplied mounts; the agent's home is an implementation detail and stays out of
-// the API.
+// SharedFolders only holds the user's own folders; the agent's home is an implementation detail and stays
+// out of the API.
 type Session struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -54,10 +54,10 @@ type Session struct {
 	OwnerEmail string `json:"owner_email"`
 	Status     Status `json:"status"`
 	// StopReason is empty unless deepcove stopped the session on its own.
-	StopReason  StopReason        `json:"stop_reason,omitempty"`
-	Env         map[string]string `json:"env"`
-	Mounts      []MountRequest    `json:"mounts"`
-	SetupScript string            `json:"setup_script"`
+	StopReason    StopReason            `json:"stop_reason,omitempty"`
+	Env           map[string]string     `json:"env"`
+	SharedFolders []SharedFolderRequest `json:"shared_folders"`
+	SetupScript   string                `json:"setup_script"`
 	// Runtime is the sandbox runtime hosting this session ("applevf", "cloudhv", "sandboxless"). Persisted
 	// because a node can offer several, so stop, destroy and exec route back to the driver that made it.
 	Runtime string `json:"runtime"`
@@ -71,7 +71,7 @@ type Session struct {
 	// mean the machine's login, which follows the node's default.
 	LoginMode LoginMode `json:"login_mode"`
 	// WorkDir is where the agent and the shell start, a folder under the workspace root. Empty falls
-	// back to the first mount, then /workspace.
+	// back to the first shared folder, then /workspace.
 	WorkDir string `json:"work_dir,omitempty"`
 	// AgentWorkDir is the folder the agent works in, answered by the runtime and filled on the way out,
 	// never stored. A runtime that makes the folder itself is the only one that can name it.
@@ -87,12 +87,12 @@ type Session struct {
 
 // Empty Image / SetupScript / Name fall back to agent registry defaults.
 type CreateRequest struct {
-	Agent       string            `json:"agent"`
-	Name        string            `json:"name,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Mounts      []MountRequest    `json:"mounts,omitempty"`
-	Image       string            `json:"image,omitempty"`
-	SetupScript string            `json:"setup_script,omitempty"`
+	Agent         string                `json:"agent"`
+	Name          string                `json:"name,omitempty"`
+	Env           map[string]string     `json:"env,omitempty"`
+	SharedFolders []SharedFolderRequest `json:"shared_folders,omitempty"`
+	Image         string                `json:"image,omitempty"`
+	SetupScript   string                `json:"setup_script,omitempty"`
 	// Runtime picks which sandbox runtime hosts the session. Empty means the node default.
 	Runtime string `json:"runtime,omitempty"`
 	// Resources caps the session. Omitted or zero fields fall back to the runtime's defaults.
@@ -102,7 +102,7 @@ type CreateRequest struct {
 	// session lives on the node that creates it.
 	NodeID string `json:"node_id,omitempty"`
 	// OnWorkspaceVM puts the session on this node's shared machine instead of building it one. The
-	// machine owns the mounts, so a session on it takes none.
+	// machine owns the shared folder, so a session on it takes none.
 	OnWorkspaceVM bool `json:"on_workspace_vm,omitempty"`
 	// LoginMode is how this session's agent logs in. Omitted means the node's default.
 	LoginMode LoginMode `json:"login_mode,omitempty"`
@@ -111,19 +111,14 @@ type CreateRequest struct {
 	WorkDir string `json:"work_dir,omitempty"`
 }
 
-// MountRequest is one entry in CreateRequest.Mounts: a host path mapped into the sandbox at a
-// guest path. Wire format keeps snake_case field names for JSON-by-convention.
-//
-// Mounts are optional. The conventional target is /workspace (your
-// code), which the agent cd's into; mount nothing and the agent gets
-// an empty /workspace in the guest instead. /root is reserved (the
-// agent's home); duplicate guest paths are rejected.
-type MountRequest struct {
-	HostPath      string `json:"host_path"`
-	ContainerPath string `json:"container_path"`
-	// Mode is "rw" (default) or "ro". Empty == "rw". Anything
-	// else fails validation.
-	Mode string `json:"mode,omitempty"`
+// SharedFolderRequest is a host folder shared into the sandbox at a guest path. Shared folders are
+// optional. The usual guest path is /workspace, which the agent starts in; share nothing and the agent
+// gets an empty /workspace instead. /root is the agent's home, so nothing may be shared there, and two
+// folders may not share one guest path.
+type SharedFolderRequest struct {
+	HostPath  string `json:"host_path"`
+	GuestPath string `json:"guest_path"`
+	ReadOnly  bool   `json:"read_only,omitempty"`
 }
 
 // ListFilter narrows GET /api/sessions. Today only the "all" toggle matters: by default we hide

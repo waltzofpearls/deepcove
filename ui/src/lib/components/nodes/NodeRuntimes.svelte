@@ -262,7 +262,7 @@
     sizeAwaitingRestart(s.resources, savedResources(s), sizesFor(s));
   const folderWaitsForRestart = (s: SandboxView) =>
     Boolean(s.is_workspace_vm && workspaceVM) &&
-    folderAwaitingRestart(s.mounts, workspaceVM!.host_root, workspaceVM!.guest_root);
+    folderAwaitingRestart(s.shared_folders, workspaceVM!.host_root, workspaceVM!.guest_root);
 
   // The VM the restart confirm is about. Paired with its runtime, since the handle alone does not say
   // which runtime to ask.
@@ -493,9 +493,11 @@
                   <div class="truncate font-mono text-xs text-muted-foreground">
                     {shortId(sandbox.sandbox_id, 24)}
                   </div>
-                  {#each sandbox.mounts ?? [] as mount (mount.guest_path)}
+                  {#each sandbox.shared_folders ?? [] as folder (folder.guest_path)}
                     <div class="truncate font-mono text-xs text-muted-foreground">
-                      {mount.host_path} → {mount.guest_path}{mount.read_only ? ' (read only)' : ''}
+                      {folder.host_path} → {folder.guest_path}{folder.read_only
+                        ? ' (read only)'
+                        : ''}
                     </div>
                   {/each}
                   <div class="mt-0.5 text-xs text-muted-foreground">
@@ -512,7 +514,7 @@
                         Running with {formatRunningSize(sandbox.resources ?? {})}.
                       {/if}
                       {#if folderWaitsForRestart(sandbox)}
-                        Still sharing {sandbox.mounts?.[0]?.host_path}.
+                        Still sharing {sandbox.shared_folders?.[0]?.host_path}.
                       {/if}
                       Restart to apply.
                     </div>

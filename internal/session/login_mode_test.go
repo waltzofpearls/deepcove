@@ -470,7 +470,7 @@ func TestSetLoginMode_StartsTheAgentWhenTheSharedLoginIsLate(t *testing.T) {
 	}
 }
 
-func TestStopDestroyAndEditMounts_WaitForTheAgentLock(t *testing.T) {
+func TestStopDestroyAndEditSharedFolders_WaitForTheAgentLock(t *testing.T) {
 	cases := []struct {
 		name string
 		call func(svc *Service, ctx context.Context, id string) error
@@ -478,7 +478,7 @@ func TestStopDestroyAndEditMounts_WaitForTheAgentLock(t *testing.T) {
 		{name: "stop", call: (*Service).Stop},
 		{name: "destroy", call: (*Service).Destroy},
 		{name: "edit folders", call: func(svc *Service, ctx context.Context, id string) error {
-			_, err := svc.EditMounts(ctx, id, nil)
+			_, err := svc.EditSharedFolders(ctx, id, nil)
 			return err
 		}},
 	}

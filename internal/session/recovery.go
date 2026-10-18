@@ -163,7 +163,7 @@ func (s *Service) savedSpecForSession(sess *Session) (sandbox.SandboxSpec, error
 	if err != nil {
 		return sandbox.SandboxSpec{}, fmt.Errorf("session: %s: %w", sess.ID, err)
 	}
-	mounts, err := validateMountRequests(sess.Mounts)
+	sharedFolders, err := validateSharedFolderRequests(sess.SharedFolders)
 	if err != nil {
 		return sandbox.SandboxSpec{}, fmt.Errorf("session: %s: %w", sess.ID, err)
 	}
@@ -171,7 +171,7 @@ func (s *Service) savedSpecForSession(sess *Session) (sandbox.SandboxSpec, error
 	if err != nil {
 		return sandbox.SandboxSpec{}, fmt.Errorf("session: %s: %w", sess.ID, err)
 	}
-	return s.buildSandboxSpec(sess, agent, mounts, runtime), nil
+	return s.buildSandboxSpec(sess, agent, sharedFolders, runtime), nil
 }
 
 // MarkLostSessions marks a session stopped when its runtime no longer has the sandbox the row points
@@ -317,10 +317,10 @@ func (s *Service) WaitForRestarts() {
 }
 
 // rebuildSandbox creates a fresh sandbox for a session whose old one no longer exists, and points the row
-// at it. The session keeps its id, name, mounts and size; what it loses is whatever lived in the previous
+// at it. The session keeps its id, name, shared folders and size; what it loses is whatever lived in the previous
 // writable layer, which for a VM died with the VM regardless.
 func (s *Service) rebuildSandbox(ctx context.Context, sess *Session, runtime sandbox.Sandbox) (sandbox.ID, error) {
-	userMounts, err := s.prepareMountsRequiringFolders(sess.Mounts)
+	userSharedFolders, err := s.prepareSharedFoldersRequiringExisting(sess.SharedFolders)
 	if err != nil {
 		return "", err
 	}
@@ -329,13 +329,13 @@ func (s *Service) rebuildSandbox(ctx context.Context, sess *Session, runtime san
 		return "", fmt.Errorf("session: %w", err)
 	}
 
-	sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userMounts, runtime))
+	sandboxID, err := runtime.Create(ctx, s.buildSandboxSpec(sess, agent, userSharedFolders, runtime))
 	if err != nil {
 		return "", fmt.Errorf("session: rebuild sandbox: %w", err)
 	}
 	// Point the row at the new sandbox before booting it: booting takes seconds, and a sandbox no row
 	// claims is reported as a leak.
-	if err := s.repo.UpdateMountsAndSandbox(ctx, placeholderOwner, sess.ID, sess.Mounts, string(sandboxID), time.Now().UTC()); err != nil {
+	if err := s.repo.UpdateSharedFoldersAndSandbox(ctx, placeholderOwner, sess.ID, sess.SharedFolders, string(sandboxID), time.Now().UTC()); err != nil {
 		return "", fmt.Errorf("session: record rebuilt sandbox: %w", err)
 	}
 	// Callers hold this Session, so point it at the new machine too.

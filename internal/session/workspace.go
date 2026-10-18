@@ -362,8 +362,8 @@ func (s *Service) DeleteWorkspaceVM(ctx context.Context, withSessions bool) erro
 // joinWorkspaceVM points a new session at the shared machine: its runtime, image and sandbox, plus a
 // folder of the session's own to work in.
 func (s *Service) joinWorkspaceVM(ctx context.Context, sess *Session, req CreateRequest) error {
-	if len(req.Mounts) > 0 {
-		return fmt.Errorf("%w: the workspace VM brings its own folder, so a session on it takes no mounts", ErrInvalidInput)
+	if len(req.SharedFolders) > 0 {
+		return fmt.Errorf("%w: the workspace VM brings its own folder, so a session on it takes no shared folders", ErrInvalidInput)
 	}
 	vm, err := s.EnsureWorkspaceVM(ctx)
 	if err != nil {
@@ -389,7 +389,7 @@ func (s *Service) startOnWorkspaceVM(ctx context.Context, sess *Session) error {
 	}
 	now := time.Now().UTC()
 	if vm.SandboxID != sess.SandboxID {
-		if err := s.repo.UpdateMountsAndSandbox(ctx, placeholderOwner, sess.ID, sess.Mounts, vm.SandboxID, now); err != nil {
+		if err := s.repo.UpdateSharedFoldersAndSandbox(ctx, placeholderOwner, sess.ID, sess.SharedFolders, vm.SandboxID, now); err != nil {
 			return fmt.Errorf("session: rejoin workspace vm: %w", err)
 		}
 		sess.SandboxID = vm.SandboxID
@@ -423,12 +423,12 @@ func workspaceVMSpec(vm *WorkspaceVM, agent AgentSpec, sizes []VMSize) (sandbox.
 		Name:  "workspace",
 		Agent: agent,
 		// Sessions on this machine can pick any agent, so it carries them all.
-		Agents:    allAgents(),
-		Image:     vm.Image,
-		Setup:     vm.SetupScript,
-		Resources: resources.withSizeApplied(sizes),
-		Mounts:    []sandbox.Mount{{Source: vm.HostRoot, Target: vm.GuestRoot}},
-		WorkDir:   vm.GuestRoot,
+		Agents:        allAgents(),
+		Image:         vm.Image,
+		Setup:         vm.SetupScript,
+		Resources:     resources.withSizeApplied(sizes),
+		SharedFolders: []sandbox.SharedFolder{{HostPath: vm.HostRoot, GuestPath: vm.GuestRoot}},
+		WorkDir:       vm.GuestRoot,
 	}), nil
 }
 

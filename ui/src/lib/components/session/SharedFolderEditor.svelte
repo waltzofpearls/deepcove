@@ -10,7 +10,7 @@
   import { Label } from '$lib/components/ui/label';
   import { api, ApiError } from '$lib/api/client';
   import HostPathField from './HostPathField.svelte';
-  import type { MountRequest, Session, SessionHost } from '$lib/api/types';
+  import type { Session, SessionHost, SharedFolder } from '$lib/api/types';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
@@ -25,15 +25,10 @@
     onsaved?: () => void;
   } = $props();
 
-  // FormMount mirrors NewSessionDialog's local shape, a boolean for RO so the checkbox binds directly.
-  // Converted to MountRequest at submit time.
-  type FormMount = {
-    host_path: string;
-    container_path: string;
-    read_only: boolean;
-  };
+  // read_only is required here so the checkbox binds to a boolean.
+  type FolderRow = Required<SharedFolder>;
 
-  let mounts = $state<FormMount[]>([]);
+  let folders = $state<FolderRow[]>([]);
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
   // Host home dir, where the host-path picker starts; used to pre-fill new rows.
@@ -44,13 +39,13 @@
   const sessionId = $derived(session?.id ?? '');
   $effect(() => {
     sessionId;
-    // untrack, or reading session.mounts here subscribes to the session prop and the effect re-runs on
+    // untrack, or reading session.shared_folders here subscribes to the session prop and the effect re-runs on
     // every refresh, which is the churn the id was meant to avoid.
     untrack(() => {
-      mounts = (session?.mounts ?? []).map((m) => ({
-        host_path: m.host_path,
-        container_path: m.container_path,
-        read_only: m.mode === 'ro',
+      folders = (session?.shared_folders ?? []).map((folder) => ({
+        host_path: folder.host_path,
+        guest_path: folder.guest_path,
+        read_only: !!folder.read_only,
       }));
       submitError = null;
     });
@@ -65,40 +60,32 @@
       .catch(() => {});
   });
 
-  function addMount() {
-    mounts = [
-      ...mounts,
-      { host_path: homeDir ? homeDir + '/' : '', container_path: '/workspace', read_only: false },
+  function addFolder() {
+    folders = [
+      ...folders,
+      { host_path: homeDir ? homeDir + '/' : '', guest_path: '/workspace', read_only: false },
     ];
   }
 
-  function removeMount(i: number) {
-    mounts = mounts.filter((_, idx) => idx !== i);
+  function removeFolder(i: number) {
+    folders = folders.filter((_, idx) => idx !== i);
   }
 
-  function payload(): MountRequest[] {
-    return (
-      mounts
-        // Drop incomplete rows, same rule as NewSessionDialog.
-        .filter((m) => m.host_path && m.container_path)
-        .map((m) => ({
-          host_path: m.host_path,
-          container_path: m.container_path,
-          mode: m.read_only ? 'ro' : 'rw',
-        }))
-    );
+  function payload(): SharedFolder[] {
+    // Drop incomplete rows, same rule as NewSessionDialog.
+    return folders.filter((folder) => folder.host_path && folder.guest_path);
   }
 
   // Saving destroys the machine and builds a new one, so the button stays inert until something differs.
   const dirty = $derived.by(() => {
     const next = payload();
-    const now = session?.mounts ?? [];
+    const now = session?.shared_folders ?? [];
     if (next.length !== now.length) return true;
     return next.some(
-      (m, i) =>
-        m.host_path !== now[i].host_path ||
-        m.container_path !== now[i].container_path ||
-        (m.mode ?? 'rw') !== (now[i].mode ?? 'rw'),
+      (folder, i) =>
+        folder.host_path !== now[i].host_path ||
+        folder.guest_path !== now[i].guest_path ||
+        !!folder.read_only !== !!now[i].read_only,
     );
   });
 
@@ -109,7 +96,7 @@
     try {
       // Push the updated session back to the parent so its preview, status row and tabs pick up the new
       // sandbox id without another fetch.
-      session = await api.editMounts(session.id, payload(), host);
+      session = await api.editSharedFolders(session.id, payload(), host);
       onsaved?.();
     } catch (e) {
       submitError = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -123,12 +110,12 @@
   <div class="space-y-2">
     <div class="flex items-center justify-between">
       <Label>Folders</Label>
-      <Button size="sm" variant="ghost" onclick={addMount}>
+      <Button size="sm" variant="ghost" onclick={addFolder}>
         <Plus class="size-4" />
         Add a folder
       </Button>
     </div>
-    {#if mounts.length === 0}
+    {#if folders.length === 0}
       <p class="text-xs text-muted-foreground">
         No folders. The agent runs in an empty <code>/workspace</code>
         , with the shared
@@ -136,18 +123,18 @@
         home regardless.
       </p>
     {/if}
-    {#each mounts as m, i (i)}
+    {#each folders as folder, i (i)}
       <div class="space-y-2 rounded-md border border-border p-2.5">
         <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div class="space-y-1">
-            <Label class="text-xs" for="edit-mount-host-{i}">Host path</Label>
-            <HostPathField id="edit-mount-host-{i}" bind:value={m.host_path} {host} />
+            <Label class="text-xs" for="edit-folder-host-{i}">Host path</Label>
+            <HostPathField id="edit-folder-host-{i}" bind:value={folder.host_path} {host} />
           </div>
           <div class="space-y-1">
-            <Label class="text-xs" for="edit-mount-container-{i}">Mounts to</Label>
+            <Label class="text-xs" for="edit-folder-guest-{i}">Guest path</Label>
             <Input
-              id="edit-mount-container-{i}"
-              bind:value={m.container_path}
+              id="edit-folder-guest-{i}"
+              bind:value={folder.guest_path}
               placeholder="/workspace"
             />
           </div>
@@ -156,7 +143,7 @@
           <label class="flex cursor-pointer items-center gap-1.5 text-xs select-none">
             <input
               type="checkbox"
-              bind:checked={m.read_only}
+              bind:checked={folder.read_only}
               class="size-3.5 rounded border-input"
             />
             Read-only
@@ -164,7 +151,7 @@
           <Button
             size="sm"
             variant="ghost"
-            onclick={() => removeMount(i)}
+            onclick={() => removeFolder(i)}
             aria-label="Remove folder"
           >
             <X class="size-4" />
@@ -183,7 +170,7 @@
   {/if}
 
   <!-- Next to its button, so it reads as what this Save does and not the whole dialog. /root sits on its
-       own disk and a mounted folder lives on the host, so both survive the recreate. -->
+       own disk and a shared folder lives on the host, so both survive the recreate. -->
   <div
     class="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm"
     role="alert"
@@ -193,8 +180,8 @@
       <div class="font-medium">Saving folders recreates the VM.</div>
       <p class="text-xs text-muted-foreground">
         <code>/root</code>
-        (agent state, shell history) and any mounted folder are preserved. Everything else inside it (installed
-        packages, and an unmounted
+        (agent state, shell history) and any shared folder are preserved. Everything else inside it (installed
+        packages, and an unshared
         <code>/workspace</code>
         's contents) will be lost.
       </p>

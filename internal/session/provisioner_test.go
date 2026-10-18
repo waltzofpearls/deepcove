@@ -35,7 +35,7 @@ func (f *fakeProvisioner) AgentLaunchCommand(sandbox.ID, string) ([]string, erro
 	return f.launch, nil
 }
 
-func (f *fakeProvisioner) WorkDir(string, []sandbox.Mount) string { return f.workDir }
+func (f *fakeProvisioner) WorkDir(string, []sandbox.SharedFolder) string { return f.workDir }
 
 func (f *fakeProvisioner) WorkspaceRoot() string { return f.workDir }
 
@@ -138,7 +138,7 @@ func TestService_Create_RefusesWhatThisMachineCannotUse(t *testing.T) {
 		{name: "a setup script", req: CreateRequest{SetupScript: "apk add --no-cache curl"}},
 		{
 			name: "a shared folder",
-			req:  CreateRequest{Mounts: []MountRequest{{HostPath: "/tmp/shared", ContainerPath: "/workspace"}}},
+			req:  CreateRequest{SharedFolders: []SharedFolderRequest{{HostPath: "/tmp/shared", GuestPath: "/workspace"}}},
 		},
 		{name: "cpu", req: CreateRequest{Resources: Resources{CPU: 2}}},
 		{name: "memory", req: CreateRequest{Resources: Resources{MemoryMB: 4096}}},
@@ -355,7 +355,7 @@ func machineService(t *testing.T) *Service {
 	return newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
 }
 
-func TestService_EditMounts_RefusedOnThisMachine(t *testing.T) {
+func TestService_EditSharedFolders_RefusedOnThisMachine(t *testing.T) {
 	provisioner := &fakeProvisioner{fakeSandbox: newFakeSandbox(), workDir: "/data/sandboxless/workspaces/s1"}
 	svc := newServiceWithNamedRuntime(t, db.OpenForTest(t), provisioner, RuntimeSandboxless)
 	root := t.TempDir()
@@ -368,9 +368,9 @@ func TestService_EditMounts_RefusedOnThisMachine(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, err = svc.EditMounts(ctx, sess.ID, []MountRequest{{HostPath: shared, ContainerPath: "/workspace"}})
+	_, err = svc.EditSharedFolders(ctx, sess.ID, []SharedFolderRequest{{HostPath: shared, GuestPath: "/workspace"}})
 	if !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("EditMounts: %v, want it refused", err)
+		t.Fatalf("EditSharedFolders: %v, want it refused", err)
 	}
 	if _, err := os.Stat(shared); !os.IsNotExist(err) {
 		t.Errorf("%s was created for an edit that could never finish", shared)
@@ -396,7 +396,7 @@ func TestService_Create_MakesNoFoldersWhenRefused(t *testing.T) {
 
 	_, err := svc.Create(context.Background(), CreateRequest{
 		Agent: "claude", Name: "mounted",
-		Mounts: []MountRequest{{HostPath: shared, ContainerPath: "/workspace"}},
+		SharedFolders: []SharedFolderRequest{{HostPath: shared, GuestPath: "/workspace"}},
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("Create: %v, want it refused", err)
@@ -461,8 +461,8 @@ func TestBuildSandboxSpec(t *testing.T) {
 		t.Errorf("DEEPCOVE_WORKDIR is %q, want %q", got, want)
 	}
 	// This runtime has no guest, which is what lets the driver refuse every mount it sees.
-	if len(spec.Mounts) != 0 {
-		t.Errorf("spec carries %v, want no mounts", spec.Mounts)
+	if len(spec.SharedFolders) != 0 {
+		t.Errorf("spec carries %v, want no shared folders", spec.SharedFolders)
 	}
 }
 

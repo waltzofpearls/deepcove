@@ -52,8 +52,8 @@ func sessionUsage(w *os.File) {
 		"Examples:",
 		"  deepcove session claude                                       # create + attach a claude session, auto-named",
 		"  deepcove session claude --name auth-redesign                  # create + attach with a name",
-		"  deepcove session claude --mount ~/code/myapp:/workspace       # mount a host path into the sandbox (rw)",
-		"  deepcove session claude --mount ~/data:/seed:ro --mount ...   # repeat for multiple mounts; :ro for read-only",
+		"  deepcove session claude --share ~/code/myapp:/workspace       # share a host folder with the sandbox (rw)",
+		"  deepcove session claude --share ~/data:/seed:ro --share ...   # repeat for several folders; :ro for read-only",
 		"  deepcove session attach auth-redesign                         # attach by name",
 		"  deepcove session ps                                           # list sessions on this host",
 	}
