@@ -40,15 +40,36 @@ require_native_host() {
 }
 
 make_package() {
-	local dir=$1 file=$2 asset=$3
-	tar -czf "$out_dir/$asset" -C "$dir" "$file"
+	local dir=$1 asset=$2
+	shift 2
+	tar -czf "$out_dir/$asset" -C "$dir" "$@"
 	echo "built $out_dir/$asset"
 }
 
+# write_notice puts what an artifact is, where its exact source lives and its license texts next to the
+# binary. deepcove unpacks only the binary, so the notice is for whoever opens the archive.
+write_notice() {
+	local dir=$1 name=$2 version=$3 license=$4 source=$5
+	shift 5
+	{
+		echo "$name $version"
+		echo "License: $license"
+		echo "Source: $source"
+		for text in "$@"; do
+			echo
+			echo "--------------------------------------------------------------------------------"
+			echo
+			cat "$text"
+		done
+	} > "$dir/NOTICE"
+}
+
 download_guest_kernel() {
-	local kata version out url candidate decompress found count
+	local kata version kernel out url candidate decompress found count
 	kata=$(read_kata_release)
 	version=$(read_version_for guest-kernel)
+	# Kata names its kernels <kernel version>-<its config revision>.
+	kernel=${version%-*}
 	out="$work/guest-kernel"
 	mkdir -p "$out"
 
@@ -90,18 +111,33 @@ download_guest_kernel() {
 	fi
 
 	mv "$found" "$out/vmlinux"
-	make_package "$out" vmlinux "$(read_asset_for guest-kernel)"
+	curl -sfL -o "$work/GPL-2.0" \
+		"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/LICENSES/preferred/GPL-2.0?h=v$kernel"
+	curl -sfL -o "$work/Linux-syscall-note" \
+		"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/LICENSES/exceptions/Linux-syscall-note?h=v$kernel"
+	write_notice "$out" "Linux kernel, as built by Kata Containers $kata" "$version" \
+		"GPL-2.0 WITH Linux-syscall-note" \
+		"https://cdn.kernel.org/pub/linux/kernel/v${kernel%%.*}.x/linux-$kernel.tar.xz with the config and patches at https://github.com/kata-containers/kata-containers/tree/$kata/tools/packaging/kernel" \
+		"$work/GPL-2.0" "$work/Linux-syscall-note"
+	make_package "$out" "$(read_asset_for guest-kernel)" vmlinux NOTICE
 }
 
 download_cloud_hypervisor() {
-	local version out
+	local version out license
 	version=$(read_version_for cloud-hypervisor)
 	out="$work/cloud-hypervisor"
 	mkdir -p "$out"
 	curl -sfL -o "$out/cloud-hypervisor" \
 		"https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$version/$ch_asset"
 	chmod +x "$out/cloud-hypervisor"
-	make_package "$out" cloud-hypervisor "$(read_asset_for cloud-hypervisor)"
+	for license in Apache-2.0 BSD-3-Clause; do
+		curl -sfL -o "$work/$license.txt" \
+			"https://raw.githubusercontent.com/cloud-hypervisor/cloud-hypervisor/$version/LICENSES/$license.txt"
+	done
+	write_notice "$out" cloud-hypervisor "$version" "Apache-2.0, BSD-3-Clause" \
+		"https://github.com/cloud-hypervisor/cloud-hypervisor/tree/$version" \
+		"$work/Apache-2.0.txt" "$work/BSD-3-Clause.txt"
+	make_package "$out" "$(read_asset_for cloud-hypervisor)" cloud-hypervisor NOTICE
 }
 
 # Upstream releases carry an x86_64 binary and nothing else. Statically linked so one file runs on any
@@ -124,7 +160,10 @@ build_virtiofsd() {
 			cargo build --release --target "$host_arch-unknown-linux-gnu"
 	)
 	cp "$src/target/$host_arch-unknown-linux-gnu/release/virtiofsd" "$out/virtiofsd"
-	make_package "$out" virtiofsd "$(read_asset_for virtiofsd)"
+	write_notice "$out" virtiofsd "$version" "Apache-2.0, BSD-3-Clause" \
+		"https://gitlab.com/virtio-fs/virtiofsd/-/tree/$version" \
+		"$src/LICENSE-APACHE" "$src/LICENSE-BSD-3-Clause"
+	make_package "$out" "$(read_asset_for virtiofsd)" virtiofsd NOTICE
 }
 
 # Upstream publishes binaries only under a path that moves, so build the commit versions.json names.
@@ -137,10 +176,16 @@ build_passt() {
 	out="$work/out-passt"
 	mkdir -p "$out"
 
-	curl -sfL "https://passt.top/passt/snapshot/passt-$commit.tar.gz" | tar -xz -C "$work"
+	curl -sfL -o "$out/passt-$commit.tar.gz" "https://passt.top/passt/snapshot/passt-$commit.tar.gz"
+	tar -xzf "$out/passt-$commit.tar.gz" -C "$work"
 	make -C "$src" static
 	cp "$src/passt" "$out/passt"
-	make_package "$out" passt "$(read_asset_for passt)"
+	# Built here rather than passed on, so GPL-2.0 wants the exact source to travel with the binary. It is
+	# about 400 KB.
+	write_notice "$out" passt "$commit" "GPL-2.0-or-later, BSD-3-Clause" \
+		"passt-$commit.tar.gz in this archive, from https://passt.top/passt/snapshot/passt-$commit.tar.gz" \
+		"$src/LICENSES/GPL-2.0-or-later.txt" "$src/LICENSES/BSD-3-Clause.txt"
+	make_package "$out" "$(read_asset_for passt)" passt NOTICE "passt-$commit.tar.gz"
 }
 
 mkdir -p "$out_dir"
