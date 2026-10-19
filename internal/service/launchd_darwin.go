@@ -5,7 +5,9 @@ package service
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -90,11 +92,26 @@ func (m *launchdManager) Install(extra []string, _ InstallOptions) error {
 	}
 	text := plistText(startCommand(m.exePath, extra), m.logPath)
 	if err := os.WriteFile(m.plistPath, []byte(text), 0o644); err != nil {
-		return err
+		return m.explainPlistWriteError(err)
 	}
 	// An older copy may still be loaded, and bootstrap refuses in that case. Failing here is normal.
 	_ = m.runner.run("launchctl", "bootout", m.target())
 	return m.runner.run("launchctl", "bootstrap", m.domain(), m.plistPath)
+}
+
+// explainPlistWriteError says what to fix when the plist cannot be written. An installer run with sudo
+// can leave ~/Library/LaunchAgents, or an old plist in it, owned by root.
+func (m *launchdManager) explainPlistWriteError(err error) error {
+	if !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	notYours := filepath.Dir(m.plistPath)
+	if _, statErr := os.Stat(m.plistPath); statErr == nil {
+		notYours = m.plistPath
+	}
+	return fmt.Errorf("%w\n\n%s belongs to another user, often root after an installer ran with sudo. "+
+		"Make it yours, then run deepcove service install again:\n  sudo chown \"$(whoami)\" %q",
+		err, notYours, notYours)
 }
 
 func (m *launchdManager) Uninstall() error {

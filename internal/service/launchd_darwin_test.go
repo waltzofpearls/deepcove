@@ -3,6 +3,7 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,6 +79,57 @@ func TestInstallWritesThePlistThenLoadsIt(t *testing.T) {
 	}
 	if !slices.Equal(runner.calls, want) {
 		t.Errorf("calls %v, want %v", runner.calls, want)
+	}
+}
+
+func TestInstallExplainsAPlistItCannotWrite(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can write anywhere")
+	}
+	cases := []struct {
+		name         string
+		lockFolder   bool
+		wantNotYours func(manager *launchdManager) string
+	}{
+		{
+			name:       "the folder is not yours",
+			lockFolder: true,
+			wantNotYours: func(manager *launchdManager) string {
+				return filepath.Dir(manager.plistPath)
+			},
+		},
+		{
+			name: "an old plist is not yours",
+			wantNotYours: func(manager *launchdManager) string {
+				return manager.plistPath
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _ := newTestManager(t)
+			folder := filepath.Dir(manager.plistPath)
+			if err := os.MkdirAll(folder, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.lockFolder {
+				if err := os.Chmod(folder, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					_ = os.Chmod(folder, 0o755)
+				})
+			} else if err := os.WriteFile(manager.plistPath, nil, 0o444); err != nil {
+				t.Fatal(err)
+			}
+
+			err := manager.Install(nil, InstallOptions{})
+			want := fmt.Sprintf("sudo chown \"$(whoami)\" %q", tc.wantNotYours(manager))
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("got %v, want it to say %s", err, want)
+			}
+		})
 	}
 }
 
