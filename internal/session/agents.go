@@ -181,7 +181,7 @@ var agents = map[string]AgentSpec{
 		Sandboxless: SandboxlessSpec{
 			Binary: "codex",
 			// Same as Claude: the installer puts the binary in $HOME/.local/bin of the shared agent home.
-			Install:   "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+			Install:   "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
 			LaunchCmd: codexConversation + codexSandboxlessLaunch,
 		},
 		API: AgentAPI{
