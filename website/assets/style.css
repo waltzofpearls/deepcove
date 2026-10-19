@@ -7,6 +7,7 @@
   --muted-foreground: light-dark(oklch(0.55 0.005 95), oklch(0.72 0.005 95));
   --primary: light-dark(oklch(0.62 0.12 180), oklch(0.66 0.12 180));
   --border: light-dark(oklch(0.9 0.003 95), oklch(0.28 0.004 264));
+  --screenshot-shadow: light-dark(oklch(0.2 0.01 264 / 0.18), oklch(0.66 0.12 180 / 0.22));
   --code-bg: #0b0d10;
   --code-fg: #e6e6e6;
 }
@@ -206,6 +207,7 @@ main {
   height: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
+  box-shadow: 0 24px 64px -12px var(--screenshot-shadow), 0 8px 24px -8px var(--screenshot-shadow);
 }
 
 .features {
