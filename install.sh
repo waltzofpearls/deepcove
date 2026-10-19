@@ -253,6 +253,7 @@ check_kvm() {
 # start_service keeps deepcove running in the background, and starting again on its own.
 start_service() {
 	running=
+	service_failed=
 	[ "${DEEPCOVE_NO_SERVICE:-}" = 1 ] && return 0
 	if ! has_user_session; then
 		say "deepcove was not started in the background: there is no login session here. Log in as this"
@@ -264,6 +265,8 @@ start_service() {
 	if "$install_dir/deepcove" service install >/dev/null && "$install_dir/deepcove" service restart; then
 		running=1
 		say "deepcove is running in the background, and starts on its own from now on."
+	else
+		service_failed=1
 	fi
 }
 
@@ -293,7 +296,12 @@ print_next_steps() {
 	esac
 
 	say ""
-	if [ -z "$running" ]; then
+	if [ -n "$service_failed" ]; then
+		say "deepcove could not start in the background (the error is above). Once that is fixed, run:"
+		say "  deepcove service install"
+		say "Or run it in this terminal for now:"
+		say "  deepcove start"
+	elif [ -z "$running" ]; then
 		say "Next, start it:"
 		say "  deepcove start"
 	elif [ -n "${SSH_CONNECTION:-}" ]; then
