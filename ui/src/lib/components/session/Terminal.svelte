@@ -23,6 +23,16 @@
   import Loader2 from '@lucide/svelte/icons/loader-2';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Check from '@lucide/svelte/icons/check';
+  import MobileKeyBar from './MobileKeyBar.svelte';
+  import { onScreenKeyboard } from '$lib/stores/onScreenKeyboard.svelte';
+  import {
+    mobileKeySequence,
+    nextCtrlState,
+    touchPrimaryQuery,
+    withCtrl,
+    type CtrlState,
+    type MobileKey,
+  } from '$lib/util/mobileKeyBar';
 
   // tmuxWindow optionally targets a specific tmux window in the
   // session. Omit/undefined → follow the session's current window
@@ -80,6 +90,19 @@
     if (!logPreEl || !bootstrapLog) return;
     logPreEl.scrollTop = logPreEl.scrollHeight;
   });
+
+  let touchPrimary = $state(false);
+  $effect(() => {
+    const query = matchMedia(touchPrimaryQuery);
+    touchPrimary = query.matches;
+    const onChange = (event: MediaQueryListEvent) => (touchPrimary = event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  });
+  let ctrl = $state<CtrlState>('off');
+  // Set once the terminal exists, so the mobile key bar only shows with something to type into.
+  let pressKey = $state<((key: MobileKey) => void) | undefined>(undefined);
+  let toggleKeyboard = $state<(() => void) | undefined>(undefined);
 
   const maxReconnectAttempts = 8;
   const earlyCloseThresholdMs = 3000;
@@ -188,7 +211,9 @@
         attempts = 0;
         status = 'open';
         sendResize();
-        term?.focus();
+        // A touch device only shows its keyboard for a tap, so focusing here would leave the mobile key bar
+        // saying the keyboard is up while it is not.
+        if (!touchPrimary) term?.focus();
       };
       ws.onerror = () => {
         // Browsers fire onerror right before onclose; let onclose
@@ -292,7 +317,33 @@
       const send = (s: string) => {
         if (ws?.readyState === 1) ws.send(enc.encode(s));
       };
-      term.onData(send);
+      // A Ctrl held on the mobile key bar applies to the next key typed on the on-screen keyboard. Data that
+      // starts with ESC is the terminal answering a query, so it passes untouched.
+      term.onData((data) => {
+        if (ctrl === 'off' || data.startsWith('\x1b')) {
+          send(data);
+          return;
+        }
+        send(withCtrl(data));
+        if (ctrl === 'once') ctrl = 'off';
+      });
+      pressKey = (key) => {
+        if (!term) return;
+        const applicationCursorKeys = term.modes.applicationCursorKeysMode;
+        send(mobileKeySequence(key, { applicationCursorKeys, ctrl: ctrl !== 'off' }));
+        if (ctrl === 'once') ctrl = 'off';
+      };
+      toggleKeyboard = () => {
+        // In a split, the other pane may be the one holding focus, and that keeps the keyboard up.
+        if (onScreenKeyboard.shown) {
+          if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+          return;
+        }
+        // iOS keeps the terminal focused when its own hide key closes the keyboard, and focusing an element
+        // that already has focus does not bring the keyboard back. Hence the blur first.
+        term?.blur();
+        term?.focus();
+      };
 
       // Make the wheel scroll instead of walking the agent's prompt history.
       //
@@ -396,6 +447,8 @@
       if (onPaste) container.removeEventListener('paste', onPaste, { capture: true });
       if (onDragOver) container.removeEventListener('dragover', onDragOver);
       if (onDrop) container.removeEventListener('drop', onDrop);
+      pressKey = undefined;
+      toggleKeyboard = undefined;
       ro?.disconnect();
       ws?.close();
       term?.dispose();
@@ -431,93 +484,109 @@
   }
 </script>
 
-<div class="relative h-full w-full bg-[var(--term-bg)]">
-  <div bind:this={container} class="h-full w-full"></div>
+<!-- In fullscreen the layout no longer sizes this pane, so the keyboard would cover the mobile key bar. -->
+<div
+  class="flex h-full w-full flex-col bg-[var(--term-bg)]"
+  style:max-height={onScreenKeyboard.shown ? `${onScreenKeyboard.visibleHeight}px` : undefined}
+>
+  <div class="relative min-h-0 w-full flex-1">
+    <div bind:this={container} class="h-full w-full"></div>
 
-  {#if uploading > 0 || uploadNote}
-    <!-- Bottom bar overlaying the tmux status line. Left-aligned so it sits
-         where the prompt/cursor and the user's attention already are, and it
-         never covers Claude's output or the prompt where the path lands. -->
-    <div
-      class="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-center gap-3 border-t border-border bg-card/95 px-3 py-2 text-sm backdrop-blur"
-    >
-      {#if uploading > 0}
-        <Loader2 class="size-4 shrink-0 animate-spin text-primary" />
-        <span class="min-w-0 truncate font-medium" title={uploadLabel}>{uploadLabel}</span>
-        <div class="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-secondary">
-          {#if uploadPct < 0}
-            <!-- Indeterminate: a remote (WASM) upload has no byte-level progress. -->
-            <div class="h-full w-1/3 animate-pulse rounded-full bg-primary"></div>
-          {:else}
-            <div
-              class="h-full rounded-full bg-primary transition-[width] duration-200"
-              style="width: {Math.max(uploadPct, 4)}%"
-            ></div>
-          {/if}
-        </div>
-        <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
-          {uploadPct < 0 ? 'Uploading…' : `${uploadPct}%`}
-        </span>
-      {:else if uploadOk}
-        <Check class="size-4 shrink-0 text-[var(--color-success)]" />
-        <span class="min-w-0 truncate">{uploadNote}</span>
-      {:else}
-        <TriangleAlert class="size-4 shrink-0 text-destructive" />
-        <span class="min-w-0 truncate">{uploadNote}</span>
-      {/if}
-    </div>
-  {/if}
+    {#if uploading > 0 || uploadNote}
+      <!-- Bottom bar overlaying the tmux status line. Left-aligned so it sits
+           where the prompt/cursor and the user's attention already are, and it
+           never covers Claude's output or the prompt where the path lands. -->
+      <div
+        class="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-center gap-3 border-t border-border bg-card/95 px-3 py-2 text-sm backdrop-blur"
+      >
+        {#if uploading > 0}
+          <Loader2 class="size-4 shrink-0 animate-spin text-primary" />
+          <span class="min-w-0 truncate font-medium" title={uploadLabel}>{uploadLabel}</span>
+          <div class="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-secondary">
+            {#if uploadPct < 0}
+              <!-- Indeterminate: a remote (WASM) upload has no byte-level progress. -->
+              <div class="h-full w-1/3 animate-pulse rounded-full bg-primary"></div>
+            {:else}
+              <div
+                class="h-full rounded-full bg-primary transition-[width] duration-200"
+                style="width: {Math.max(uploadPct, 4)}%"
+              ></div>
+            {/if}
+          </div>
+          <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {uploadPct < 0 ? 'Uploading…' : `${uploadPct}%`}
+          </span>
+        {:else if uploadOk}
+          <Check class="size-4 shrink-0 text-[var(--color-success)]" />
+          <span class="min-w-0 truncate">{uploadNote}</span>
+        {:else}
+          <TriangleAlert class="size-4 shrink-0 text-destructive" />
+          <span class="min-w-0 truncate">{uploadNote}</span>
+        {/if}
+      </div>
+    {/if}
 
-  {#if bootstrap === 'installing'}
-    <div class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground">
-      <div class="flex shrink-0 flex-col items-center gap-2">
-        <div class="flex items-center gap-2 text-sm">
-          <Loader2 class="size-4 animate-spin text-primary" />
-          Setting up your session…
+    {#if bootstrap === 'installing'}
+      <div class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground">
+        <div class="flex shrink-0 flex-col items-center gap-2">
+          <div class="flex items-center gap-2 text-sm">
+            <Loader2 class="size-4 animate-spin text-primary" />
+            Setting up your session…
+          </div>
+          <p class="max-w-md text-center text-xs text-muted-foreground">
+            Installing the coding agent and its dependencies. This is one-time per agent; future
+            sessions of the same agent skip this step.
+          </p>
         </div>
-        <p class="max-w-md text-center text-xs text-muted-foreground">
-          Installing the coding agent and its dependencies. This is one-time per agent; future
-          sessions of the same agent skip this step.
-        </p>
+        {#if bootstrapLog}
+          <pre
+            bind:this={logPreEl}
+            class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-border bg-card/50 px-3 py-2 font-mono text-[11px] leading-tight text-muted-foreground">{bootstrapLog}</pre>
+        {/if}
       </div>
-      {#if bootstrapLog}
-        <pre
-          bind:this={logPreEl}
-          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-border bg-card/50 px-3 py-2 font-mono text-[11px] leading-tight text-muted-foreground">{bootstrapLog}</pre>
-      {/if}
-    </div>
-  {:else if bootstrap === 'errored'}
-    <div class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground">
-      <div class="flex shrink-0 flex-col items-center gap-2">
-        <div class="flex items-center gap-2 text-sm text-destructive">
-          <TriangleAlert class="size-4" />
-          Setup failed
+    {:else if bootstrap === 'errored'}
+      <div class="absolute inset-0 flex flex-col gap-4 bg-[var(--term-bg)] p-6 text-foreground">
+        <div class="flex shrink-0 flex-col items-center gap-2">
+          <div class="flex items-center gap-2 text-sm text-destructive">
+            <TriangleAlert class="size-4" />
+            Setup failed
+          </div>
+          <p class="max-w-md text-center text-xs text-muted-foreground">
+            Setting up the session failed.{bootstrapLog ? ' See the log below.' : ''}
+            {onWorkspaceVM
+              ? "Restart the workspace VM from its node's page to try again."
+              : 'Stop and start the session to try again.'}
+          </p>
         </div>
-        <p class="max-w-md text-center text-xs text-muted-foreground">
-          Setting up the session failed.{bootstrapLog ? ' See the log below.' : ''}
-          {onWorkspaceVM
-            ? "Restart the workspace VM from its node's page to try again."
-            : 'Stop and start the session to try again.'}
-        </p>
+        {#if bootstrapLog}
+          <pre
+            bind:this={logPreEl}
+            class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 font-mono text-[11px] leading-tight">{bootstrapLog}</pre>
+        {/if}
       </div>
-      {#if bootstrapLog}
-        <pre
-          bind:this={logPreEl}
-          class="scrollbar-hide min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 font-mono text-[11px] leading-tight">{bootstrapLog}</pre>
-      {/if}
-    </div>
-  {:else if status === 'connecting'}
-    <div
-      class="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--term-bg)]/80 text-sm text-muted-foreground"
-    >
-      connecting…
-    </div>
-  {:else if status === 'closed' || status === 'error'}
-    <div
-      class="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--term-bg)]/80 text-sm text-muted-foreground"
-    >
-      {status === 'error' ? 'connection error' : 'disconnected'}
-    </div>
+    {:else if status === 'connecting'}
+      <div
+        class="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--term-bg)]/80 text-sm text-muted-foreground"
+      >
+        connecting…
+      </div>
+    {:else if status === 'closed' || status === 'error'}
+      <div
+        class="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--term-bg)]/80 text-sm text-muted-foreground"
+      >
+        {status === 'error' ? 'connection error' : 'disconnected'}
+      </div>
+    {/if}
+  </div>
+
+  {#if touchPrimary && pressKey && toggleKeyboard}
+    <MobileKeyBar
+      {ctrl}
+      keyboardOpen={onScreenKeyboard.shown}
+      onKey={pressKey}
+      onCtrl={() => (ctrl = nextCtrlState(ctrl))}
+      onKeyboard={toggleKeyboard}
+    />
   {/if}
 </div>
 

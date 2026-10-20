@@ -16,6 +16,7 @@
   import { Sheet, SheetContent } from '$lib/components/ui/sheet';
   import { preflight } from '$lib/stores/preflight.svelte';
   import { missingReasons, runtimeSetupOffered } from '$lib/util/runtime';
+  import { onScreenKeyboard } from '$lib/stores/onScreenKeyboard.svelte';
   import { NEW_SESSION_CTX } from '$lib/context';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -75,6 +76,14 @@
     retrying = false;
   }
 
+  // Browsers keep the page full height when the on-screen keyboard opens, so the bottom of the app, like a
+  // session's mobile key bar, would sit behind it. While it is up the app takes the height left above it.
+  // Setup and the sign-in gate scroll the page themselves, so they keep the browser's own handling.
+  $effect(() => {
+    if (gated || page.url.pathname === '/setup') return;
+    return onScreenKeyboard.start();
+  });
+
   // Close the mobile drawer on every route change so tapping a nav
   // link inside the drawer auto-dismisses it. Cheap idempotent
   // operation when the drawer is already closed.
@@ -97,7 +106,10 @@
   <!-- The setup wizard is its own full-screen page with no topbar/sidebar chrome. -->
   {@render children()}
 {:else}
-  <div class="flex h-screen flex-col bg-background text-foreground">
+  <div
+    class="flex h-dvh flex-col bg-background text-foreground"
+    style:height={onScreenKeyboard.shown ? `${onScreenKeyboard.visibleHeight}px` : undefined}
+  >
     <TopBar onNewSession={() => (newSessionOpen = true)} onMenu={() => (sidebarOpen = true)} />
 
     {#if !preflight.ready}
