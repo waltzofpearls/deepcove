@@ -3,7 +3,8 @@
   // hidden. Each device on your tailnet gets a chip:
   //   - Session node: the backend that runs your sessions (this machine's tsnet connection).
   //   - Web node:     your browser as its own tailnet device, used to reach session nodes' streams.
-  // On a session node (direct boot) we show both; on a dashboard thin client (wasm) only the web node.
+  // A session node (direct boot) shows only the session node; a dashboard thin client (wasm) only the web
+  // node.
   // Not signed in → the chip shows the type label and clicking opens a sign-in dialog. Signed in → it
   // shows the node's name with the type as a footnote, and clicking opens an info dialog.
   import { transport } from '$lib/api/transport';
