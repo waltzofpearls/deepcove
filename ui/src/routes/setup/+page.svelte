@@ -1,16 +1,15 @@
 <script lang="ts">
-  // First-run setup wizard (a full page, not an overlay). Tailscale-style: walk the user through
-  // getting deepcove ready, including putting their two devices on the tailnet (session node required-
-  // ish, web node optional/skippable). Steps: Welcome → Virtual machines → Workspace (skipped without a
-  // VM) → Connect → Done. The whole thing is skippable (deepcove works purely local), and finishing or
-  // skipping marks setup done (lib/setup).
+  // First-run setup wizard (a full page, not an overlay). Tailscale-style: walk the user through getting
+  // deepcove ready, including putting this machine on the tailnet (optional). The browser needs no sign-in
+  // of its own: it reaches this machine directly. Steps: Welcome → Virtual machines → Workspace (skipped
+  // without a VM) → Connect → Done. The whole thing is skippable (deepcove works purely local), and
+  // finishing or skipping marks setup done (lib/setup).
   import { getContext } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import { preflight } from '$lib/stores/preflight.svelte';
   import { connect } from '$lib/stores/connect.svelte';
-  import { ensureTailnet, tailnetAuth } from '$lib/api/wasm';
   import { isSetupDone, markSetupDone, setConnectSkipped } from '$lib/setup';
   import { openConnectingTab } from '$lib/signin';
   import { NEW_SESSION_CTX } from '$lib/context';
@@ -28,7 +27,6 @@
   import Logo from '$lib/components/layout/Logo.svelte';
   import TailscaleLogo from '$lib/components/TailscaleLogo.svelte';
   import Server from '@lucide/svelte/icons/server';
-  import Globe from '@lucide/svelte/icons/globe';
   import Boxes from '@lucide/svelte/icons/boxes';
   import Check from '@lucide/svelte/icons/check';
   import Loader2 from '@lucide/svelte/icons/loader-2';
@@ -89,15 +87,11 @@
   );
   let settingUpVM = $state(false);
 
-  let auth = $derived($tailnetAuth);
-  const webConnected = $derived(auth.phase === 'running');
-
   // Browsers only allow opening a tab during the click itself, not from an async callback a few seconds
   // later (that gets popup-blocked). So openConnectingTab opens the sign-in tab up front on the click
   // with a branded loading page, and we point it at the real login URL once that lands (from the backend
-  // connect, or the lazily-loaded wasm client). The user sees a friendly loading tab, never blocked.
+  // connect). The user sees a friendly loading tab, never blocked.
   let pendingSessionTab = $state<Window | null>(null);
-  let pendingWebTab = $state<Window | null>(null);
 
   function connectSession() {
     pendingSessionTab = openConnectingTab();
@@ -106,10 +100,6 @@
       .connect()
       .then(() => connect.refresh())
       .catch(() => {});
-  }
-  function signInWeb() {
-    pendingWebTab = openConnectingTab();
-    void ensureTailnet().catch(() => {});
   }
 
   // Session node: send the pre-opened tab to the backend's login URL once it surfaces; if it connected
@@ -123,18 +113,6 @@
     } else if (connect.connected) {
       pendingSessionTab.close();
       pendingSessionTab = null;
-    }
-  });
-
-  // Web node: same handoff, driven by the in-browser node's auth phase.
-  $effect(() => {
-    if (!pendingWebTab) return;
-    if (auth.phase === 'needs_login' && auth.url) {
-      pendingWebTab.location.href = auth.url;
-      pendingWebTab = null;
-    } else if (auth.phase === 'running' || auth.phase === 'error') {
-      pendingWebTab.close();
-      pendingWebTab = null;
     }
   });
 
@@ -369,34 +347,6 @@
               </span>
             {:else}
               <Button class="shrink-0" onclick={connectSession}>
-                <TailscaleLogo class="size-5 -ml-0.5" /> Sign in
-              </Button>
-            {/if}
-          </div>
-
-          <!-- Device 2: web node (this browser). -->
-          <div class="flex items-center gap-3 rounded-lg border border-border p-3">
-            <Globe class="size-5 shrink-0 text-muted-foreground" />
-            <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">Web node</div>
-              <div class="text-xs text-muted-foreground">
-                This browser, reaches sessions on other machines
-              </div>
-            </div>
-            {#if webConnected}
-              <span class="flex shrink-0 items-center gap-1 text-sm text-[var(--color-success)]">
-                <Check class="size-4" /> Connected
-              </span>
-            {:else if auth.phase === 'needs_login'}
-              <Button class="shrink-0" href={auth.url} target="_blank" rel="noopener noreferrer">
-                <TailscaleLogo class="size-5 -ml-0.5" /> Sign in
-              </Button>
-            {:else if auth.phase === 'connecting'}
-              <span class="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 class="size-4 animate-spin" /> Connecting…
-              </span>
-            {:else}
-              <Button class="shrink-0" onclick={signInWeb}>
                 <TailscaleLogo class="size-5 -ml-0.5" /> Sign in
               </Button>
             {/if}
