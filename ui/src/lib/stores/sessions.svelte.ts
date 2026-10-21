@@ -23,7 +23,12 @@
 
 import { ApiError, api } from '$lib/api/client';
 import { unreachableMessage } from '$lib/api/errors';
-import { hostForSession, isRemoteSession, sessionHostLabel } from '$lib/api/sessions';
+import {
+  hostForSession,
+  isRemoteSession,
+  missedPollsInARow,
+  sessionHostLabel,
+} from '$lib/api/sessions';
 import { discoveryRequired } from '$lib/api/transport';
 import type { Session, SessionHost } from '$lib/api/types';
 import { usePolling } from '$lib/polling';
@@ -48,6 +53,14 @@ let abortCtrl: AbortController | undefined;
 // How soon to retry after a failed poll.
 const retryIntervalMs = 1_000;
 
+// A node has to miss two polls in a row before the notice shows, so a one off blip shows nothing.
+const missesBeforeNotice = 2;
+let missedPolls = new Map<string, number>();
+
+function waitingOnASecondTry(): boolean {
+  return [...missedPolls.values()].some((count) => count < missesBeforeNotice);
+}
+
 async function poll(signal: AbortSignal): Promise<void> {
   try {
     // Dashboard mode: the browser is the aggregator, so fan out across the discovered nodes
@@ -57,13 +70,17 @@ async function poll(signal: AbortSignal): Promise<void> {
       : await api.listSessions({ all: true, signal });
     list = resp.sessions ?? [];
     self = resp.self ?? null;
-    unreachable = resp.unreachable ?? [];
+    missedPolls = missedPollsInARow(missedPolls, resp.unreachable ?? []);
+    unreachable = (resp.unreachable ?? []).filter(
+      (host) => (missedPolls.get(host.stable_node_id) ?? 0) >= missesBeforeNotice,
+    );
     error = null;
   } catch (e) {
     if (signal.aborted) return;
     error = e instanceof ApiError ? e.message : (unreachableMessage(e) ?? String(e));
   } finally {
-    loading = false;
+    // Keep the skeletons while a node gets its second try, so its cards don't arrive late.
+    if (!waitingOnASecondTry()) loading = false;
   }
 }
 
@@ -74,7 +91,7 @@ function startIfIdle(): void {
   stopPolling = usePolling(
     () => poll(signal),
     // Retry sooner while failing, so a restart is picked up quickly instead of after a full cycle.
-    () => (error ? retryIntervalMs : preferences.pollIntervalMs),
+    () => (error || waitingOnASecondTry() ? retryIntervalMs : preferences.pollIntervalMs),
   );
 }
 
@@ -84,6 +101,7 @@ function stopIfDone(): void {
   abortCtrl = undefined;
   stopPolling?.();
   stopPolling = undefined;
+  missedPolls = new Map();
 }
 
 export const sessions = {

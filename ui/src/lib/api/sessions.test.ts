@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   hostForSession,
   isRemoteSession,
+  missedPollsInARow,
   sessionHostLabel,
   mergeAggregated,
   onlineHostNodes,
@@ -188,4 +189,39 @@ describe('defaultNodeId', () => {
   it('is empty for no nodes', () => {
     expect(defaultNodeId([])).toBe('');
   });
+});
+
+describe('missedPollsInARow', () => {
+  const nodeA: SessionHost = { stable_node_id: 'a', hostname: 'a' };
+  const nodeB: SessionHost = { stable_node_id: 'b', hostname: 'b' };
+  const cases: {
+    name: string;
+    previous: [string, number][];
+    unreachable: SessionHost[];
+    want: [string, number][];
+  }[] = [
+    { name: 'a first miss counts one', previous: [], unreachable: [nodeA], want: [['a', 1]] },
+    {
+      name: 'a second miss counts two',
+      previous: [['a', 1]],
+      unreachable: [nodeA],
+      want: [['a', 2]],
+    },
+    { name: 'a node that answers is dropped', previous: [['a', 1]], unreachable: [], want: [] },
+    {
+      name: 'each node counts on its own',
+      previous: [['a', 2]],
+      unreachable: [nodeA, nodeB],
+      want: [
+        ['a', 3],
+        ['b', 1],
+      ],
+    },
+  ];
+
+  for (const tc of cases) {
+    it(tc.name, () => {
+      expect([...missedPollsInARow(new Map(tc.previous), tc.unreachable)]).toEqual(tc.want);
+    });
+  }
 });

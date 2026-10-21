@@ -174,7 +174,7 @@
     >
       <CircleAlert class="size-4 shrink-0 text-warning" />
       <span>
-        Couldn't reach {sessions.unreachable.map((n) => n.hostname).join(', ')}; its sessions aren't
+        Couldn't reach {sessions.unreachable.map((n) => n.hostname).join(', ')}. Its sessions aren't
         shown.
       </span>
     </div>
