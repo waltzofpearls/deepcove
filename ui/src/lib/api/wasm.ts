@@ -12,7 +12,7 @@
 
 import { writable, type Writable } from 'svelte/store';
 import type { InitOptions } from 'tailscale-web';
-import { machineName, tailnetDomain } from '../util/tailnet';
+import { machineName, tailnetDomain, webNodeHostname } from '../util/tailnet';
 
 // The resolved `network` object the wasm bundle exports (fetch, dialTCP, …).
 type TailnetNetwork = typeof import('tailscale-web').network;
@@ -32,10 +32,10 @@ const STORAGE_PREFIX = 'tailscale-web';
 
 let netPromise: Promise<TailnetNetwork> | undefined;
 
-// hostname for the in-browser node, server-injected or a sane default.
+// hostname for the in-browser node, server injected or named after this device and browser.
 export function wasmHostname(): string {
   const cfg = (globalThis as { __deepcove?: { hostname?: string } }).__deepcove;
-  return cfg?.hostname ?? 'deepcove-web';
+  return cfg?.hostname ?? webNodeHostname(navigator.userAgent, navigator.maxTouchPoints);
 }
 
 // WebNodeInfo describes the in-browser Tailscale node for the device info dialog.
