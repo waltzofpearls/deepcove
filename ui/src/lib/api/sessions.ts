@@ -44,6 +44,19 @@ export function nodeHost(node: NodeInfo): SessionHost {
   return { stable_node_id: node.stable_node_id, hostname: node.hostname, dns_name: node.dns_name };
 }
 
+// missedPollsInARow counts how many polls in a row each node failed to answer. A node that answers
+// drops out of the count.
+export function missedPollsInARow(
+  previous: Map<string, number>,
+  unreachable: SessionHost[],
+): Map<string, number> {
+  const next = new Map<string, number>();
+  for (const host of unreachable) {
+    next.set(host.stable_node_id, (previous.get(host.stable_node_id) ?? 0) + 1);
+  }
+  return next;
+}
+
 // mergeAggregated combines per-node /api/sessions/local results into one aggregated response, the same
 // way the Go session.ListAggregated does for server-side fan-out: each session is tagged with its host
 // node, a node whose fetch failed (sessions === null) is recorded as unreachable, and the merged list is
