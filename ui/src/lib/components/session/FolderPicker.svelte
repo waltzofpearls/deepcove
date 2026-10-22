@@ -7,8 +7,10 @@
     DialogTitle,
   } from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
+  import { Input } from '$lib/components/ui/input';
   import { api, ApiError } from '$lib/api/client';
   import type { FsEntry, SessionHost } from '$lib/api/types';
+  import { pickerQuery } from '$lib/util/path';
   import Folder from '@lucide/svelte/icons/folder';
   import House from '@lucide/svelte/icons/house';
   import CornerLeftUp from '@lucide/svelte/icons/corner-left-up';
@@ -29,7 +31,16 @@
   let entries = $state<FsEntry[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  let pathEl = $state<HTMLElement | undefined>(undefined);
+  let pathEl = $state<HTMLInputElement | null>(null);
+  // What is in the path box. loadedPath is what load() last put there, so the typing effect skips it.
+  let enteredPath = $state('');
+  let loadedPath = '';
+
+  const prefix = $derived(pickerQuery(enteredPath).prefix.toLowerCase());
+  const visible = $derived(entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix)));
+  const enteredFolder = $derived(
+    prefix ? entries.find((entry) => entry.name.toLowerCase() === prefix) : undefined,
+  );
 
   async function load(p?: string) {
     loading = true;
@@ -39,6 +50,8 @@
       path = res.path;
       parent = res.parent;
       entries = res.entries;
+      enteredPath = res.path === '/' ? '/' : res.path + '/';
+      loadedPath = enteredPath;
     } catch (e) {
       // A folder that isn't there yet, like a new session's, opens at the nearest one that is.
       if (p && e instanceof ApiError && e.status === 404) {
@@ -61,14 +74,42 @@
     load(start || value || undefined);
   });
 
+  // Typing lists the folder before the last slash. A folder that isn't there lists nothing.
+  $effect(() => {
+    const text = enteredPath;
+    if (!open || text === loadedPath) return;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.fsList(pickerQuery(text).dir, host);
+        if (enteredPath !== text) return;
+        path = res.path;
+        parent = res.parent;
+        entries = res.entries;
+        error = null;
+      } catch {
+        if (enteredPath !== text) return;
+        path = '';
+        entries = [];
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  });
+
   // Keep the path box scrolled to the end so the current (deepest) folder is
   // visible rather than the /Users/... prefix.
   $effect(() => {
-    if (pathEl && path) pathEl.scrollLeft = pathEl.scrollWidth;
+    if (pathEl && enteredPath === loadedPath) pathEl.scrollLeft = pathEl.scrollWidth;
   });
 
+  function onPathKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Tab' && event.key !== 'Enter') return;
+    if (!prefix || visible.length === 0) return;
+    event.preventDefault();
+    load(visible[0].path);
+  }
+
   function selectCurrent() {
-    value = path;
+    value = enteredFolder?.path ?? path;
     open = false;
   }
 </script>
@@ -105,12 +146,15 @@
         >
           <CornerLeftUp class="size-4" />
         </Button>
-        <code
-          bind:this={pathEl}
-          class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border bg-secondary px-2.5 py-1.5 text-xs"
-        >
-          {path || '…'}
-        </code>
+        <Input
+          bind:ref={pathEl}
+          bind:value={enteredPath}
+          class="min-w-0 flex-1 font-mono text-xs md:text-xs"
+          aria-label="Folder path"
+          autocomplete="off"
+          spellcheck={false}
+          onkeydown={onPathKeydown}
+        />
       </div>
 
       <div class="min-h-[12rem] max-h-[40vh] overflow-y-auto rounded-md border border-border">
@@ -118,11 +162,13 @@
           <div class="px-3 py-6 text-center text-sm text-muted-foreground">Loading…</div>
         {:else if error}
           <div class="px-3 py-6 text-center text-sm text-destructive">{error}</div>
-        {:else if entries.length === 0}
-          <div class="px-3 py-6 text-center text-sm text-muted-foreground">No subfolders here.</div>
+        {:else if visible.length === 0}
+          <div class="px-3 py-6 text-center text-sm text-muted-foreground">
+            {prefix ? 'No matching folders.' : 'No subfolders here.'}
+          </div>
         {:else}
           <ul class="divide-y divide-border">
-            {#each entries as e (e.path)}
+            {#each visible as e (e.path)}
               <li>
                 <button
                   type="button"
@@ -141,7 +187,9 @@
 
     <div class="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
       <Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-      <Button onclick={selectCurrent} disabled={!path}>Select this folder</Button>
+      <Button onclick={selectCurrent} disabled={!path || (prefix !== '' && !enteredFolder)}>
+        Select this folder
+      </Button>
     </div>
   </DialogContent>
 </Dialog>

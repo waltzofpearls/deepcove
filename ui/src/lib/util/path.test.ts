@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { cleanPath, looksLikePath, pathInsideFolder, sessionFolderIn, splitPath } from './path';
+import {
+  cleanPath,
+  looksLikePath,
+  pathInsideFolder,
+  pickerQuery,
+  sessionFolderIn,
+  splitPath,
+} from './path';
 
 describe('splitPath', () => {
   it.each([
@@ -10,6 +17,19 @@ describe('splitPath', () => {
     { input: 'rel', dir: undefined, prefix: 'rel' },
   ])('splits "$input"', ({ input, dir, prefix }) => {
     expect(splitPath(input)).toEqual({ dir, prefix });
+  });
+});
+
+describe('pickerQuery', () => {
+  it.each([
+    { input: '~', dir: undefined, prefix: '' },
+    { input: '~/', dir: undefined, prefix: '' },
+    { input: '~/Dev/Pe', dir: 'Dev', prefix: 'Pe' },
+    { input: '~/Dev/', dir: 'Dev/', prefix: '' },
+    { input: '/Users/you/Dev/Pe', dir: '/Users/you/Dev', prefix: 'Pe' },
+    { input: 'Dev/Pe', dir: 'Dev', prefix: 'Pe' },
+  ])('splits "$input"', ({ input, dir, prefix }) => {
+    expect(pickerQuery(input)).toEqual({ dir, prefix });
   });
 });
 
