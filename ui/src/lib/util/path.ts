@@ -13,6 +13,13 @@ export function splitPath(v: string): { dir: string | undefined; prefix: string 
   return { dir: v.slice(0, idx) || '/', prefix: v.slice(idx + 1) };
 }
 
+// pickerQuery is splitPath for the folder picker's path box, where a leading ~ means home. The server
+// lists a relative path from home, so ~/Dev becomes Dev.
+export function pickerQuery(typed: string): { dir: string | undefined; prefix: string } {
+  if (typed === '~') return splitPath('');
+  return splitPath(typed.startsWith('~/') ? typed.slice(2) : typed);
+}
+
 // looksLikePath is the cheap client side check on a host folder: absolute, and not something that was
 // never a path at all. The server still decides, since only it can tell whether the folder is there.
 export function looksLikePath(value: string): boolean {
