@@ -43,7 +43,7 @@ func TestArgs(t *testing.T) {
 		{"--api-socket", "path=/r/api.sock"},
 		{"--kernel", "/k/vmlinux"},
 		{"--cmdline", "console=hvc0 root=/dev/vda ro init=/sbin/deepcove-init"},
-		{"--cpus", "boot=2"},
+		{"--cpus", "boot=2,nested=off"},
 		{"--memory", "size=4294967296,shared=on"},
 		{"--console", "file=/r/console"},
 		{"--serial", "off"},

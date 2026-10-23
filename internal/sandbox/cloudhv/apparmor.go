@@ -10,18 +10,19 @@ import (
 	"time"
 )
 
-// AppArmorProfileName is the profile that lets passt build the namespaces it isolates itself with.
-const AppArmorProfileName = "deepcove-passt"
+// AppArmorProfileName names the file that lets passt and virtiofsd build the namespaces they isolate
+// themselves with. It holds one profile for each.
+const AppArmorProfileName = "deepcove"
 
 // InstalledAppArmorProfile is where a host keeps the profile, and where everything on boot loads it from.
 const InstalledAppArmorProfile = "/etc/apparmor.d/" + AppArmorProfileName
 
-// restrictionPath is Ubuntu's switch for unprivileged namespaces, which is what passt needs to isolate
-// itself.
+// restrictionPath is Ubuntu's switch for unprivileged namespaces, which is what passt and virtiofsd need
+// to isolate themselves.
 const restrictionPath = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 
-// hostSandboxFacts are what this host says about letting passt isolate itself. A value rather than three
-// calls, so the decision it feeds can be tested without the host.
+// hostSandboxFacts are what this host says about letting passt and virtiofsd isolate themselves. A value
+// rather than three calls, so the decision it feeds can be tested without the host.
 type hostSandboxFacts struct {
 	namespacesRestricted bool
 	profileInstalled     bool
@@ -37,7 +38,8 @@ func hostSandbox() hostSandboxFacts {
 	}
 }
 
-// needsProfile reports that passt cannot build its namespaces here until the profile is installed.
+// needsProfile reports that passt and virtiofsd cannot build their namespaces here until the profile is
+// installed.
 func (f hostSandboxFacts) needsProfile() bool {
 	return f.namespacesRestricted && !f.profileInstalled
 }
@@ -56,9 +58,9 @@ func passtRunAsArgsFor(facts hostSandboxFacts) []string {
 	return nil
 }
 
-// PasstSandboxNeedsAppArmor reports whether this host stops passt isolating itself. Ubuntu 24.04 does,
-// until the profile is loaded.
-func PasstSandboxNeedsAppArmor() bool {
+// HelperSandboxesNeedAppArmor reports whether this host stops passt and virtiofsd isolating themselves.
+// Ubuntu 24.04 does, until the profile is loaded.
+func HelperSandboxesNeedAppArmor() bool {
 	return hostSandbox().needsProfile()
 }
 
@@ -83,12 +85,12 @@ var loadProfile = runApparmorParser
 
 // InstallAppArmorProfile writes the profile this host needs and loads it, which only root can do. Better
 // than working around the missing profile, because the workaround is passt keeping root for good.
-func InstallAppArmorProfile(passtBinary string) error {
-	return installAppArmorProfile(InstalledAppArmorProfile, passtBinary)
+func InstallAppArmorProfile(passtBinary, virtiofsdBinary string) error {
+	return installAppArmorProfile(InstalledAppArmorProfile, passtBinary, virtiofsdBinary)
 }
 
-func installAppArmorProfile(path, passtBinary string) error {
-	if err := os.WriteFile(path, []byte(AppArmorProfile(passtBinary)), 0o644); err != nil {
+func installAppArmorProfile(path, passtBinary, virtiofsdBinary string) error {
+	if err := os.WriteFile(path, []byte(AppArmorProfile(passtBinary, virtiofsdBinary)), 0o644); err != nil {
 		return fmt.Errorf("cloudhv: write %s: %w", path, err)
 	}
 	return loadProfile(path)
@@ -104,17 +106,22 @@ func runApparmorParser(path string) error {
 	return nil
 }
 
-// AppArmorProfile is the profile this host needs so passt can isolate itself. The path is a glob over
-// the passt versions a node may hold, so an upgrade does not need a new profile.
-func AppArmorProfile(passtBinary string) string {
-	versions := filepath.Dir(filepath.Dir(passtBinary))
-	pattern := filepath.Join(versions, "*", filepath.Base(passtBinary))
-	return fmt.Sprintf(`abi <abi/4.0>,
-include <tunables/global>
+// AppArmorProfile is the profile this host needs so passt and virtiofsd can isolate themselves. Each path
+// is a glob over the versions a node may hold, so an upgrade does not need a new profile.
+func AppArmorProfile(passtBinary, virtiofsdBinary string) string {
+	return "abi <abi/4.0>,\ninclude <tunables/global>\n" +
+		helperProfile("deepcove-passt", passtBinary) +
+		helperProfile("deepcove-virtiofsd", virtiofsdBinary)
+}
 
+// helperProfile lets one helper, at any version, create user namespaces, and confines nothing else.
+func helperProfile(name, binary string) string {
+	versions := filepath.Dir(filepath.Dir(binary))
+	pattern := filepath.Join(versions, "*", filepath.Base(binary))
+	return fmt.Sprintf(`
 profile %s %s flags=(unconfined) {
   userns,
   include if exists <local/%s>
 }
-`, AppArmorProfileName, pattern, AppArmorProfileName)
+`, name, pattern, name)
 }

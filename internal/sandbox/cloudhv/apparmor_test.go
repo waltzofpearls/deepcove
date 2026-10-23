@@ -9,14 +9,19 @@ import (
 )
 
 func TestAppArmorProfile(t *testing.T) {
-	profile := AppArmorProfile("/root/.config/deepcove/vm-artifacts/passt/7e8d49b/passt")
+	profile := AppArmorProfile(
+		"/root/.config/deepcove/vm-artifacts/passt/7e8d49b/passt",
+		"/root/.config/deepcove/vm-artifacts/virtiofsd/v1.14.0/virtiofsd",
+	)
 
 	cases := []struct {
 		name string
 		want string
 	}{
-		{name: "names the profile", want: "profile deepcove-passt "},
+		{name: "names the passt profile", want: "profile deepcove-passt "},
 		{name: "covers every passt version", want: "/root/.config/deepcove/vm-artifacts/passt/*/passt"},
+		{name: "names the virtiofsd profile", want: "profile deepcove-virtiofsd "},
+		{name: "covers every virtiofsd version", want: "/root/.config/deepcove/vm-artifacts/virtiofsd/*/virtiofsd"},
 		{name: "grants the namespaces passt isolates itself with", want: "userns,"},
 		{name: "confines nothing else", want: "flags=(unconfined)"},
 	}
@@ -109,7 +114,7 @@ func TestFileExists(t *testing.T) {
 }
 
 func TestInstallAppArmorProfile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deepcove-passt")
+	path := filepath.Join(t.TempDir(), "deepcove")
 	loaded := ""
 	loadProfile = func(p string) error {
 		loaded = p
@@ -118,7 +123,8 @@ func TestInstallAppArmorProfile(t *testing.T) {
 	t.Cleanup(func() { loadProfile = runApparmorParser })
 
 	binary := "/home/deep/.config/deepcove/vm-artifacts/passt/7e8d49b/passt"
-	if err := installAppArmorProfile(path, binary); err != nil {
+	virtiofsd := "/home/deep/.config/deepcove/vm-artifacts/virtiofsd/v1.14.0/virtiofsd"
+	if err := installAppArmorProfile(path, binary, virtiofsd); err != nil {
 		t.Fatalf("installAppArmorProfile: %v", err)
 	}
 
@@ -139,7 +145,7 @@ func TestInstallAppArmorProfileReportsALoaderFailure(t *testing.T) {
 	loadProfile = func(string) error { return errors.New("apparmor_parser said no") }
 	t.Cleanup(func() { loadProfile = runApparmorParser })
 
-	err := installAppArmorProfile(filepath.Join(t.TempDir(), "deepcove-passt"), "/x/passt/v1/passt")
+	err := installAppArmorProfile(filepath.Join(t.TempDir(), "deepcove"), "/x/passt/v1/passt", "/x/virtiofsd/v1/virtiofsd")
 	if err == nil {
 		t.Error("want the loader's error")
 	}

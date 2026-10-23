@@ -105,8 +105,7 @@ func cmdDashboard(ctx context.Context, args []string) error {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			return err
 		}
-		<-errCh
-		return nil
+		return <-errCh
 	case err := <-errCh:
 		return err
 	}
