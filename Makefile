@@ -144,7 +144,7 @@ build-windows-amd64: ui-build ## Build a windows/amd64 binary (cross-compiled vi
 		go build -ldflags '$(LDFLAGS_NATIVE)' \
 		-o dist/windows-amd64/deepcove.exe ./cmd/deepcove
 
-# Linux builds run inside golang:1.26-bookworm (Debian 12, glibc 2.36)
+# Linux builds run inside golang:1.27-bookworm (Debian 12, glibc 2.36)
 # via build/linux.Dockerfile. We use the duckdb-go-bindings precompiled
 # libduckdb_static.a directly — no DuckDB source rebuild needed. Output
 # binary dynamically links against glibc and runs on any glibc 2.36+

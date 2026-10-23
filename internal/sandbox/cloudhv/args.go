@@ -30,7 +30,9 @@ func args(spec vm.Spec, p paths) []string {
 		"--api-socket", "path=" + p.api,
 		"--kernel", spec.KernelPath,
 		"--cmdline", spec.Cmdline,
-		"--cpus", fmt.Sprintf("boot=%d", spec.CPUCount),
+		// nested=off hides VMX from the guest. The VMM exposes it by default, and a guest that can
+		// run its own VMs reaches host KVM code that normal guests never touch.
+		"--cpus", fmt.Sprintf("boot=%d,nested=off", spec.CPUCount),
 		// shared=on, or the VMM refuses every vhost-user device: the file shares and the network.
 		"--memory", fmt.Sprintf("size=%d,shared=on", spec.MemoryBytes),
 		"--console", "file=" + p.console,

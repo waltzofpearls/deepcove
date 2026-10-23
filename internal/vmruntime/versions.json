@@ -8,10 +8,10 @@
     "kata_release": "4.1.0"
   },
   "cloud_hypervisor": {
-    "version": "v53.0",
+    "version": "v54.0",
     "assets": {
-      "amd64": "cloud-hypervisor_v53.0_linux-amd64.tar.gz",
-      "arm64": "cloud-hypervisor_v53.0_linux-arm64.tar.gz"
+      "amd64": "cloud-hypervisor_v54.0_linux-amd64.tar.gz",
+      "arm64": "cloud-hypervisor_v54.0_linux-arm64.tar.gz"
     }
   },
   "virtiofsd": {

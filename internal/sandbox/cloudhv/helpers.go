@@ -21,8 +21,8 @@ import (
 // startVirtiofsd shares one host directory with the guest. Cloud Hypervisor has no file sharing of its
 // own: it connects to this socket, and virtiofsd serves the directory behind it.
 //
-// `--sandbox none` because the namespace sandbox needs privileges we do not want to require, and the
-// isolation that matters is the VM's, not the daemon's.
+// virtiofsd keeps its default sandbox, so the shared directory is the only folder it can see. Even root
+// in the guest, talking to virtiofsd directly, cannot then create a file anywhere else on the host.
 func startVirtiofsd(binary, socket string, share vm.Share) (*vmproc.Process, error) {
 	sharedDir, workDir := share.HostPath, ""
 	if share.Folder != nil {
@@ -34,7 +34,6 @@ func startVirtiofsd(binary, socket string, share vm.Share) (*vmproc.Process, err
 		"--socket-path", socket,
 		"--shared-dir", sharedDir,
 		"--tag", share.Tag,
-		"--sandbox", "none",
 		"--cache", "auto",
 	}
 	if share.ReadOnly {

@@ -94,7 +94,7 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 		return runtimeEntry{name: session.RuntimeCloudHV, missing: session.MissingStartFailed}
 	}
 
-	ensurePasstCanIsolateItself(deps.cfg, binaries.passt.path, deps.logger)
+	ensureHelpersCanIsolateThemselves(deps.cfg, binaries, deps.logger)
 	deps.logger.Info("cloud hypervisor runtime available", "ipc_dir", ipcDir)
 	logVMAssets(deps.logger, kernel, guestInit,
 		binaries.cloudHypervisor, binaries.virtiofsd, binaries.passt)
@@ -113,39 +113,41 @@ func resolveHostBinaries(cfg *config.Config) (hostBinaries, bool) {
 	return hostBinaries{cloudHypervisor: cloudHypervisor, virtiofsd: virtiofsd, passt: passt}, true
 }
 
-// ensurePasstCanIsolateItself gets passt the AppArmor profile this host needs, installing it when this
-// process is root. Spending the privilege beats working around it: the workaround is passt keeping root
-// for the life of every VM, and a network stack is the last thing that should hold it.
+// ensureHelpersCanIsolateThemselves gets passt and virtiofsd the AppArmor profile this host needs,
+// installing it when this process is root. Spending the privilege beats working around it: the workaround
+// is passt keeping root for the life of every VM, and a network stack is the last thing that should hold it.
 //
 // Not root, or the install fails: the profile is left in the data dir with the command to load it. passt
-// then keeps root if deepcove has it, and cannot start at all if it does not.
-func ensurePasstCanIsolateItself(cfg *config.Config, passtBinary string, logger *slog.Logger) {
-	if !cloudhv.PasstSandboxNeedsAppArmor() {
+// then keeps root if deepcove has it, and cannot start at all if it does not. virtiofsd is the same: as
+// root it needs no profile, and without root it cannot start.
+func ensureHelpersCanIsolateThemselves(cfg *config.Config, binaries hostBinaries, logger *slog.Logger) {
+	if !cloudhv.HelperSandboxesNeedAppArmor() {
 		return
 	}
 	if os.Geteuid() == 0 {
-		if err := cloudhv.InstallAppArmorProfile(passtBinary); err == nil {
-			logger.Info("installed the apparmor profile passt needs, so it gives up root as usual",
+		if err := cloudhv.InstallAppArmorProfile(binaries.passt.path, binaries.virtiofsd.path); err == nil {
+			logger.Info("installed the apparmor profile passt and virtiofsd need, so passt gives up root as usual",
 				"path", cloudhv.InstalledAppArmorProfile)
 			return
 		} else {
-			logger.Warn("could not install the apparmor profile passt needs", "err", err)
+			logger.Warn("could not install the apparmor profile passt and virtiofsd need", "err", err)
 		}
 	}
-	path, err := writeAppArmorProfile(cfg.DataDir, passtBinary)
+	path, err := writeAppArmorProfile(cfg.DataDir, binaries)
 	if err != nil {
-		logger.Warn("could not write the apparmor profile passt needs", "err", err)
+		logger.Warn("could not write the apparmor profile passt and virtiofsd need", "err", err)
 		return
 	}
-	logger.Warn("this host stops passt isolating itself, so it runs with the privileges deepcove has",
+	logger.Warn("this host stops passt and virtiofsd isolating themselves until the profile is loaded",
 		"fix", fmt.Sprintf("sudo cp %s %s && sudo apparmor_parser -r %s",
 			path, cloudhv.InstalledAppArmorProfile, cloudhv.InstalledAppArmorProfile))
 }
 
 // writeAppArmorProfile puts the profile in the data dir, where a root shell can copy it from.
-func writeAppArmorProfile(dataDir, passtBinary string) (string, error) {
+func writeAppArmorProfile(dataDir string, binaries hostBinaries) (string, error) {
 	path := filepath.Join(dataDir, cloudhv.AppArmorProfileName+".apparmor")
-	if err := os.WriteFile(path, []byte(cloudhv.AppArmorProfile(passtBinary)), 0o644); err != nil {
+	profile := cloudhv.AppArmorProfile(binaries.passt.path, binaries.virtiofsd.path)
+	if err := os.WriteFile(path, []byte(profile), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

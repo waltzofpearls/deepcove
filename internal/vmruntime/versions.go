@@ -20,7 +20,7 @@ const (
 
 	// CloudHypervisorVersion is the Linux VMM. v52.0 is the floor: below it, passt networking crashes
 	// a guest with more than one CPU, which is every session we create.
-	CloudHypervisorVersion = "v53.0"
+	CloudHypervisorVersion = "v54.0"
 
 	// VirtiofsdVersion shares a host folder with the guest. Cloud Hypervisor has no file sharing of
 	// its own.

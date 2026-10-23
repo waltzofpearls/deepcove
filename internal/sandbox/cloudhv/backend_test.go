@@ -62,10 +62,13 @@ func TestBootStartsTheHelpersFirst(t *testing.T) {
 	defer func() { _ = m.Stop() }()
 
 	fsArgs := readArgs(t, dir, "vfsd")
-	for _, want := range []string{"--shared-dir /work", "--tag dcshare0", "--sandbox none"} {
+	for _, want := range []string{"--shared-dir /work", "--tag dcshare0"} {
 		if !strings.Contains(fsArgs, want) {
 			t.Errorf("virtiofsd was not told %q: %s", want, fsArgs)
 		}
+	}
+	if strings.Contains(fsArgs, "--sandbox") {
+		t.Errorf("virtiofsd must keep its own sandbox: %s", fsArgs)
 	}
 	if netArgs := readArgs(t, dir, "passt"); !strings.Contains(netArgs, "--vhost-user") {
 		t.Errorf("passt was not put in vhost-user mode: %s", netArgs)

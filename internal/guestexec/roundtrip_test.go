@@ -19,8 +19,11 @@ import (
 func startPair(t *testing.T, req ExecRequest) *Client {
 	t.Helper()
 	hostConn, guestConn := net.Pipe()
-	served := make(chan error, 1)
-	go func() { served <- Serve(guestConn) }()
+	served := make(chan struct{})
+	go func() {
+		_ = Serve(guestConn)
+		close(served)
+	}()
 
 	client, err := Start(hostConn, req)
 	if err != nil {
@@ -238,8 +241,11 @@ func TestWaitReportsConnectionLoss(t *testing.T) {
 // and orphans would accumulate for the life of the session.
 func TestHostHangupKillsTheCommand(t *testing.T) {
 	hostConn, guestConn := net.Pipe()
-	served := make(chan error, 1)
-	go func() { served <- Serve(guestConn) }()
+	served := make(chan struct{})
+	go func() {
+		_ = Serve(guestConn)
+		close(served)
+	}()
 
 	client, err := Start(hostConn, ExecRequest{Argv: []string{"/bin/sh", "-c", "sleep 30"}})
 	if err != nil {
@@ -315,12 +321,12 @@ func TestClient_KeepsReadingWhenAStreamIsNotRead(t *testing.T) {
 // A reader that stops must not stop the host reading the guest for long: the exec is cut off.
 func TestClient_CutsOffOutputPastTheLimit(t *testing.T) {
 	hostConn, guestConn := net.Pipe()
-	guestErr := make(chan error, 1)
+	guestStopped := make(chan struct{})
 	go func() {
 		_, _ = ReadRequest(guestConn)
 		for {
 			if err := WriteFrame(guestConn, FrameStdout, make([]byte, 64)); err != nil {
-				guestErr <- err
+				close(guestStopped)
 				return
 			}
 		}
@@ -335,7 +341,7 @@ func TestClient_CutsOffOutputPastTheLimit(t *testing.T) {
 		t.Errorf("Wait error = %v, want the cut off", err)
 	}
 	select {
-	case <-guestErr:
+	case <-guestStopped:
 	case <-time.After(2 * time.Second):
 		t.Error("the guest is still writing into a connection nobody reads")
 	}
