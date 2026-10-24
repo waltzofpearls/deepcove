@@ -28,7 +28,7 @@ type SessionRepository interface {
 
 	// List returns sessions owned by the given owner, ordered by
 	// last_activity_at DESC. When includeAll is false, only running
-	// sessions are returned (the default `session ps` view).
+	// sessions are returned (the default `session list` view).
 	List(ctx context.Context, owner string, includeAll bool) ([]*Session, error)
 
 	// MarkRunning sets status=running and bumps both updated_at and

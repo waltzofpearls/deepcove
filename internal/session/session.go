@@ -17,7 +17,7 @@ import (
 // Status enumerates the lifecycle states tracked in the sessions
 // table. The state machine is small on purpose: created → running →
 // stopped, with destroy removing the row outright. Failures
-// transition to "errored" so they're visible in `session ps`.
+// transition to "errored" so they're visible in `session list`.
 type Status string
 
 const (
@@ -122,7 +122,7 @@ type SharedFolderRequest struct {
 }
 
 // ListFilter narrows GET /api/sessions. Today only the "all" toggle matters: by default we hide
-// stopped/errored sessions, so `session ps` lists only running ones unless -a.
+// stopped/errored sessions, so `session list` lists only running ones unless -a.
 type ListFilter struct {
 	IncludeAll bool
 }

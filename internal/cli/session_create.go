@@ -12,7 +12,7 @@ import (
 
 // cmdSessionCreate handles `deepcove session <agent>` with optional --name and repeatable --share
 // flags. Creates a session on the local background service via the API, printing the id + name.
-// Attaching is its own command, `deepcove session attach`.
+// Connecting is its own command, `deepcove session connect`.
 //
 // If --name is omitted, the service auto-generates one in the form "<agent>-<adjective>_<scientist>".
 //
