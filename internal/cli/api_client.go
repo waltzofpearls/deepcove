@@ -73,8 +73,8 @@ func (c *apiClient) Create(ctx context.Context, req session.CreateRequest) (*ses
 }
 
 func (c *apiClient) List(ctx context.Context, includeAll bool) ([]*session.Session, error) {
-	// The CLI is a single-machine tool, so it lists this node's sessions (a bare array). The
-	// aggregated /api/sessions (cross-node, enveloped) is the browser dashboard's endpoint.
+	// Only this node's sessions, for the commands that act on this machine alone, like stopping
+	// them before an upgrade.
 	url := c.baseURL + "/api/sessions/local"
 	if includeAll {
 		url += "?all=true"
@@ -97,6 +97,33 @@ func (c *apiClient) List(ctx context.Context, includeAll bool) ([]*session.Sessi
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out, nil
+}
+
+// ListEveryNode is the sessions on all your nodes, each tagged with the node hosting it, plus the
+// nodes that did not answer in time.
+func (c *apiClient) ListEveryNode(ctx context.Context, includeAll bool) (*session.SessionListResponse, error) {
+	url := c.baseURL + "/api/sessions"
+	if includeAll {
+		url += "?all=true"
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode/100 != 2 {
+		return nil, readAPIError(resp)
+	}
+	var out session.SessionListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
 }
 
 func (c *apiClient) Stop(ctx context.Context, id string) error {

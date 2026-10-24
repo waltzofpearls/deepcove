@@ -14,19 +14,19 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// cmdSessionAttach handles `deepcove session attach <id-or-name>`. It dials the local service's
+// cmdSessionConnect handles `deepcove session connect <id-or-name>`. It dials the local service's
 // WebSocket attach endpoint (preferring the Unix socket), puts the terminal into raw mode, and
 // bridges stdin/stdout with the tmux session inside the sandbox. Terminal-size changes propagate
 // as JSON resize control frames via resizeNotify: SIGWINCH on Unix, polling on Windows (no SIGWINCH).
-func cmdSessionAttach(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("session attach", flag.ContinueOnError)
+func cmdSessionConnect(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("session connect", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	rest := fs.Args()
 	if len(rest) != 1 {
-		return fmt.Errorf("usage: deepcove session attach <id-or-name>")
+		return fmt.Errorf("usage: deepcove session connect <id-or-name>")
 	}
 	target := rest[0]
 
@@ -47,7 +47,7 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 	// stdin must be a TTY for any of this to make sense.
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("`session attach` requires a terminal on stdin")
+		return fmt.Errorf("`session connect` requires a terminal on stdin")
 	}
 
 	// Prefer the local control socket, falling back to TCP. The "unix" host is a placeholder,
@@ -122,15 +122,15 @@ func cmdSessionAttach(ctx context.Context, args []string) error {
 	return nil
 }
 
-// resolveSession looks up a session by id prefix or name. We list all sessions and match; fine for
-// personal-scale node counts, and avoids needing a dedicated lookup endpoint.
+// resolveSession looks up a session on any of your nodes by id prefix or name. We list all sessions and
+// match; fine for personal-scale node counts, and avoids needing a dedicated lookup endpoint.
 func resolveSession(ctx context.Context, client *apiClient, target string) (*session.Session, error) {
-	all, err := client.List(ctx, true /* includeAll */)
+	listed, err := client.ListEveryNode(ctx, true /* includeAll */)
 	if err != nil {
 		return nil, err
 	}
 	var matches []*session.Session
-	for _, s := range all {
+	for _, s := range listed.Sessions {
 		if s.ID == target || s.Name == target {
 			return s, nil
 		}
