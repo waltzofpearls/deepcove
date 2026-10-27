@@ -27,11 +27,12 @@
 
 # The UI is embedded in the binary, so it is built here rather than on the host.
 FROM node:24-bookworm AS ui-builder
+ARG VERSION=dev
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
 COPY ui/ ./
-RUN npm run build
+RUN DEEPCOVE_VERSION=${VERSION} npm run build
 
 FROM golang:1.27-bookworm AS go-builder
 ARG VERSION=dev

@@ -86,7 +86,7 @@ func TestGossipValuesSurviveAReload(t *testing.T) {
 	}
 }
 
-func TestKnownGossipValuesStampsOwnTopics(t *testing.T) {
+func TestKnownGossipValuesStampsThisNodesTopics(t *testing.T) {
 	m := &Manager{}
 	m.RegisterGossipTopic("hosts", func() (string, bool) { return "s-1", true })
 	m.mergeGossipValue("hosts", "peer", "s-9", time.Now().Add(-time.Hour))

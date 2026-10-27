@@ -173,7 +173,7 @@ func cmdStart(ctx context.Context, args []string) error {
 		return fmt.Errorf("ui: %w", err)
 	}
 
-	connectMgr = connect.NewManager(ctx, cfg.DataDir, sqlDB, mux, logger)
+	connectMgr = connect.NewManager(ctx, cfg.DataDir, Version, sqlDB, mux, logger)
 	connectMgr.AttachRoutes(mux)
 	// The connect manager owns the tsnet node, so it's also the cross-node source for aggregated
 	// session listing (fan-out to peers over the tailnet). No-op on a single node.
