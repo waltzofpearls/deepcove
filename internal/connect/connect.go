@@ -44,6 +44,7 @@ type Manager struct {
 	stateDir    string
 	enabledFile string
 	hostname    string
+	version     string       // the deepcove release this node runs, gossiped so other nodes can show it
 	handler     http.Handler // app mux, served (owner-gated) on the tailnet listeners
 
 	gossipTopicsMu sync.RWMutex
@@ -76,7 +77,7 @@ type Manager struct {
 	profilePicture *profilePicture
 }
 
-func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Handler, logger *slog.Logger) *Manager {
+func NewManager(ctx context.Context, dataDir, version string, db *sql.DB, handler http.Handler, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -87,9 +88,13 @@ func NewManager(ctx context.Context, dataDir string, db *sql.DB, handler http.Ha
 		stateDir:       filepath.Join(dataDir, "tailnet"),
 		enabledFile:    filepath.Join(dataDir, "tailnet.enabled"),
 		hostname:       defaultHostname(),
+		version:        version,
 		handler:        handler,
 		profilePicture: newProfilePicture(),
 	}
+	m.RegisterGossipTopic(GossipTopicVersion, func() (string, bool) {
+		return m.version, true
+	})
 	if db != nil {
 		if owner, err := loadOwner(db); err != nil {
 			logger.Warn("connect: load persisted node owner", "err", err)
@@ -508,7 +513,21 @@ func (m *Manager) Nodes() []tailnet.NodeInfo {
 }
 
 func (m *Manager) handleNodes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, m.Nodes())
+	gossipedVersions := m.GossipValues(r.Context(), GossipTopicVersion)
+	writeJSON(w, http.StatusOK, withVersions(m.Nodes(), gossipedVersions, m.version))
+}
+
+// withVersions fills in each node's version from what it gossiped. This node's comes straight from the
+// build, which also covers a node that is not on the tailnet yet and has no id to look up.
+func withVersions(nodes []tailnet.NodeInfo, versions map[string]string, thisNodeVersion string) []tailnet.NodeInfo {
+	for index, node := range nodes {
+		if node.Self {
+			nodes[index].Version = thisNodeVersion
+		} else {
+			nodes[index].Version = versions[node.StableNodeID]
+		}
+	}
+	return nodes
 }
 
 // WebNodes lists the user's in-browser web nodes on the tailnet (for the Nodes page). Empty until the

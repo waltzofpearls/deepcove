@@ -14,6 +14,9 @@ import (
 // ask.
 const gossipMinInterval = 5 * time.Second
 
+// GossipTopicVersion is the topic each node publishes its deepcove release under.
+const GossipTopicVersion = "version"
+
 // GossipTopicValue is what one node last said about one topic.
 type GossipTopicValue struct {
 	Value  string    `json:"value"`
@@ -47,7 +50,7 @@ func (m *Manager) GossipValues(ctx context.Context, topic string) map[string]str
 	}
 	m.gossipValuesMu.RUnlock()
 	if self := m.Self().StableNodeID; self != "" {
-		if v, answered := m.ownGossipValue(topic); answered {
+		if v, answered := m.thisNodeGossipValue(topic); answered {
 			out[self] = v
 		}
 	}
@@ -92,9 +95,9 @@ func (m *Manager) gossipCacheLen() int {
 	return len(m.gossipValues)
 }
 
-// ownGossipValue reads this node's own value for a topic. False means nothing registered it, or it
+// thisNodeGossipValue reads this node's value for a topic. False means nothing registered it, or it
 // could not answer.
-func (m *Manager) ownGossipValue(topic string) (value string, answered bool) {
+func (m *Manager) thisNodeGossipValue(topic string) (value string, answered bool) {
 	m.gossipTopicsMu.RLock()
 	current := m.gossipTopics[topic]
 	m.gossipTopicsMu.RUnlock()
@@ -131,7 +134,7 @@ func (m *Manager) knownGossipValues() map[string]map[string]GossipTopicValue {
 
 	now := time.Now()
 	for _, topic := range topics {
-		v, answered := m.ownGossipValue(topic)
+		v, answered := m.thisNodeGossipValue(topic)
 		if !answered {
 			continue
 		}

@@ -34,7 +34,7 @@ ui/node_modules/.package-lock.json: ui/package-lock.json
 
 .PHONY: ui-build
 ui-build: ui/node_modules/.package-lock.json ## Build the SvelteKit UI into ui/build/
-	cd ui && npm run build
+	cd ui && DEEPCOVE_VERSION=$(VERSION) npm run build
 
 # A placeholder so the //go:embed target exists. Only lint and test use it; every build target builds
 # the real UI.

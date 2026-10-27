@@ -189,6 +189,8 @@ export interface NodeInfo {
   os?: string;
   online: boolean;
   self: boolean;
+  // The deepcove release the node last said it runs. Missing until it has said.
+  version?: string;
 }
 export interface ConnectStatus {
   phase: 'stopped' | 'starting' | 'needs_login' | 'running';

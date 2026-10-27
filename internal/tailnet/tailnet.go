@@ -68,6 +68,8 @@ type NodeInfo struct {
 	OS           string `json:"os,omitempty"`
 	Online       bool   `json:"online"`
 	Self         bool   `json:"self"`
+	// Version is the deepcove release the node last said it runs. Empty until it has said.
+	Version string `json:"version,omitempty"`
 }
 
 // Reachability is queried live, because it can change while running (e.g. the

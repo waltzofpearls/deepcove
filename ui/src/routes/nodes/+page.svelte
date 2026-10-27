@@ -5,6 +5,7 @@
   import { discoveryRequired } from '$lib/api/transport';
   import { tailnetAuth, webNodeInfo, wasmHostname, type WebNodeInfo } from '$lib/api/wasm';
   import { machineName } from '$lib/util/tailnet';
+  import { isBehind } from '$lib/util/version';
   import { nodeHost } from '$lib/api/sessions';
   import { runtimeSetupOffered, runtimeSummary } from '$lib/util/runtime';
   import { discovery } from '$lib/stores/discovery.svelte';
@@ -109,6 +110,29 @@
     };
   });
 
+  // Each machine's version. Connected mode gets it with the list. Dashboard mode finds machines in the
+  // in-browser netmap, which has no versions, so it asks the primary node, which hears them by gossip.
+  let gossipedVersions = $state<Record<string, string>>({});
+  $effect(() => {
+    void nodeIDs;
+    void runtimeEpoch;
+    if (!discoveryRequired()) return;
+    const ac = new AbortController();
+    api
+      .nodes(ac.signal)
+      .then((listed) => {
+        gossipedVersions = Object.fromEntries(
+          listed.flatMap((node) => (node.version ? [[node.stable_node_id, node.version]] : [])),
+        );
+      })
+      .catch(() => {});
+    return () => ac.abort();
+  });
+
+  function versionOf(node: NodeInfo): string | undefined {
+    return node.version ?? gossipedVersions[node.stable_node_id];
+  }
+
   // Sessions come from the aggregated list, which already tags each one with the machine hosting it.
   $effect(() => sessions.subscribe());
   const sessionCounts = $derived.by(() => {
@@ -131,6 +155,8 @@
     if (count !== undefined) parts.push(`${count} ${count === 1 ? 'session' : 'sessions'}`);
     const summary = runtimeSummary(runtimeInfo[node.stable_node_id]);
     if (summary) parts.push(summary);
+    const version = versionOf(node);
+    if (version) parts.push(version);
     return parts.join(' \u00b7 ');
   }
 
@@ -213,6 +239,7 @@
       online: boolean;
       detail?: string;
       needsSetup?: boolean;
+      behind?: boolean;
       href?: string;
     })}
       <li>
@@ -240,6 +267,7 @@
       online: boolean;
       detail?: string;
       needsSetup?: boolean;
+      behind?: boolean;
     })}
       {#if opts.kind === 'session'}
         <Server class="size-5 shrink-0 text-muted-foreground" />
@@ -276,6 +304,13 @@
               needs setup
             </span>
           {/if}
+          {#if opts.behind}
+            <span
+              class="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-700 ring-1 ring-inset ring-amber-600/25 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-500/30"
+            >
+              behind
+            </span>
+          {/if}
         </div>
         {#if opts.address}
           <div class="truncate font-mono text-xs text-muted-foreground">{opts.address}</div>
@@ -310,6 +345,7 @@
             online: node.online,
             detail: detailLine(node),
             needsSetup: runtimeSetupOffered(runtimeInfo[node.stable_node_id]),
+            behind: isBehind(versionOf(node) ?? '', __DEEPCOVE_VERSION__),
             href: `/nodes/${node.stable_node_id}`,
           })}
         {/each}

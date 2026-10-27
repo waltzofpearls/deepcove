@@ -1,7 +1,6 @@
 <script lang="ts">
   import { getContext } from 'svelte';
   import { page } from '$app/state';
-  import { api } from '$lib/api/client';
   import { cn } from '$lib/utils';
   import { sessions } from '$lib/stores/sessions.svelte';
   import { NEW_SESSION_CTX } from '$lib/context';
@@ -13,7 +12,7 @@
     TooltipTrigger,
   } from '$lib/components/ui/tooltip';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
-  import LogoIcon from './LogoIcon.svelte';
+  import NodeVersions from './NodeVersions.svelte';
   import LayoutGrid from '@lucide/svelte/icons/layout-grid';
   import Server from '@lucide/svelte/icons/server';
   import Plus from '@lucide/svelte/icons/plus';
@@ -26,20 +25,6 @@
   // static aside (desktop) or a Sheet drawer (mobile). The `class` prop is merged via cn() so each
   // call site can supply its own width / border / visibility rules without forking the component.
   let { class: className = '' }: { class?: string } = $props();
-
-  let version = $state<string>('');
-  $effect(() => {
-    let cancelled = false;
-    api
-      .health()
-      .then((h) => {
-        if (!cancelled) version = h.version;
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  });
 
   // Top-level destinations. "Sessions" is NOT one of these: it's a non-link group (below) whose
   // children are the live sessions, since Dashboard already is the sessions canvas. The open-ended
@@ -138,8 +123,5 @@
       </div>
     {/if}
   </nav>
-  <div class="flex items-center gap-1.5 p-3 text-xs text-muted-foreground">
-    <LogoIcon class="size-3.5" />
-    <span class="font-mono">deepcove {version}</span>
-  </div>
+  <NodeVersions />
 </div>
