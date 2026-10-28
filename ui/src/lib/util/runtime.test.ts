@@ -14,7 +14,8 @@ import {
   runtimeLabel,
   runtimeSummary,
   runtimeMissingShort,
-  showsRuntimePicker,
+  runtimeTiles,
+  type RuntimeTile,
 } from './runtime';
 
 describe('runtimeLabel', () => {
@@ -198,16 +199,184 @@ describe('runtimeSummary', () => {
   }
 });
 
-describe('showsRuntimePicker', () => {
-  const cases: { name: string; options: string[]; want: boolean }[] = [
-    { name: 'nothing to pick from', options: [], want: false },
-    { name: 'a lone VM runtime needs no question', options: [RUNTIME_APPLEVF], want: false },
-    { name: 'a lone No sandbox is always shown', options: [RUNTIME_SANDBOXLESS], want: true },
-    { name: 'a real choice', options: [RUNTIME_APPLEVF, RUNTIME_SANDBOXLESS], want: true },
+describe('runtimeTiles', () => {
+  const cases: { name: string; info: RuntimesInfo; want: RuntimeTile[] }[] = [
+    {
+      name: 'a VM and No sandbox, the VM is the default',
+      info: { available: [RUNTIME_APPLEVF, RUNTIME_SANDBOXLESS], default: RUNTIME_APPLEVF },
+      want: [
+        {
+          place: 'session_vm',
+          runtime: RUNTIME_APPLEVF,
+          isDefault: true,
+          needsSetup: false,
+          blocked: '',
+        },
+        {
+          place: 'workspace_vm',
+          runtime: RUNTIME_APPLEVF,
+          isDefault: false,
+          needsSetup: false,
+          blocked: '',
+        },
+        {
+          place: 'no_sandbox',
+          runtime: RUNTIME_SANDBOXLESS,
+          isDefault: false,
+          needsSetup: false,
+          blocked: '',
+        },
+      ],
+    },
+    {
+      name: 'a node told to default to No sandbox keeps that',
+      info: { available: [RUNTIME_CLOUDHV, RUNTIME_SANDBOXLESS], default: RUNTIME_SANDBOXLESS },
+      want: [
+        {
+          place: 'session_vm',
+          runtime: RUNTIME_CLOUDHV,
+          isDefault: false,
+          needsSetup: false,
+          blocked: '',
+        },
+        {
+          place: 'workspace_vm',
+          runtime: RUNTIME_CLOUDHV,
+          isDefault: false,
+          needsSetup: false,
+          blocked: '',
+        },
+        {
+          place: 'no_sandbox',
+          runtime: RUNTIME_SANDBOXLESS,
+          isDefault: true,
+          needsSetup: false,
+          blocked: '',
+        },
+      ],
+    },
+    {
+      name: 'a VM that needs the download is still the default',
+      info: {
+        available: [RUNTIME_SANDBOXLESS],
+        default: '',
+        missing: { [RUNTIME_CLOUDHV]: 'no_kernel' },
+      },
+      want: [
+        {
+          place: 'session_vm',
+          runtime: RUNTIME_CLOUDHV,
+          isDefault: true,
+          needsSetup: true,
+          blocked: '',
+        },
+        {
+          place: 'workspace_vm',
+          runtime: RUNTIME_CLOUDHV,
+          isDefault: false,
+          needsSetup: true,
+          blocked: '',
+        },
+        {
+          place: 'no_sandbox',
+          runtime: RUNTIME_SANDBOXLESS,
+          isDefault: false,
+          needsSetup: false,
+          blocked: '',
+        },
+      ],
+    },
+    {
+      name: 'a VM deepcove cannot set up is blocked with the reason',
+      info: {
+        available: [RUNTIME_SANDBOXLESS],
+        default: '',
+        missing: { [RUNTIME_CLOUDHV]: 'no_kvm' },
+      },
+      want: [
+        {
+          place: 'session_vm',
+          runtime: RUNTIME_CLOUDHV,
+          isDefault: false,
+          needsSetup: false,
+          blocked: runtimeMissingReason('no_kvm'),
+        },
+        {
+          place: 'workspace_vm',
+          runtime: RUNTIME_CLOUDHV,
+          isDefault: false,
+          needsSetup: false,
+          blocked: runtimeMissingReason('no_kvm'),
+        },
+        {
+          place: 'no_sandbox',
+          runtime: RUNTIME_SANDBOXLESS,
+          isDefault: false,
+          needsSetup: false,
+          blocked: '',
+        },
+      ],
+    },
+    {
+      name: 'a VM that stopped answering is blocked with what the node said',
+      info: {
+        available: [RUNTIME_APPLEVF],
+        default: RUNTIME_APPLEVF,
+        unavailable: { [RUNTIME_APPLEVF]: 'not responding' },
+      },
+      want: [
+        {
+          place: 'session_vm',
+          runtime: RUNTIME_APPLEVF,
+          isDefault: true,
+          needsSetup: false,
+          blocked: 'not responding',
+        },
+        {
+          place: 'workspace_vm',
+          runtime: RUNTIME_APPLEVF,
+          isDefault: false,
+          needsSetup: false,
+          blocked: 'not responding',
+        },
+      ],
+    },
+    {
+      name: 'No sandbox without tmux is blocked',
+      info: {
+        available: [RUNTIME_APPLEVF],
+        default: RUNTIME_APPLEVF,
+        missing: { [RUNTIME_SANDBOXLESS]: 'no_tmux' },
+      },
+      want: [
+        {
+          place: 'session_vm',
+          runtime: RUNTIME_APPLEVF,
+          isDefault: true,
+          needsSetup: false,
+          blocked: '',
+        },
+        {
+          place: 'workspace_vm',
+          runtime: RUNTIME_APPLEVF,
+          isDefault: false,
+          needsSetup: false,
+          blocked: '',
+        },
+        {
+          place: 'no_sandbox',
+          runtime: RUNTIME_SANDBOXLESS,
+          isDefault: false,
+          needsSetup: false,
+          blocked: runtimeMissingReason('no_tmux'),
+        },
+      ],
+    },
+    { name: 'nothing to run on', info: { available: [], default: '' }, want: [] },
   ];
   for (const tc of cases) {
     it(tc.name, () => {
-      expect(showsRuntimePicker(tc.options)).toBe(tc.want);
+      expect(runtimeTiles(tc.info)).toEqual(tc.want);
     });
   }
 });

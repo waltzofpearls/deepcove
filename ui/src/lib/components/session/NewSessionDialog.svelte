@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { cn } from '$lib/utils';
   import { goto } from '$app/navigation';
   import {
     Dialog,
@@ -20,10 +21,11 @@
   import { preflight } from '$lib/stores/preflight.svelte';
   import { onlineHostNodes, defaultNodeId, nodeHost } from '$lib/api/sessions';
   import HostPathField from './HostPathField.svelte';
-  import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import VMSizePicker from './VMSizePicker.svelte';
   import LoginModePicker from './LoginModePicker.svelte';
-  import RuntimeSetupButton from '$lib/components/RuntimeSetupButton.svelte';
+  import NodeStep from './NodeStep.svelte';
+  import RuntimeStep from './RuntimeStep.svelte';
+  import WorkspaceSetupStep from './WorkspaceSetupStep.svelte';
   import { loginChoices, type LoginPlace } from '$lib/util/loginMode';
   import { shellQuote } from '$lib/util/shell';
   import { looksLikePath, pathInsideFolder, sessionFolderIn } from '$lib/util/path';
@@ -38,13 +40,11 @@
     WorkspaceVM,
   } from '$lib/api/types';
   import {
-    bootsVMs,
-    runtimeHint,
-    runtimeLabel,
     missingReasons,
-    runtimeSetUpByDeepcove,
-    showsRuntimePicker,
+    runtimePlaceLabel,
+    runtimeTiles,
     RUNTIME_SANDBOXLESS,
+    type RuntimePlace,
   } from '$lib/util/runtime';
   import { DEFAULT_VM_SIZE, sessionVMSizeCards } from '$lib/util/vmSize';
   import Copy from '@lucide/svelte/icons/copy';
@@ -52,9 +52,23 @@
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import Download from '@lucide/svelte/icons/download';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
+
+  // The dialog walks through these in order. Details holds the rest of the form.
+  type Step = 'node' | 'runtime' | 'workspace' | 'details';
+  // On a phone the buttons stay pinned to the bottom while the form scrolls under them. The X closes,
+  // so Cancel is dropped there.
+  const footerClass =
+    'flex items-center justify-end gap-2 max-sm:sticky max-sm:bottom-0 max-sm:-mx-4 max-sm:mt-auto max-sm:border-t max-sm:border-border max-sm:bg-popover max-sm:px-4 max-sm:py-3';
+  const stepLabels: Record<Step, string> = {
+    node: 'Node',
+    runtime: 'Runtime',
+    workspace: 'Workspace VM',
+    details: 'Details',
+  };
 
   // read_only is required here so the checkbox binds to a boolean.
   type FolderRow = Required<SharedFolder>;
@@ -86,6 +100,31 @@
     if (!node || node.self) return undefined;
     return nodeHost(node);
   });
+  // The node the session lands on, by name, for the runtime step and the summary above the details.
+  const targetNodeName = $derived(
+    hostNodes.find((node) => node.stable_node_id === nodeId)?.hostname ??
+      soleRemoteNode?.hostname ??
+      'this node',
+  );
+  // With one node there is nothing to pick, so the dialog starts at the runtime. The workspace VM step
+  // shows only until the node has one.
+  const steps = $derived.by(() => {
+    const list: Step[] = hostNodes.length > 1 ? ['node', 'runtime'] : ['runtime'];
+    if (needsWorkspaceVM) list.push('workspace');
+    list.push('details');
+    return list;
+  });
+  // Empty means the first step. That way the node step still comes first when the nodes arrive after
+  // the dialog opens.
+  let stepChoice = $state<Step | ''>('');
+  const step = $derived(stepChoice && steps.includes(stepChoice) ? stepChoice : steps[0]);
+  const defaultNode = $derived(defaultNodeId(hostNodes));
+  function stepForward() {
+    stepChoice = steps[steps.indexOf(step) + 1] ?? step;
+  }
+  function stepBack() {
+    stepChoice = steps[steps.indexOf(step) - 1] ?? step;
+  }
   // A stable key for that host. selectedHost is a fresh object on every recompute, so an effect that
   // depends on it re-runs forever; the dns name changes only when the choice does.
   const selectedHostKey = $derived(selectedHost?.dns_name ?? '');
@@ -194,13 +233,18 @@
       ac.abort();
     };
   });
+  // Every visit starts at the first step.
+  $effect(() => {
+    void open;
+    stepChoice = '';
+  });
   // A pick belongs to the node it was made for, and to this visit: reopening or switching nodes starts
   // from that node's own default, so No sandbox is never carried over unseen. Not on a re-read of the
   // same node, such as the one after a setup, which would drop the VM you just picked.
   $effect(() => {
     void open;
     void selectedHostKey;
-    runtimeChoice = '';
+    pickedPlace = '';
     // A download started for the last node is that node's. Its button is gone, so nothing else clears it.
     downloadingVM = false;
   });
@@ -216,29 +260,16 @@
   const runtimes = $derived(
     waitingForNodeRuntimes || nodeRuntimesError ? null : (nodeRuntimes ?? preflight.runtimes),
   );
-  const runtimeOptions = $derived(runtimes?.available ?? []);
-  // A VM runtime this node can have after a one-time download. It is listed under Isolation so the setup
-  // runs right here, and it is the pick unless you choose something else.
-  const vmToSetUp = $derived.by(() => {
-    if (runtimeOptions.some(bootsVMs)) return null;
-    const missing = Object.entries(runtimes?.missing ?? {});
-    return (
-      missing.find(([name, code]) => bootsVMs(name) && runtimeSetUpByDeepcove(code))?.[0] ?? null
-    );
-  });
-  // No sandbox is still offered when it can't run yet, greyed out with what it needs.
-  const sandboxlessNeedsTmux = $derived(runtimes?.missing?.[RUNTIME_SANDBOXLESS] === 'no_tmux');
-  const showRuntimePicker = $derived(
-    showsRuntimePicker(runtimeOptions) || sandboxlessNeedsTmux || vmToSetUp !== null,
-  );
+  const tiles = $derived(runtimes ? runtimeTiles(runtimes) : []);
   // Only the user's explicit pick is stored. Resolving it against the node happens in a $derived
   // below, NOT in an $effect: an effect that both reads and writes the same state re-triggers itself,
   // which in Svelte 5 runs until effect_update_depth_exceeded and hangs the page.
-  let runtimeChoice = $state('');
-  // Picked when you pick it, or when the node has no default of its own. A node told to default to No
-  // sandbox keeps that.
-  const settingUpVM = $derived(
-    vmToSetUp !== null && (runtimeChoice === vmToSetUp || (!runtimeChoice && !runtimes?.default)),
+  let pickedPlace = $state<RuntimePlace | ''>('');
+  // The tile you picked, or the node's default until you pick. With no usable default, nothing is
+  // picked until you choose.
+  const pickedTile = $derived(
+    tiles.find((tile) => tile.place === pickedPlace) ??
+      tiles.find((tile) => tile.isDefault && !tile.blocked),
   );
   // True while the download runs, so its progress gets the whole row.
   let downloadingVM = $state(false);
@@ -248,22 +279,14 @@
     if (selectedHostKey) nodeRuntimesAttempt++;
     else return preflight.refresh();
   }
-  // What the create will actually use. A pick the target node does not offer falls back to that node's
-  // default, which can be empty ("Choose one"), so switching nodes can never leave an unavailable runtime
-  // selected. Image checks and pulls target this too, since each runtime keeps its own image store.
-  const effectiveRuntime = $derived.by(() => {
-    // The VM on screen is not set up yet, so nothing can be created; never the default behind it.
-    if (settingUpVM) return '';
-    if (runtimeChoice && runtimeOptions.includes(runtimeChoice)) return runtimeChoice;
-    return runtimes?.default ?? '';
-  });
+  // What the create will actually use. Image checks and pulls target this too, since each runtime keeps
+  // its own image store.
+  const effectiveRuntime = $derived(pickedTile && !pickedTile.needsSetup ? pickedTile.runtime : '');
 
   // Nothing to shape the form around yet: the node is still answering or never did, has nothing to run
   // on, or is waiting for you to pick. Until then the runtime-specific sections stay hidden rather than
   // guess.
   const runtimeKnown = $derived(effectiveRuntime !== '');
-  // Workspace and session VMs are VM concepts. Anywhere else there is no machine to choose.
-  const onVMRuntime = $derived(bootsVMs(effectiveRuntime));
 
   // No sandbox means no image and no size caps, and the folder is a real folder on that machine rather
   // than something shared into a guest.
@@ -284,35 +307,25 @@
   const runtimeBlocked = $derived.by(() => {
     if (nodeRuntimesError) return nodeRuntimesError;
     if (!runtimes) return null;
-    if (runtimeOptions.length > 0) return runtimes.unavailable?.[effectiveRuntime] ?? null;
-    // The download under Isolation is the way forward, so there is nothing to block on.
-    if (vmToSetUp) return null;
+    if (pickedTile?.place === 'workspace_vm' && workspaceVMError) return workspaceVMError;
+    if (tiles.length > 0) return pickedTile?.blocked || null;
     const where = (selectedHost ?? soleRemoteNode)?.hostname ?? 'This machine';
     return [`${where} has nothing to run sessions on yet.`, ...missingReasons(runtimes)].join(' ');
   });
-  // Another option could host the session right now.
-  const otherIsolationUsable = $derived(
-    runtimeOptions.some((name) => name !== effectiveRuntime && !runtimes?.unavailable?.[name]),
+  // Another tile could host the session right now.
+  const otherRuntimeUsable = $derived(
+    tiles.some((tile) => tile.place !== pickedTile?.place && !tile.blocked && !tile.needsSetup),
   );
 
-  // Where the session runs: this node's workspace VM, or one of its own. The workspace VM is the default
-  // once a workspace VM exists, since that is the cheap answer when you already have one.
-  // The workspace VM is the default answer, including when there is none yet: this dialog then
-  // creates it, which is the flow most people want the first time.
-  let placement = $state<'workspace' | 'private'>('workspace');
   let workspaceVM = $state<WorkspaceVM | null>(null);
-  let workspaceHostRoot = $state('');
-  let workspaceSize = $state(DEFAULT_VM_SIZE);
+  // False until the node says whether it has a workspace VM. Without the answer, the dialog can't tell
+  // whether to set one up.
+  let workspaceVMChecked = $state(false);
+  let workspaceVMError = $state<string | null>(null);
   let workDir = $state('');
-  // Only on a runtime that boots VMs. The Machine picker is hidden otherwise, so a node without one
-  // would keep the default and ask for a workspace VM it cannot build.
-  const onWorkspace = $derived(placement === 'workspace' && onVMRuntime);
-  // No machine yet means this dialog creates it too, so it asks for the folder and size first.
-  const creatingWorkspaceVM = $derived(onWorkspace && workspaceVM === null);
-  // The folder the workspace VM shares: the saved one, or the one this dialog is about to create it with.
-  const workspaceSharedRoot = $derived(
-    creatingWorkspaceVM ? workspaceHostRoot.trim() : (workspaceVM?.host_root ?? ''),
-  );
+  const onWorkspace = $derived(pickedTile?.place === 'workspace_vm' && runtimeKnown);
+  const needsWorkspaceVM = $derived(onWorkspace && workspaceVMChecked && workspaceVM === null);
+  const workspaceSharedRoot = $derived(workspaceVM?.host_root ?? '');
   // The session's folder on the workspace VM, as a path on this machine. It follows the name until you
   // change it, so the field always shows the folder the session gets.
   let workspaceFolder = $state('');
@@ -334,6 +347,12 @@
     if (!onWorkspace || !looksLikePath(workspaceSharedRoot)) return '';
     const inside = pathInsideFolder(workspaceSharedRoot, workspaceFolder);
     return inside === '' ? '.' : inside;
+  });
+  // Where the session's folder shows up in the workspace VM. It follows the folder on the node.
+  const workspaceGuestFolder = $derived.by(() => {
+    if (!workspaceVM || !workspaceFolderName) return '';
+    if (workspaceFolderName === '.') return workspaceVM.guest_root;
+    return `${workspaceVM.guest_root.replace(/\/$/, '')}/${workspaceFolderName}`;
   });
   // Whether the session's folder is already there. Null until the node answers, or when it can't say.
   let workspaceFolderExists = $state<boolean | null>(null);
@@ -362,9 +381,7 @@
   });
   // Which controls this session shows. If a control is hidden, it cannot stop you from creating the
   // session, so the Create button checks these too.
-  const showsImageControls = $derived(
-    runtimeKnown && (!onWorkspace || creatingWorkspaceVM) && !onSandboxless,
-  );
+  const showsImageControls = $derived(runtimeKnown && !onWorkspace && !onSandboxless);
   const showsSizeControls = $derived(runtimeKnown && !onWorkspace && !onSandboxless);
 
   // Reads the workspace VM when the dialog opens. Null is normal rather than an error: this node
@@ -377,10 +394,20 @@
     const host = untrack(() => selectedHost);
     const ac = new AbortController();
     workspaceVM = null;
+    workspaceVMChecked = false;
+    workspaceVMError = null;
     api
       .workspaceVM(host, ac.signal)
-      .then((vm) => (workspaceVM = vm))
-      .catch(() => {});
+      .then((vm) => {
+        if (ac.signal.aborted) return;
+        workspaceVM = vm;
+        workspaceVMChecked = true;
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) {
+          workspaceVMError = `Couldn't check whether ${host?.hostname ?? 'this node'} has a workspace VM.`;
+        }
+      });
     return () => ac.abort();
   });
 
@@ -400,7 +427,6 @@
       ownFolder = false;
       workDir = '';
       workspaceFolder = '';
-      workspaceHostRoot = '';
     });
     let cancelled = false;
     api
@@ -464,8 +490,7 @@
       if (workspaceFolderName) parts.push('--work-dir', shellQuote(workspaceFolderName));
       return parts.join(' ');
     }
-    // Matches buildPayload, which sends a runtime only while the picker is on screen.
-    if (showRuntimePicker && effectiveRuntime) parts.push('--runtime', effectiveRuntime);
+    if (effectiveRuntime) parts.push('--runtime', effectiveRuntime);
     if (onSandboxless) {
       // No image, no setup script and no shared folders on this runtime, so the folder is all that is left.
       if (ownFolder && workDir.trim()) parts.push('--work-dir', shellQuote(workDir.trim()));
@@ -495,29 +520,37 @@
     return parts.join(' ');
   });
 
-  // A fresh folder row, pre-filled at the host home dir (with trailing slash) when known.
-  function newFolderRow(): FolderRow {
+  // A fresh folder row, pre-filled at the host home dir (with trailing slash) when known. Only the work
+  // folder starts at /workspace, since a second folder there would collide with it.
+  function newFolderRow(guestPath: string): FolderRow {
     return {
       host_path: homeDir ? homeDir + '/' : '',
-      guest_path: '/workspace',
+      guest_path: guestPath,
       read_only: false,
     };
   }
 
   function addFolder() {
-    folders = [...folders, newFolderRow()];
+    folders = [...folders, newFolderRow('')];
   }
 
   function removeFolder(i: number) {
     folders = folders.filter((_, idx) => idx !== i);
   }
 
-  // The "Use a folder" header toggle: off clears the rows (the session runs with an
-  // empty /workspace in the guest), on restores one pre-filled row.
-  const useFolder = $derived(folders.length > 0);
-  function toggleFolder() {
-    folders = useFolder ? [] : [newFolderRow()];
-  }
+  // The first row is the work folder, where the agent starts. An empty one means no folder, and then
+  // a more folder would become the work folder, so that is refused.
+  const workFolder = $derived(folders[0]);
+  const moreFoldersWithoutWorkFolder = $derived(
+    !workFolder?.host_path.trim() && folders.slice(1).some((folder) => folder.host_path.trim()),
+  );
+  const workFolderGuestInvalid = $derived(
+    !!workFolder?.host_path.trim() && !looksLikePath(workFolder.guest_path),
+  );
+  // Each more folder needs its own place in the VM. Left empty, the row would be dropped without a word.
+  const moreFolderGuestMissing = $derived(
+    folders.slice(1).some((folder) => folder.host_path.trim() && !looksLikePath(folder.guest_path)),
+  );
 
   // Roll a fresh suggested name (the ↻ button).
   function regenerateName() {
@@ -532,7 +565,7 @@
 
   function resetForm() {
     name = '';
-    folders = [newFolderRow()];
+    folders = [newFolderRow('/workspace')];
     submitError = null;
     submitting = false;
     pulling = false;
@@ -541,7 +574,7 @@
     imagePresent = null;
     customImage = '';
     customSetup = '';
-    runtimeChoice = '';
+    pickedPlace = '';
     ownFolder = false;
     workDir = '';
     workspaceFolder = '';
@@ -549,8 +582,6 @@
     // baseImage / setupScript / imageStrategy get re-seeded by the agent-change $effect.
   }
 
-  // The image the form is asking for, whichever strategy is selected. Shared by a private session's
-  // payload and by the workspace VM it may be creating, since a machine has exactly one image.
   // The LLM proxy is offered only when this node has one.
   let llmProxyUrl = $state('');
   // The picker waits for this, or an LLM proxy default would be sent as the session's own login.
@@ -619,12 +650,6 @@
     );
   });
 
-  function chosenImage(): string | undefined {
-    if (imageStrategy === 'official') return selectedAgent?.sandboxed.official_image;
-    if (imageStrategy === 'custom') return customImage.trim() || undefined;
-    return baseImage || undefined;
-  }
-
   function buildPayload() {
     // A session on the workspace VM takes none of the machine settings: its runtime, size, image and
     // shared folder are already decided.
@@ -662,9 +687,7 @@
       login_mode?: LoginMode;
     } = {
       agent,
-      // Send a runtime only while the picker is on screen, which includes a lone No sandbox; otherwise
-      // let the node pick its default.
-      runtime: showRuntimePicker ? effectiveRuntime || undefined : undefined,
+      runtime: effectiveRuntime || undefined,
       resources: showsSizeControls ? { size: vmSize } : undefined,
       name: name.trim() || undefined,
       login_mode: pickedLogin,
@@ -769,23 +792,7 @@
     submitError = null;
 
     try {
-      // Built before the VM is saved: the server cleans the folder it shares, and the session folder is
-      // read against that folder as you typed it.
       const payload = buildPayload();
-      // The machine has to exist before a session can land on it. Recording it is instant; the VM boots
-      // when this session starts, which the session page already shows.
-      if (creatingWorkspaceVM) {
-        workspaceVM = await api.saveWorkspaceVM(
-          {
-            host_root: workspaceHostRoot.trim(),
-            image: chosenImage(),
-            // The machine is what installs the agent, so a custom setup belongs to it.
-            setup_script: imageStrategy === 'custom' ? customSetup.trim() || undefined : undefined,
-            resources: { size: workspaceSize },
-          },
-          selectedHost,
-        );
-      }
       // Download first if we know it's absent, so the create itself is fast and we can show a real
       // progress bar. The workspace VM already has its image.
       if (!onWorkspace && !onSandboxless && imagePresent === false) await pullCurrentImage();
@@ -821,464 +828,520 @@
 
 <Dialog bind:open>
   <DialogContent
-    class="flex max-h-[90vh] w-[calc(100%-2rem)] max-w-4xl flex-col gap-0 p-0 sm:max-w-4xl"
+    class="flex h-dvh max-h-dvh w-full max-w-full flex-col gap-0 rounded-none p-0 sm:h-auto sm:max-h-[90vh] sm:w-[calc(100%-2rem)] sm:max-w-4xl sm:rounded-xl"
   >
-    <DialogHeader class="border-b border-border px-6 py-4">
-      <DialogTitle>New session</DialogTitle>
-      <DialogDescription>
-        Spin up a coding-agent session on this node. Pick the folder the agent should work in, or
-        run without one.
+    <DialogHeader class="relative border-b border-border py-4 pl-4 pr-12 sm:pl-6">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <DialogTitle>New session</DialogTitle>
+        <span class="text-xs text-muted-foreground sm:hidden">
+          {steps.indexOf(step) + 1} of {steps.length}
+        </span>
+        <ol class="hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
+          {#each steps as stepName, i (stepName)}
+            {@const current = stepName === step}
+            {@const done = steps.indexOf(step) > i}
+            {#if i > 0}
+              <li
+                aria-hidden="true"
+                class={cn('h-px w-5', done || current ? 'bg-primary' : 'bg-border')}
+              ></li>
+            {/if}
+            <li
+              class={cn('flex items-center gap-1.5', current && 'text-foreground')}
+              aria-current={current ? 'step' : undefined}
+            >
+              <span
+                class={cn(
+                  'flex size-[18px] items-center justify-center rounded-full text-[11px] font-bold',
+                  current && 'bg-primary text-primary-foreground',
+                  done && 'bg-primary/20 text-primary',
+                  !current && !done && 'border border-border',
+                )}
+              >
+                {i + 1}
+              </span>
+              {stepLabels[stepName]}
+            </li>
+          {/each}
+        </ol>
+      </div>
+      <div class="absolute inset-x-0 -bottom-px h-0.5 bg-border sm:hidden">
+        <div
+          class="h-full bg-primary transition-[width]"
+          style:width="{((steps.indexOf(step) + 1) / steps.length) * 100}%"
+        ></div>
+      </div>
+      <DialogDescription class="sr-only">
+        Pick how the session runs, then fill in the details.
       </DialogDescription>
     </DialogHeader>
 
-    <div class="flex min-h-0 flex-col gap-5 overflow-y-auto px-6 pb-6 pt-4">
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {#if hostNodes.length > 1}
-          <div class="space-y-2">
-            <Label for="node">Node</Label>
-            <select
-              id="node"
-              bind:value={nodeId}
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+    <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 pt-4 sm:px-6 sm:pb-6">
+      {#if step === 'node'}
+        <NodeStep
+          nodes={hostNodes}
+          picked={nodeId}
+          defaultId={defaultNode}
+          onpick={(stableNodeId) => (nodeId = stableNodeId)}
+        />
+      {:else if step === 'runtime'}
+        {#if waitingForNodeRuntimes}
+          <p class="text-xs text-muted-foreground">
+            Checking what {selectedHost?.hostname ?? 'that machine'} can run…
+          </p>
+        {:else if runtimes === null && !nodeRuntimesError}
+          <p class="text-xs text-muted-foreground">
+            Checking what {soleRemoteNode?.hostname ?? 'this machine'} can run…
+          </p>
+        {/if}
+
+        {#if tiles.length > 0}
+          <RuntimeStep
+            {tiles}
+            picked={pickedTile}
+            onpick={(place) => (pickedPlace = place)}
+            nodeName={targetNodeName}
+            host={selectedHost}
+            onsetupdone={refreshRuntimes}
+            bind:downloading={downloadingVM}
+          />
+        {/if}
+      {:else if step === 'workspace'}
+        <WorkspaceSetupStep
+          host={selectedHost}
+          nodeName={targetNodeName}
+          sizes={runtimes?.workspace_vm_sizes}
+          onback={stepBack}
+          oncreated={(vm) => {
+            workspaceVM = vm;
+            stepChoice = 'details';
+          }}
+        />
+      {:else}
+        {#if pickedTile}
+          <div
+            class="flex items-center gap-2.5 rounded-md border border-border bg-secondary/40 px-3 py-2.5 text-sm"
+          >
+            <span class="min-w-0 flex-1">
+              {runtimePlaceLabel(pickedTile.place)} on {targetNodeName}
+              {#if onWorkspace && workspaceVM}
+                <span class="text-muted-foreground">
+                  · sees {workspaceVM.host_root}
+                  {#if workspaceVM.resources?.size}
+                    · <span class="capitalize">{workspaceVM.resources.size}</span>
+                  {/if}
+                </span>
+              {/if}
+            </span>
+            <button
+              type="button"
+              onclick={() => (stepChoice = steps[0])}
+              class="text-sm text-primary underline-offset-4 hover:underline"
             >
-              {#each hostNodes as node (node.stable_node_id)}
-                <option value={node.stable_node_id}>
-                  {node.hostname}{node.self ? ' (this machine)' : ''}
-                </option>
-              {/each}
-            </select>
-            <p class="text-xs text-muted-foreground">The session lives on the machine you pick.</p>
-          </div>
-        {:else if soleRemoteNode}
-          <div class="space-y-2">
-            <Label>Node</Label>
-            <p class="text-sm">{soleRemoteNode.hostname}</p>
-            <p class="text-xs text-muted-foreground">The session lives on that machine.</p>
+              Change
+            </button>
           </div>
         {/if}
-        {#if showRuntimePicker}
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div class="space-y-2">
-            <Label for="runtime">Isolation</Label>
-            <select
-              id="runtime"
-              aria-describedby="runtime-hint"
-              value={settingUpVM ? vmToSetUp : effectiveRuntime}
-              onchange={(e) => (runtimeChoice = e.currentTarget.value)}
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <!-- The node picks no default when No sandbox is all it has: that has to be your choice. -->
-              {#if !effectiveRuntime && !settingUpVM}
-                <option value="" disabled>Choose one</option>
-              {/if}
-              {#if vmToSetUp}
-                <option value={vmToSetUp}>{runtimeLabel(vmToSetUp)} (needs setup)</option>
-              {/if}
-              {#each runtimeOptions as runtimeName (runtimeName)}
-                <option value={runtimeName}>{runtimeLabel(runtimeName)}</option>
-              {/each}
-              {#if sandboxlessNeedsTmux}
-                <option value={RUNTIME_SANDBOXLESS} disabled>
-                  {runtimeLabel(RUNTIME_SANDBOXLESS)} (needs tmux)
-                </option>
-              {/if}
-            </select>
-            <p id="runtime-hint" class="text-xs text-muted-foreground">
-              {settingUpVM && vmToSetUp
-                ? runtimeHint(vmToSetUp)
-                : effectiveRuntime
-                  ? runtimeHint(effectiveRuntime)
-                  : 'Pick how this session runs.'}
-            </p>
-            {#if sandboxlessNeedsTmux}
+            <Label for="agent">Agent</Label>
+            {#if agentsError}
+              <div class="text-sm text-destructive">{agentsError}</div>
+            {:else}
+              <select
+                id="agent"
+                bind:value={agent}
+                class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {#each agents as a (a.name)}
+                  <option value={a.name}>{a.display_name || a.name}</option>
+                {/each}
+              </select>
+            {/if}
+            {#if installsTheAgent}
               <p class="text-xs text-muted-foreground">
-                No sandbox needs tmux. Install it, then restart deepcove.
+                Not on that machine yet. Creating this session installs it first.
               </p>
             {/if}
-            {#if settingUpVM && vmToSetUp}
-              <!-- The setup button's error drops to a line of its own, so it never squeezes the row. -->
-              <div
-                class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-md border border-border px-3 py-2 [&>p[role=alert]]:mt-0 [&>p[role=alert]]:basis-full"
+          </div>
+          <div class="space-y-2">
+            <Label for="session-name">Name</Label>
+            <div class="flex gap-2">
+              <Input id="session-name" bind:value={name} placeholder="session name" />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                class="shrink-0"
+                aria-label="Generate a new name"
+                onclick={regenerateName}
               >
-                {#if !downloadingVM}
-                  <p class="flex-1 text-xs text-muted-foreground">Needs a one-time download.</p>
-                {/if}
-                <RuntimeSetupButton
-                  runtime={vmToSetUp}
+                <RefreshCw class="size-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {#if onWorkspace}
+          <div class="space-y-2">
+            <Label>Work folder</Label>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-5">
+              <div class="min-w-0 space-y-1 sm:col-span-3">
+                <Label class="text-xs font-normal text-muted-foreground" for="work-dir">
+                  On {targetNodeName}
+                </Label>
+                <HostPathField
+                  id="work-dir"
+                  bind:value={workspaceFolder}
                   host={selectedHost}
-                  ondone={refreshRuntimes}
-                  bind:busy={downloadingVM}
+                  startsEmpty
+                  disabled={!looksLikePath(workspaceSharedRoot)}
                 />
               </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div class="space-y-2">
-          <Label for="session-name">Name</Label>
-          <div class="flex gap-2">
-            <Input id="session-name" bind:value={name} placeholder="session name" />
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              class="shrink-0"
-              aria-label="Generate a new name"
-              onclick={regenerateName}
-            >
-              <RefreshCw class="size-4" />
-            </Button>
-          </div>
-        </div>
-        <div class="space-y-2">
-          <Label for="agent">Agent</Label>
-          {#if agentsError}
-            <div class="text-sm text-destructive">{agentsError}</div>
-          {:else}
-            <select
-              id="agent"
-              bind:value={agent}
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              {#each agents as a (a.name)}
-                <option value={a.name}>{a.display_name || a.name}</option>
-              {/each}
-            </select>
-          {/if}
-          {#if installsTheAgent}
-            <p class="text-xs text-muted-foreground">
-              Not on that machine yet. Creating this session installs it first.
-            </p>
-          {/if}
-        </div>
-      </div>
-
-      {#if waitingForNodeRuntimes}
-        <p class="text-xs text-muted-foreground">
-          Checking what {selectedHost?.hostname ?? 'that machine'} can run…
-        </p>
-      {:else if runtimes === null && !nodeRuntimesError}
-        <p class="text-xs text-muted-foreground">
-          Checking what {soleRemoteNode?.hostname ?? 'this machine'} can run…
-        </p>
-      {/if}
-
-      {#if onVMRuntime}
-        <div class="space-y-2">
-          <Label>Machine</Label>
-          <div class="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
-              class:border-primary={onWorkspace}
-              onclick={() => (placement = 'workspace')}
-            >
-              <span class="font-medium">Workspace VM</span>
-              <span class="mt-0.5 block text-xs text-muted-foreground">
-                One VM your sessions use together, each in its own folder.
-              </span>
-            </button>
-            <button
-              type="button"
-              class="rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent/50"
-              class:border-primary={!onWorkspace}
-              onclick={() => (placement = 'private')}
-            >
-              <span class="font-medium">Session VM</span>
-              <span class="mt-0.5 block text-xs text-muted-foreground">
-                Only this session. You pick the isolation, size and folders.
-              </span>
-            </button>
-          </div>
-        </div>
-      {/if}
-
-      {#if onWorkspace && !creatingWorkspaceVM}
-        <div class="space-y-2">
-          <Label>Folder this VM can see</Label>
-          <p class="font-mono text-xs text-muted-foreground">{workspaceVM?.host_root}</p>
-        </div>
-        <div class="space-y-2">
-          <Label>Image</Label>
-          <p class="font-mono text-xs text-muted-foreground">{workspaceVM?.image}</p>
-          <p class="text-xs text-muted-foreground">
-            The workspace VM's own image. Every session on it runs this one.
-          </p>
-        </div>
-      {/if}
-
-      {#if creatingWorkspaceVM}
-        <div class="space-y-4 rounded-md border border-dashed border-border p-3">
-          <p class="text-sm">
-            You don't have a workspace VM yet. This creates one, and your other sessions can use it
-            too.
-          </p>
-          <WorkspaceVMFields
-            bind:hostRoot={workspaceHostRoot}
-            bind:size={workspaceSize}
-            sizes={runtimes?.workspace_vm_sizes}
-            host={selectedHost}
-          />
-        </div>
-      {/if}
-
-      {#if onWorkspace}
-        <div class="space-y-2">
-          <Label for="work-dir">Session folder</Label>
-          <!-- Filled in from the folder above, so it waits for that one rather than starting at home. -->
-          <HostPathField
-            id="work-dir"
-            bind:value={workspaceFolder}
-            placeholder="Pick the folder above first"
-            host={selectedHost}
-            startsEmpty
-            disabled={!looksLikePath(workspaceSharedRoot)}
-          />
-          {#if workspaceFolderName === null}
-            <p class="text-xs text-destructive">Must be inside {workspaceSharedRoot}.</p>
-          {:else if workspaceFolderExists !== null}
-            <p class="text-xs text-muted-foreground">
-              {workspaceFolderExists ? 'Existing folder' : 'New folder'}
-            </p>
-          {/if}
-        </div>
-      {/if}
-
-      {#if showsSizeControls}
-        <VMSizePicker
-          title="Session VM size"
-          cards={sessionVMSizes}
-          selected={vmSize}
-          onselect={(name) => (pickedVMSize = name)}
-        />
-      {/if}
-
-      {#if showsImageControls}
-        <div class="space-y-2">
-          <Label>Image</Label>
-          <div class="space-y-2 rounded-md border border-border p-3">
-            <label
-              class="flex items-start gap-2.5 text-sm"
-              class:cursor-pointer={selectedAgent?.sandboxed.official_image}
-              class:cursor-not-allowed={!selectedAgent?.sandboxed.official_image}
-              class:opacity-60={!selectedAgent?.sandboxed.official_image}
-            >
-              <input
-                type="radio"
-                bind:group={imageStrategy}
-                value="official"
-                disabled={!selectedAgent?.sandboxed.official_image}
-                class="mt-0.5 size-4 border-input disabled:cursor-not-allowed"
-              />
-              <div class="flex-1">
-                <div class="font-medium">Default deepcove image</div>
-                <div class="text-xs text-muted-foreground">
-                  {#if selectedAgent?.sandboxed.official_image}
-                    Prebuilt and ready, the fastest boot. <code>
-                      {selectedAgent.sandboxed.official_image}
-                    </code>
-                  {:else}
-                    Not yet published for this agent. Use "Run install script at startup" for now.
-                  {/if}
-                </div>
-              </div>
-            </label>
-
-            <label class="flex cursor-pointer items-start gap-2.5 text-sm">
-              <input
-                type="radio"
-                bind:group={imageStrategy}
-                value="custom"
-                class="mt-0.5 size-4 border-input"
-              />
-              <div class="flex-1">
-                <div class="font-medium">Bring your own image</div>
-                <div class="text-xs text-muted-foreground">
-                  Use a custom image. Optionally run extra setup on first boot.
-                </div>
-              </div>
-            </label>
-
-            <label class="flex cursor-pointer items-start gap-2.5 text-sm">
-              <input
-                type="radio"
-                bind:group={imageStrategy}
-                value="install"
-                class="mt-0.5 size-4 border-input"
-              />
-              <div class="flex-1">
-                <div class="font-medium">Run install script at startup</div>
-                <div class="text-xs text-muted-foreground">
-                  Start from a base image and install the agent on first boot (~15s).
-                </div>
-              </div>
-            </label>
-          </div>
-
-          {#if imageStrategy === 'install'}
-            <div class="space-y-3 rounded-md border border-border p-3">
-              <div class="space-y-1.5">
-                <Label class="text-xs" for="base-image">Base image</Label>
-                <Input id="base-image" bind:value={baseImage} placeholder="alpine:3.20" />
-              </div>
-              <div class="space-y-1.5">
-                <Label class="text-xs" for="setup-script">Setup script</Label>
-                <textarea
-                  id="setup-script"
-                  bind:value={setupScript}
-                  rows="10"
-                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"></textarea>
-                <p class="text-xs text-muted-foreground">
-                  Runs each time the session starts, so make it idempotent. Checking
-                  <code>command -v &lt;bin&gt;</code>
-                  before installing is the convention.
+              <div class="min-w-0 space-y-1 sm:col-span-2">
+                <span class="block text-xs text-muted-foreground">In the VM</span>
+                <p
+                  class="flex h-9 items-center truncate rounded-md border border-dashed border-border px-3 font-mono text-xs text-muted-foreground"
+                  title={workspaceGuestFolder}
+                >
+                  {workspaceGuestFolder}
                 </p>
               </div>
             </div>
-          {/if}
-
-          {#if imageStrategy === 'custom'}
-            <div class="space-y-3 rounded-md border border-border p-3">
-              <div class="space-y-1.5">
-                <Label class="text-xs" for="custom-image">Image reference</Label>
-                <Input
-                  id="custom-image"
-                  bind:value={customImage}
-                  placeholder="my-registry/my-image:tag"
+            {#if workspaceFolderName === null}
+              <p class="text-xs text-destructive">Must be inside {workspaceSharedRoot}.</p>
+            {:else}
+              <p class="text-xs text-muted-foreground">
+                Must be inside {workspaceSharedRoot}. The VM path follows from it.
+                {#if workspaceFolderExists !== null}
+                  {workspaceFolderExists ? 'Existing folder.' : 'New folder.'}
+                {/if}
+              </p>
+            {/if}
+          </div>
+        {:else if onSandboxless}
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <Label>Work folder</Label>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  onclick={() => (ownFolder = !ownFolder)}
+                  class="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  Use my own folder
+                </button>
+                <Switch
+                  checked={ownFolder}
+                  onCheckedChange={() => (ownFolder = !ownFolder)}
+                  aria-label="Use my own folder"
                 />
               </div>
-              <div class="space-y-1.5">
-                <Label class="text-xs" for="custom-setup">Extra setup script (optional)</Label>
-                <textarea
-                  id="custom-setup"
-                  bind:value={customSetup}
-                  rows="6"
-                  placeholder="# Leave blank if your image has the agent baked in.&#10;# Add commands here for any extra setup."
-                  class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"></textarea>
+            </div>
+            {#if ownFolder}
+              <HostPathField id="sandboxless-work-dir" bind:value={workDir} host={selectedHost} />
+              <p class="text-xs text-muted-foreground">
+                The agent works here, with your files. Deleting the session leaves this folder
+                alone.
+              </p>
+            {:else}
+              <p class="text-xs text-muted-foreground">deepcove makes a folder for this session:</p>
+              <p class="font-mono text-xs text-muted-foreground">
+                {sandboxlessRoot
+                  ? sandboxlessRoot + '/<session id>'
+                  : 'under deepcove’s data folder'}
+              </p>
+              <p class="text-xs text-muted-foreground">It is deleted with the session.</p>
+            {/if}
+          </div>
+        {:else if runtimeKnown && workFolder}
+          <div class="space-y-2">
+            <Label>Work folder</Label>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-5">
+              <div class="min-w-0 space-y-1 sm:col-span-3">
+                <Label class="text-xs font-normal text-muted-foreground" for="work-folder-host">
+                  On {targetNodeName}
+                </Label>
+                <HostPathField
+                  id="work-folder-host"
+                  bind:value={workFolder.host_path}
+                  host={selectedHost}
+                />
+              </div>
+              <div class="min-w-0 space-y-1 sm:col-span-2">
+                <Label class="text-xs font-normal text-muted-foreground" for="work-folder-guest">
+                  In the VM
+                </Label>
+                <Input
+                  id="work-folder-guest"
+                  bind:value={workFolder.guest_path}
+                  placeholder="/workspace"
+                />
               </div>
             </div>
-          {/if}
-        </div>
-      {/if}
+            {#if workFolderGuestInvalid}
+              <p class="text-xs text-destructive">
+                The folder in the VM needs a full path, starting with /.
+              </p>
+            {:else if !workFolder.host_path.trim()}
+              <p class="text-xs text-muted-foreground">
+                No folder. The agent starts in an empty folder in the VM.
+              </p>
+            {:else}
+              <p class="text-xs text-muted-foreground">
+                The agent starts here and edits your real files.
+              </p>
+            {/if}
+          </div>
+        {/if}
 
-      {#if onSandboxless}
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <Label>Folder</Label>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                onclick={() => (ownFolder = !ownFolder)}
-                class="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                Use my own folder
-              </button>
-              <Switch
-                checked={ownFolder}
-                onCheckedChange={() => (ownFolder = !ownFolder)}
-                aria-label="Use my own folder"
+        {#if loginChoicesHere.length > 1 && pickedLogin}
+          <LoginModePicker
+            choices={loginChoicesHere}
+            value={pickedLogin}
+            defaultMode={loginSetup?.default_login_mode}
+            onpick={(mode) => (loginMode = mode)}
+          />
+        {/if}
+
+        {#if onWorkspace}
+          <p class="text-xs text-muted-foreground">
+            Size and image come from the workspace VM. Change them on the Nodes page.
+          </p>
+        {/if}
+
+        {#if runtimeKnown}
+          <details class="group rounded-md border border-border">
+            <summary
+              class="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-secondary/50"
+            >
+              <ChevronRight
+                class="size-4 text-muted-foreground transition-transform group-open:rotate-90"
               />
-            </div>
-          </div>
-          {#if ownFolder}
-            <HostPathField id="sandboxless-work-dir" bind:value={workDir} host={selectedHost} />
-            <p class="text-xs text-muted-foreground">
-              The agent works here, with your files. Deleting the session leaves this folder alone.
-            </p>
-          {:else}
-            <p class="text-xs text-muted-foreground">deepcove makes a folder for this session:</p>
-            <p class="font-mono text-xs text-muted-foreground">
-              {sandboxlessRoot ? sandboxlessRoot + '/<session id>' : 'under deepcove’s data folder'}
-            </p>
-            <p class="text-xs text-muted-foreground">It is deleted with the session.</p>
-          {/if}
-        </div>
-      {:else if runtimeKnown && !onWorkspace}
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <Label>Folder</Label>
-            <div class="flex items-center gap-2">
-              <!-- A label cannot activate a button, and the switch is one, so the text toggles itself. -->
-              <button
-                type="button"
-                onclick={toggleFolder}
-                class="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                Use a folder
-              </button>
-              <Switch
-                checked={useFolder}
-                onCheckedChange={toggleFolder}
-                aria-label="Use a folder"
-              />
-            </div>
-          </div>
-          {#if !useFolder}
-            <p class="text-xs text-muted-foreground">
-              No folder. The agent starts in an empty <code>/workspace</code>
-              . Turn on "Use a folder" to share your code.
-            </p>
-          {:else}
-            <p class="text-xs text-muted-foreground">
-              The agent works in this folder (shared at <code>/workspace</code>
-              ).
-            </p>
-            {#each folders as folder, i (i)}
-              <div class="space-y-2 rounded-md border border-border p-2.5">
-                <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <div class="min-w-0 space-y-1 sm:col-span-2">
-                    <Label class="text-xs" for="folder-host-{i}">Host path</Label>
-                    <HostPathField
-                      id="folder-host-{i}"
-                      bind:value={folder.host_path}
-                      host={selectedHost}
-                    />
+              <span class="font-medium">More options</span>
+              <span class="text-xs text-muted-foreground">
+                {showsSizeControls ? 'Size, image, more folders, CLI command' : 'CLI command'}
+              </span>
+            </summary>
+            <div class="space-y-5 border-t border-border p-3">
+              {#if showsSizeControls}
+                <VMSizePicker
+                  title="Session VM size"
+                  cards={sessionVMSizes}
+                  selected={vmSize}
+                  onselect={(name) => (pickedVMSize = name)}
+                />
+              {/if}
+
+              {#if showsImageControls}
+                <div class="space-y-2">
+                  <Label>Image</Label>
+                  <div class="space-y-2 rounded-md border border-border p-3">
+                    <label
+                      class="flex items-start gap-2.5 text-sm"
+                      class:cursor-pointer={selectedAgent?.sandboxed.official_image}
+                      class:cursor-not-allowed={!selectedAgent?.sandboxed.official_image}
+                      class:opacity-60={!selectedAgent?.sandboxed.official_image}
+                    >
+                      <input
+                        type="radio"
+                        bind:group={imageStrategy}
+                        value="official"
+                        disabled={!selectedAgent?.sandboxed.official_image}
+                        class="mt-0.5 size-4 border-input disabled:cursor-not-allowed"
+                      />
+                      <div class="flex-1">
+                        <div class="font-medium">Default deepcove image</div>
+                        <div class="text-xs text-muted-foreground">
+                          {#if selectedAgent?.sandboxed.official_image}
+                            Prebuilt and ready, the fastest boot. <code>
+                              {selectedAgent.sandboxed.official_image}
+                            </code>
+                          {:else}
+                            Not yet published for this agent. Use "Run install script at startup"
+                            for now.
+                          {/if}
+                        </div>
+                      </div>
+                    </label>
+
+                    <label class="flex cursor-pointer items-start gap-2.5 text-sm">
+                      <input
+                        type="radio"
+                        bind:group={imageStrategy}
+                        value="custom"
+                        class="mt-0.5 size-4 border-input"
+                      />
+                      <div class="flex-1">
+                        <div class="font-medium">Bring your own image</div>
+                        <div class="text-xs text-muted-foreground">
+                          Use a custom image. Optionally run extra setup on first boot.
+                        </div>
+                      </div>
+                    </label>
+
+                    <label class="flex cursor-pointer items-start gap-2.5 text-sm">
+                      <input
+                        type="radio"
+                        bind:group={imageStrategy}
+                        value="install"
+                        class="mt-0.5 size-4 border-input"
+                      />
+                      <div class="flex-1">
+                        <div class="font-medium">Run install script at startup</div>
+                        <div class="text-xs text-muted-foreground">
+                          Start from a base image and install the agent on first boot (~15s).
+                        </div>
+                      </div>
+                    </label>
                   </div>
-                  <div class="min-w-0 space-y-1">
-                    <Label class="text-xs" for="folder-guest-{i}">Guest path</Label>
-                    <Input
-                      id="folder-guest-{i}"
-                      bind:value={folder.guest_path}
-                      placeholder="/workspace"
-                    />
-                  </div>
+
+                  {#if imageStrategy === 'install'}
+                    <div class="space-y-3 rounded-md border border-border p-3">
+                      <div class="space-y-1.5">
+                        <Label class="text-xs" for="base-image">Base image</Label>
+                        <Input id="base-image" bind:value={baseImage} placeholder="alpine:3.20" />
+                      </div>
+                      <div class="space-y-1.5">
+                        <Label class="text-xs" for="setup-script">Setup script</Label>
+                        <textarea
+                          id="setup-script"
+                          bind:value={setupScript}
+                          rows="10"
+                          class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"></textarea>
+                        <p class="text-xs text-muted-foreground">
+                          Runs each time the session starts, so make it idempotent. Checking
+                          <code>command -v &lt;bin&gt;</code>
+                          before installing is the convention.
+                        </p>
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if imageStrategy === 'custom'}
+                    <div class="space-y-3 rounded-md border border-border p-3">
+                      <div class="space-y-1.5">
+                        <Label class="text-xs" for="custom-image">Image reference</Label>
+                        <Input
+                          id="custom-image"
+                          bind:value={customImage}
+                          placeholder="my-registry/my-image:tag"
+                        />
+                      </div>
+                      <div class="space-y-1.5">
+                        <Label class="text-xs" for="custom-setup">
+                          Extra setup script (optional)
+                        </Label>
+                        <textarea
+                          id="custom-setup"
+                          bind:value={customSetup}
+                          rows="6"
+                          placeholder="# Leave blank if your image has the agent baked in.&#10;# Add commands here for any extra setup."
+                          class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"></textarea>
+                      </div>
+                    </div>
+                  {/if}
                 </div>
-                <div class="flex items-center justify-between">
-                  <label class="flex cursor-pointer select-none items-center gap-1.5 text-xs">
-                    <input
-                      type="checkbox"
-                      bind:checked={folder.read_only}
-                      class="size-3.5 rounded border-input"
-                    />
-                    Read-only
-                  </label>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onclick={() => removeFolder(i)}
-                    aria-label="Remove folder"
-                  >
-                    <X class="size-4" />
+              {/if}
+
+              {#if showsSizeControls}
+                <div class="space-y-2">
+                  <Label>More folders</Label>
+                  <p class="text-xs text-muted-foreground">
+                    Other folders the agent can see, besides the work folder.
+                  </p>
+                  {#each folders as folder, i (i)}
+                    {#if i > 0}
+                      <div class="space-y-2 rounded-md border border-border p-2.5">
+                        <div class="grid grid-cols-1 gap-2 sm:grid-cols-5">
+                          <div class="min-w-0 space-y-1 sm:col-span-3">
+                            <Label class="text-xs" for="folder-host-{i}">On {targetNodeName}</Label>
+                            <HostPathField
+                              id="folder-host-{i}"
+                              bind:value={folder.host_path}
+                              host={selectedHost}
+                            />
+                          </div>
+                          <div class="min-w-0 space-y-1 sm:col-span-2">
+                            <Label class="text-xs" for="folder-guest-{i}">In the VM</Label>
+                            <Input
+                              id="folder-guest-{i}"
+                              bind:value={folder.guest_path}
+                              placeholder="/mnt/data"
+                            />
+                          </div>
+                        </div>
+                        <div class="flex items-center justify-between">
+                          <label
+                            class="flex cursor-pointer select-none items-center gap-1.5 text-xs"
+                          >
+                            <input
+                              type="checkbox"
+                              bind:checked={folder.read_only}
+                              class="size-3.5 rounded border-input"
+                            />
+                            Read-only
+                          </label>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onclick={() => removeFolder(i)}
+                            aria-label="Remove folder"
+                          >
+                            <X class="size-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    {/if}
+                  {/each}
+                  {#if moreFolderGuestMissing}
+                    <p class="text-xs text-destructive">
+                      Each folder needs a path in the VM, starting with /.
+                    </p>
+                  {/if}
+                  {#if moreFoldersWithoutWorkFolder}
+                    <p class="text-xs text-destructive">
+                      Pick a work folder first. The agent would start in one of these instead.
+                    </p>
+                  {/if}
+                  <Button size="sm" variant="ghost" onclick={addFolder}>
+                    <Plus class="size-4" />
+                    Add a folder
                   </Button>
                 </div>
-              </div>
-            {/each}
-            <Button size="sm" variant="ghost" onclick={addFolder}>
-              <Plus class="size-4" />
-              Add another folder
-            </Button>
-          {/if}
-        </div>
-      {/if}
+              {/if}
 
-      <!-- Above the messages, so an error or the download progress sits right over the buttons. -->
-      {#if loginChoicesHere.length > 1 && pickedLogin}
-        <LoginModePicker
-          choices={loginChoicesHere}
-          value={pickedLogin}
-          onpick={(mode) => (loginMode = mode)}
-        />
+              <div class="space-y-2">
+                <Label>CLI command</Label>
+                <div
+                  class="flex items-center gap-2 rounded-md border border-border bg-secondary py-1.5 pl-3 pr-1.5 font-mono text-xs"
+                >
+                  <code class="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                    {command}
+                  </code>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    class="shrink-0"
+                    onclick={copyCommand}
+                    aria-label="Copy command"
+                  >
+                    {#if copied}
+                      <Check class="size-4 text-[var(--color-success)]" />
+                    {:else}
+                      <Copy class="size-4" />
+                    {/if}
+                  </Button>
+                </div>
+                <p class="mt-2 text-xs text-muted-foreground">
+                  Run on the machine you want to host the session. The new session appears in the
+                  dashboard once it's running.
+                </p>
+              </div>
+            </div>
+          </details>
+        {/if}
       {/if}
 
       {#if submitError}
@@ -1295,13 +1358,13 @@
         </div>
       {/if}
 
-      {#if (preflightLoaded || nodeRuntimesError) && runtimeBlocked}
+      {#if step !== 'node' && (preflightLoaded || nodeRuntimesError) && runtimeBlocked}
         <div
           class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
         >
           {runtimeBlocked}
-          {#if otherIsolationUsable}
-            Pick another option under Isolation to create a session now.
+          {#if otherRuntimeUsable}
+            Pick another runtime to create a session now.
           {/if}
           {#if nodeRuntimesError}
             <button
@@ -1337,7 +1400,7 @@
             {/if}
           </div>
         </div>
-      {:else if imagePresent === false && !submitError}
+      {:else if step === 'details' && imagePresent === false && !submitError}
         <!-- Proactive heads-up so the download isn't a surprise on click. -->
         <div
           class="flex items-start gap-2 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground"
@@ -1350,73 +1413,80 @@
         </div>
       {/if}
 
-      <div class="flex items-center justify-end gap-2">
-        {#if settingUpVM}
-          <p class="text-xs text-muted-foreground">Set up virtual machines first.</p>
-        {:else if creatingWorkspaceVM && !looksLikePath(workspaceHostRoot)}
-          <p class="text-xs text-muted-foreground">Pick a folder this VM can see.</p>
-        {/if}
-        <Button variant="ghost" onclick={() => (open = false)} disabled={submitting || pulling}>
-          Cancel
-        </Button>
-        <Button
-          onclick={submit}
-          disabled={submitting ||
-            pulling ||
-            waitingForNodeRuntimes ||
-            !name.trim() ||
-            !!runtimeBlocked ||
-            // Nothing is sent until the runtime is known: the sections that depend on it are hidden.
-            !runtimeKnown ||
-            (onSandboxless && ownFolder && !workDir.trim()) ||
-            (onWorkspace && workspaceFolderName === null) ||
-            (creatingWorkspaceVM && !looksLikePath(workspaceHostRoot)) ||
-            (creatingWorkspaceVM && runtimes?.workspace_vm_sizes?.length === 0) ||
-            (showsImageControls &&
-              imageStrategy === 'official' &&
-              !selectedAgent?.sandboxed.official_image) ||
-            (showsImageControls && imageStrategy === 'custom' && !customImage.trim())}
-        >
-          {#if pulling}
-            Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}
-          {:else if submitting}
-            Creating…
-          {:else if imagePresent === false}
-            Download & create
-          {:else}
-            Create session
+      {#if step === 'node'}
+        <div class={footerClass}>
+          <Button variant="ghost" class="max-sm:hidden" onclick={() => (open = false)}>
+            Cancel
+          </Button>
+          <Button onclick={stepForward}>Next</Button>
+        </div>
+      {:else if step === 'runtime'}
+        <div class={footerClass}>
+          {#if steps[0] === 'node'}
+            <Button variant="ghost" class="mr-auto" onclick={stepBack} disabled={downloadingVM}>
+              Back
+            </Button>
           {/if}
-        </Button>
-      </div>
-
-      {#if runtimeKnown}
-        <details class="group rounded-md border border-border">
-          <summary
-            class="flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm font-medium hover:bg-secondary/50"
+          <Button
+            variant="ghost"
+            class="max-sm:hidden"
+            onclick={() => (open = false)}
+            disabled={downloadingVM}
           >
-            <span>Or run from CLI</span>
-            <span class="text-xs text-muted-foreground group-open:hidden">show</span>
-            <span class="hidden text-xs text-muted-foreground group-open:inline">hide</span>
-          </summary>
-          <div class="border-t border-border p-3">
-            <div
-              class="flex items-start gap-2 rounded-md border border-border bg-secondary p-2.5 font-mono text-xs"
-            >
-              <code class="flex-1 overflow-x-auto whitespace-pre">{command}</code>
-              <Button size="icon" variant="ghost" onclick={copyCommand} aria-label="Copy command">
-                {#if copied}
-                  <Check class="size-4 text-[var(--color-success)]" />
-                {:else}
-                  <Copy class="size-4" />
-                {/if}
-              </Button>
-            </div>
-            <p class="mt-2 text-xs text-muted-foreground">
-              Run on the machine you want to host the session. The new session appears in the
-              dashboard once it's running.
-            </p>
-          </div>
-        </details>
+            Cancel
+          </Button>
+          <Button
+            onclick={stepForward}
+            disabled={waitingForNodeRuntimes ||
+              !runtimeKnown ||
+              !!runtimeBlocked ||
+              downloadingVM ||
+              (onWorkspace && !workspaceVMChecked)}
+          >
+            Next
+          </Button>
+        </div>
+      {:else if step === 'details'}
+        <div class={footerClass}>
+          <Button
+            variant="ghost"
+            class="mr-auto"
+            onclick={stepBack}
+            disabled={submitting || pulling}
+          >
+            Back
+          </Button>
+          <Button
+            onclick={submit}
+            disabled={submitting ||
+              pulling ||
+              waitingForNodeRuntimes ||
+              !name.trim() ||
+              !!runtimeBlocked ||
+              // Nothing is sent until the runtime is known: the sections that depend on it are hidden.
+              !runtimeKnown ||
+              (onSandboxless && ownFolder && !workDir.trim()) ||
+              (onWorkspace && workspaceFolderName === null) ||
+              (showsSizeControls &&
+                (moreFoldersWithoutWorkFolder ||
+                  workFolderGuestInvalid ||
+                  moreFolderGuestMissing)) ||
+              (showsImageControls &&
+                imageStrategy === 'official' &&
+                !selectedAgent?.sandboxed.official_image) ||
+              (showsImageControls && imageStrategy === 'custom' && !customImage.trim())}
+          >
+            {#if pulling}
+              Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}
+            {:else if submitting}
+              Creating…
+            {:else if imagePresent === false}
+              Download & create
+            {:else}
+              Create session
+            {/if}
+          </Button>
+        </div>
       {/if}
     </div>
   </DialogContent>

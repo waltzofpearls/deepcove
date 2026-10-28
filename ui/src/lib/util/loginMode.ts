@@ -7,6 +7,8 @@ export interface LoginChoice {
   detail: string;
   // Set when the row shows but cannot be picked yet, saying what is missing.
   unavailable?: string;
+  // Where the requests go, shown on the choice itself, like the LLM proxy's URL.
+  address?: string;
 }
 
 // Where the session runs decides its choices: one login for a whole workspace VM, or the machine's own
@@ -65,6 +67,7 @@ export function loginChoices(
       mode: 'llm_proxy',
       label: 'LLM proxy',
       detail: `${setup.proxyUrl} supplies the key.`,
+      address: setup.proxyUrl,
     });
   }
   return choices;
