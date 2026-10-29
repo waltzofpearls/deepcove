@@ -15,6 +15,7 @@
   import '@xterm/xterm/css/xterm.css';
   import { untrack } from 'svelte';
   import type { Terminal as XTerm } from '@xterm/xterm';
+  import { terminalColorPalette } from '$lib/util/terminalColorPalette';
   import { api } from '$lib/api/client';
   import { wheelSteps } from '$lib/util/wheel';
   import { reconnectAction } from '$lib/util/reconnect';
@@ -493,24 +494,7 @@
       foreground: v('--term-fg', '#e6e6e6'),
       cursor: v('--term-cursor', '#e6e6e6'),
       selectionBackground: v('--term-sel', '#264f78'),
-      // Ghostty's default palette. xterm.js's own is harsh, and its red is hard to read in a diff. The
-      // terminal is dark in both app themes, so one palette covers both.
-      black: '#1d1f21',
-      red: '#cc6666',
-      green: '#b5bd68',
-      yellow: '#f0c674',
-      blue: '#81a2be',
-      magenta: '#b294bb',
-      cyan: '#8abeb7',
-      white: '#c5c8c6',
-      brightBlack: '#666666',
-      brightRed: '#d54e53',
-      brightGreen: '#b9ca4a',
-      brightYellow: '#e7c547',
-      brightBlue: '#7aa6da',
-      brightMagenta: '#c397d8',
-      brightCyan: '#70c0b1',
-      brightWhite: '#eaeaea',
+      ...terminalColorPalette,
     };
   }
 </script>

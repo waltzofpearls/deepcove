@@ -8,9 +8,8 @@
 // addon serializes the buffer to HTML directly. xterm.js officially
 // supports this path (the typings doc recommends "before Terminal.open
 // is called" specifically). When _themeService is absent (unmounted),
-// the addon falls back to DEFAULT_ANSI_COLORS, the Tango palette,
-// which is also what xterm.js's full-view renders with our default
-// theme. So colors match by default; no palette plumbing needed.
+// the addon falls back to DEFAULT_ANSI_COLORS, the Tango palette, so
+// withTerminalColorPalette swaps those for the colors the full view uses.
 //
 // fontSize / fontFamily are set on the Terminal so the serializer
 // emits them in the outer wrapper div's inline style. That way the
@@ -23,6 +22,8 @@
 // after a resize. At terminal scale this was the suspect during
 // the convertEol bug-hunt. Per-call construction is microseconds,
 // and rules out a whole class of state-carryover bugs.
+
+import { withTerminalColorPalette } from '$lib/util/terminalColorPalette';
 
 type ConvertOpts = {
   fontSize: number;
@@ -59,8 +60,7 @@ export async function createConverter(): Promise<Converter> {
       const trimmed = ansi.replace(/\n+$/, '');
 
       // Pull current theme bg/fg from CSS vars so light/dark switches
-      // take effect on the next poll. The ANSI palette stays the
-      // xterm.js default (Tango), matching the full view.
+      // take effect on the next poll.
       const style = getComputedStyle(document.documentElement);
       const v = (n: string, fb: string) => style.getPropertyValue(n).trim() || fb;
       const theme = {
@@ -95,7 +95,9 @@ export async function createConverter(): Promise<Converter> {
             const b = '<!--EndFragment-->';
             const i = html.indexOf(a);
             const j = html.indexOf(b);
-            resolve(i === -1 || j === -1 ? html : html.slice(i + a.length, j));
+            resolve(
+              withTerminalColorPalette(i === -1 || j === -1 ? html : html.slice(i + a.length, j)),
+            );
           });
         });
       } finally {
