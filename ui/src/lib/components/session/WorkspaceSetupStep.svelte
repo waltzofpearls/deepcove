@@ -7,6 +7,7 @@
   import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import type { SessionHost, WorkspaceVM, WorkspaceVMSizeChoice } from '$lib/api/types';
   import Info from '@lucide/svelte/icons/info';
+  import { footerClass } from './wizardFooter';
 
   // Creates the node's workspace VM before the first session on it. Saving only records the machine.
   // It boots when that session starts.
@@ -51,7 +52,7 @@
   }
 </script>
 
-<div class="space-y-5">
+<div class="flex flex-1 flex-col gap-5">
   <div class="space-y-1">
     <h2 class="text-lg font-semibold">Set up your workspace VM</h2>
     <p class="text-sm text-muted-foreground">
@@ -77,8 +78,8 @@
     </div>
   {/if}
 
-  <div class="flex items-center justify-between gap-2">
-    <Button variant="ghost" onclick={onback} disabled={saving}>Back</Button>
+  <div class={footerClass}>
+    <Button variant="ghost" class="mr-auto" onclick={onback} disabled={saving}>Back</Button>
     <Button onclick={create} disabled={!ready || saving}>
       {saving ? 'Creating…' : 'Create VM and continue'}
     </Button>

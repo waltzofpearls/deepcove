@@ -26,6 +26,7 @@
   import NodeStep from './NodeStep.svelte';
   import RuntimeStep from './RuntimeStep.svelte';
   import WorkspaceSetupStep from './WorkspaceSetupStep.svelte';
+  import { footerClass } from './wizardFooter';
   import { loginChoices, type LoginPlace } from '$lib/util/loginMode';
   import { shellQuote } from '$lib/util/shell';
   import { looksLikePath, pathInsideFolder, sessionFolderIn } from '$lib/util/path';
@@ -59,10 +60,6 @@
 
   // The dialog walks through these in order. Details holds the rest of the form.
   type Step = 'node' | 'runtime' | 'workspace' | 'details';
-  // On a phone the buttons stay pinned to the bottom while the form scrolls under them. The X closes,
-  // so Cancel is dropped there.
-  const footerClass =
-    'flex items-center justify-end gap-2 max-sm:sticky max-sm:bottom-0 max-sm:-mx-4 max-sm:mt-auto max-sm:border-t max-sm:border-border max-sm:bg-popover max-sm:px-4 max-sm:py-3';
   const stepLabels: Record<Step, string> = {
     node: 'Node',
     runtime: 'Runtime',
