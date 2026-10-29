@@ -317,6 +317,19 @@
       const send = (s: string) => {
         if (ws?.readyState === 1) ws.send(enc.encode(s));
       };
+      // xterm.js sends Shift+Enter as a plain Enter, which submits. Ctrl+J is a newline in both Claude
+      // Code and Codex, so Shift+Enter sends that instead.
+      term.attachCustomKeyEventHandler((event) => {
+        const shiftEnter =
+          event.key === 'Enter' &&
+          event.shiftKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !event.metaKey;
+        if (!shiftEnter) return true;
+        if (event.type === 'keydown') send('\n');
+        return false;
+      });
       // A Ctrl held on the mobile key bar applies to the next key typed on the on-screen keyboard. Data that
       // starts with ESC is the terminal answering a query, so it passes untouched.
       term.onData((data) => {
@@ -480,6 +493,24 @@
       foreground: v('--term-fg', '#e6e6e6'),
       cursor: v('--term-cursor', '#e6e6e6'),
       selectionBackground: v('--term-sel', '#264f78'),
+      // Ghostty's default palette. xterm.js's own is harsh, and its red is hard to read in a diff. The
+      // terminal is dark in both app themes, so one palette covers both.
+      black: '#1d1f21',
+      red: '#cc6666',
+      green: '#b5bd68',
+      yellow: '#f0c674',
+      blue: '#81a2be',
+      magenta: '#b294bb',
+      cyan: '#8abeb7',
+      white: '#c5c8c6',
+      brightBlack: '#666666',
+      brightRed: '#d54e53',
+      brightGreen: '#b9ca4a',
+      brightYellow: '#e7c547',
+      brightBlue: '#7aa6da',
+      brightMagenta: '#c397d8',
+      brightCyan: '#70c0b1',
+      brightWhite: '#eaeaea',
     };
   }
 </script>
