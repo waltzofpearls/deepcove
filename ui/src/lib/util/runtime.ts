@@ -92,11 +92,70 @@ export function sharesHostFolders(name: string): boolean {
   return name !== RUNTIME_SANDBOXLESS;
 }
 
-// showsRuntimePicker reports whether the create form asks which runtime to use. It asks whenever there
-// is a choice, and always when No sandbox is on offer, so a session never ends up with no isolation
-// without the user seeing it.
-export function showsRuntimePicker(options: string[]): boolean {
-  return options.length > 1 || options.includes(RUNTIME_SANDBOXLESS);
+// RuntimePlace is where a session runs, one per tile in the New session dialog's runtime step.
+export type RuntimePlace = 'session_vm' | 'workspace_vm' | 'no_sandbox';
+
+// runtimePlaceLabel names a place the way the New session dialog's tiles do.
+export function runtimePlaceLabel(place: RuntimePlace): string {
+  switch (place) {
+    case 'session_vm':
+      return 'Its own VM';
+    case 'workspace_vm':
+      return 'Workspace VM';
+    case 'no_sandbox':
+      return 'No sandbox';
+  }
+}
+
+// RuntimeTile is one runtime choice the New session dialog offers.
+export interface RuntimeTile {
+  place: RuntimePlace;
+  // runtime is the name the session is created with.
+  runtime: string;
+  isDefault: boolean;
+  // needsSetup means the VM runtime is missing, and deepcove can download it from the dialog.
+  needsSetup: boolean;
+  // blocked says why the tile can't be picked, or is empty when it can.
+  blocked: string;
+}
+
+// runtimeTiles lists what a node can run sessions on. Both VM tiles use the node's one VM runtime. A tile
+// that can't run yet is still listed with the reason, so a choice never disappears without a word.
+export function runtimeTiles(info: RuntimesInfo): RuntimeTile[] {
+  const tiles: RuntimeTile[] = [];
+  const missing = info.missing ?? {};
+  const vmRuntime = info.available.find(bootsVMs);
+  const missingVM = Object.keys(missing).find(bootsVMs);
+  if (vmRuntime || missingVM) {
+    const runtime = vmRuntime ?? missingVM ?? '';
+    const needsSetup = !vmRuntime && runtimeSetUpByDeepcove(missing[runtime]);
+    let blocked = info.unavailable?.[runtime] ?? '';
+    if (!vmRuntime && !needsSetup) blocked = runtimeMissingReason(missing[runtime]);
+    // The node names no default while its VM still needs the download, but the VM is still the pick.
+    const vmIsDefault = bootsVMs(info.default) || (needsSetup && !info.default);
+    tiles.push(
+      { place: 'session_vm', runtime, isDefault: vmIsDefault, needsSetup, blocked },
+      { place: 'workspace_vm', runtime, isDefault: false, needsSetup, blocked },
+    );
+  }
+  if (info.available.includes(RUNTIME_SANDBOXLESS)) {
+    tiles.push({
+      place: 'no_sandbox',
+      runtime: RUNTIME_SANDBOXLESS,
+      isDefault: info.default === RUNTIME_SANDBOXLESS,
+      needsSetup: false,
+      blocked: info.unavailable?.[RUNTIME_SANDBOXLESS] ?? '',
+    });
+  } else if (missing[RUNTIME_SANDBOXLESS]) {
+    tiles.push({
+      place: 'no_sandbox',
+      runtime: RUNTIME_SANDBOXLESS,
+      isDefault: false,
+      needsSetup: false,
+      blocked: runtimeMissingReason(missing[RUNTIME_SANDBOXLESS]),
+    });
+  }
+  return tiles;
 }
 
 // runtimeLabel names the runtime the way it is talked about. "Virtual machine" describes the isolation
