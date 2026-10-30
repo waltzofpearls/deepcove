@@ -28,6 +28,7 @@ func TestService_loginModeOrDefault(t *testing.T) {
 		defaultMode   LoginMode
 		apiKey        string
 		proxyURL      string
+		proxyHeaders  http.Header
 		asked         LoginMode
 		runtime       sandbox.Sandbox
 		onWorkspaceVM bool
@@ -44,6 +45,29 @@ func TestService_loginModeOrDefault(t *testing.T) {
 		{name: "the API key default with none saved falls back", defaultMode: LoginWithAPIKey, runtime: vm, want: LoginInSession},
 		{name: "the LLM proxy with none set is refused", asked: LoginWithLLMProxy, runtime: vm, wantErr: true},
 		{name: "the LLM proxy when set", asked: LoginWithLLMProxy, proxyURL: "http://100.75.35.244:9000", runtime: vm, want: LoginWithLLMProxy},
+		{
+			name:         "the LLM proxy with headers on a VM",
+			asked:        LoginWithLLMProxy,
+			proxyURL:     "http://100.75.35.244:9000",
+			proxyHeaders: http.Header{"Border0-Token": {"b0"}},
+			runtime:      vm,
+			want:         LoginWithLLMProxy,
+		},
+		{
+			name:     "the LLM proxy with no sandbox",
+			asked:    LoginWithLLMProxy,
+			proxyURL: "http://100.75.35.244:9000",
+			runtime:  noSandbox,
+			want:     LoginWithLLMProxy,
+		},
+		{
+			name:         "the LLM proxy with headers and no sandbox is refused",
+			asked:        LoginWithLLMProxy,
+			proxyURL:     "http://100.75.35.244:9000",
+			proxyHeaders: http.Header{"Border0-Token": {"b0"}},
+			runtime:      noSandbox,
+			wantErr:      true,
+		},
 		{name: "a mode the agent does not know is refused", asked: "magic", runtime: vm, wantErr: true},
 	}
 	for _, tc := range cases {
@@ -56,6 +80,7 @@ func TestService_loginModeOrDefault(t *testing.T) {
 			_ = store.SetAPIKey("claude", tc.apiKey)
 			svc.sharedLoginStore = store
 			svc.SetLLMProxyURL(tc.proxyURL)
+			svc.SetLLMProxyHeaders(tc.proxyHeaders)
 
 			got, err := svc.loginModeOrDefault(tc.asked, agent, tc.runtime, tc.onWorkspaceVM)
 			if (err != nil) != tc.wantErr {

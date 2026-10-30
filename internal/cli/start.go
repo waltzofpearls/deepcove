@@ -91,18 +91,22 @@ func cmdStart(ctx context.Context, args []string) error {
 	// lifecycle.
 	// Where sessions send their LLM requests. An explicit --llm-proxy-url is stored, so the setting
 	// outlives the flag and a later restart needs no argument.
+	llmProxy, err := session.LoadLLMProxy(sqlDB)
+	if err != nil {
+		return fmt.Errorf("llm proxy: %w", err)
+	}
 	if *llmProxyFlag != "" {
-		normalized, err := session.NormalizeLLMProxyURL(*llmProxyFlag)
+		fromFlag, err := session.LLMProxyWithURL(llmProxy, *llmProxyFlag)
 		if err != nil {
 			return err
 		}
-		if err := session.SaveLLMProxyURL(sqlDB, normalized); err != nil {
-			return fmt.Errorf("llm proxy url: %w", err)
+		if len(fromFlag.Headers) < len(llmProxy.Headers) {
+			logger.Warn("the LLM proxy moved to a new host, so its headers were removed. Add them again in Settings")
 		}
-	}
-	llmProxyURL, err := session.LoadLLMProxyURL(sqlDB)
-	if err != nil {
-		return fmt.Errorf("llm proxy url: %w", err)
+		if err := session.StoreLLMProxy(sqlDB, fromFlag); err != nil {
+			return fmt.Errorf("llm proxy: %w", err)
+		}
+		llmProxy = fromFlag
 	}
 
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
@@ -110,9 +114,11 @@ func cmdStart(ctx context.Context, args []string) error {
 	sessionSvc.SetWorkspaceVMStore(session.NewDuckDBWorkspaceVMStore(sqlDB))
 	sessionSvc.SetDataDir(cfg.DataDir)
 	sessionSvc.SetLLMProxyStore(session.NewDuckDBLLMProxyStore(sqlDB))
-	sessionSvc.SetLLMProxyURL(llmProxyURL)
-	if llmProxyURL != "" {
-		logger.Info("sessions send LLM requests through a proxy", "url", llmProxyURL)
+	sessionSvc.SetLLMProxyURL(llmProxy.URL)
+	sessionSvc.SetLLMProxyHeaders(llmProxy.Headers)
+	if llmProxy.URL != "" {
+		logger.Info("sessions send LLM requests through a proxy",
+			"url", llmProxy.URL, "headers", sessionSvc.LLMProxyHeaderNames())
 	}
 
 	// Assigned below, once the connect manager exists. Only read when a VM starts, long after.

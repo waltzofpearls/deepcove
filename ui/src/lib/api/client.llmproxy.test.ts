@@ -24,25 +24,68 @@ beforeEach(() => {
 
 describe('llmProxy', () => {
   it('reads the current proxy', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ url: 'http://100.75.35.244:9000' }));
-    await expect(api.llmProxy()).resolves.toEqual({ url: 'http://100.75.35.244:9000' });
+    const proxy = {
+      url: 'http://100.75.35.244:9000',
+      headers: ['Border0-Token'],
+    };
+    fetchMock.mockResolvedValue(jsonResponse(proxy));
+    await expect(api.llmProxy()).resolves.toEqual(proxy);
     expect(fetchMock.mock.calls[0][0]).toBe('/api/llm-proxy');
   });
 
-  it('saves with a PUT and returns what the server normalized', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ url: 'http://host:9000' }));
-    const saved = await api.saveLLMProxy('http://host:9000/');
+  it('saves the URL and the headers in one PUT', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        url: 'http://host:9000',
+        headers: ['Border0-Token'],
+      }),
+    );
+    const headers = [{ name: 'Border0-Token' }, { name: 'X-Team', value: 'infra' }];
+    const saved = await api.saveLLMProxy('http://host:9000/', headers);
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/llm-proxy');
     expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({ url: 'http://host:9000/' });
+    expect(JSON.parse(init.body)).toEqual({
+      url: 'http://host:9000/',
+      headers,
+    });
     expect(saved.url).toBe('http://host:9000');
   });
 
-  it('clears by saving an empty url', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ url: '' }));
-    await api.saveLLMProxy('');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ url: '' });
+  it('names the header a save was refused for', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          error: "deepcove sets Host itself, so it can't be changed here",
+          code: 'invalid_input',
+          header: 'Host',
+        },
+        400,
+      ),
+    );
+    await expect(api.saveLLMProxy('http://host:9000', [])).rejects.toMatchObject({
+      status: 400,
+      header: 'Host',
+    });
+  });
+
+  it('tests with the values in the form', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        verdict: 'reached',
+        result: 'answered with 200 OK',
+      }),
+    );
+    const headers = [{ name: 'Border0-Token' }];
+    await api.testLLMProxy('http://host:9000', headers);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/llm-proxy/test');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      url: 'http://host:9000',
+      headers,
+    });
   });
 });

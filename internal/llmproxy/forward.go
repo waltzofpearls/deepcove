@@ -63,12 +63,19 @@ type APIKey struct {
 	Provider Provider
 }
 
+// Proxy is where a session that does not use the API key sends its requests, and the headers to add to
+// each one, such as a token for a gateway in front of it.
+type Proxy struct {
+	URL     string
+	Headers http.Header
+}
+
 // errNoProxy is what a request meets when this node has no proxy address configured.
 var errNoProxy = errors.New("no llm proxy is configured on this node")
 
 // Forwarder sends a guest's requests on to the proxy.
 type Forwarder struct {
-	proxyURL func() string
+	configuredProxy func() Proxy
 	// apiKeyFor is the user's API key for a session that uses it, an empty key for any other.
 	apiKeyFor func(sessionID string) (APIKey, error)
 	client    func() *http.Client
@@ -80,17 +87,21 @@ type Forwarder struct {
 	proxy     *httputil.ReverseProxy
 }
 
-// NewForwarder builds the forwarder. proxyURL, apiKeyFor and client are read per request, since all
-// three can change while a VM runs.
+// NewForwarder builds the forwarder. configuredProxy, apiKeyFor and client are read per request, since
+// all three can change while a VM runs.
 func NewForwarder(
-	proxyURL func() string,
+	configuredProxy func() Proxy,
 	apiKeyFor func(sessionID string) (APIKey, error),
 	client func() *http.Client,
 	onError func(error),
 	onRequest func(sessionID, method, path string),
 ) *Forwarder {
 	f := &Forwarder{
-		proxyURL: proxyURL, apiKeyFor: apiKeyFor, client: client, onError: onError, onRequest: onRequest,
+		configuredProxy: configuredProxy,
+		apiKeyFor:       apiKeyFor,
+		client:          client,
+		onError:         onError,
+		onRequest:       onRequest,
 	}
 	f.proxy = &httputil.ReverseProxy{
 		// Rewrite, not Director: it adds no X-Forwarded-For, so the proxy learns nothing about the
@@ -113,6 +124,11 @@ func NewForwarder(
 			default:
 				r.Out.Header.Set(to.apiKey.Provider.KeyHeader, to.apiKey.Key)
 			}
+			// Only the proxy's route has any. Set after the placeholder, so a proxy that wants its own
+			// Authorization gets it.
+			for name, values := range to.headers {
+				r.Out.Header[name] = values
+			}
 			for _, h := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Forwarded"} {
 				r.Out.Header.Del(h)
 			}
@@ -128,20 +144,23 @@ func NewForwarder(
 	return f
 }
 
-// current parses the address configured right now, so a change in the UI reaches a running machine.
-func (f *Forwarder) current() (*url.URL, error) {
-	raw := ""
-	if f.proxyURL != nil {
-		raw = f.proxyURL()
+// current reads the proxy configured right now, so a change in the UI reaches a running machine.
+func (f *Forwarder) current() (route, error) {
+	var proxy Proxy
+	if f.configuredProxy != nil {
+		proxy = f.configuredProxy()
 	}
-	if raw == "" {
-		return nil, errNoProxy
+	if proxy.URL == "" {
+		return route{}, errNoProxy
 	}
-	u, err := url.Parse(raw)
+	u, err := url.Parse(proxy.URL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("llm proxy url %q is not usable", raw)
+		return route{}, fmt.Errorf("llm proxy url %q is not usable", proxy.URL)
 	}
-	return u, nil
+	return route{
+		url:     u,
+		headers: proxy.Headers,
+	}, nil
 }
 
 // roundTrip reaches the proxy over the tailnet once this node has signed in. The provider is on the
@@ -192,10 +211,12 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	})
 }
 
-// route is where one request goes, with the API key when it goes to the provider.
+// route is where one request goes, with the API key when it goes to the provider and the proxy's
+// headers when it goes to the proxy.
 type route struct {
-	url    *url.URL
-	apiKey APIKey
+	url     *url.URL
+	apiKey  APIKey
+	headers http.Header
 }
 
 // route picks the provider for a session that logs in with the API key, and the proxy for any other.
@@ -210,8 +231,7 @@ func (f *Forwarder) route(sessionID string) (route, error) {
 			return route{url: provider, apiKey: key}, err
 		}
 	}
-	proxy, err := f.current()
-	return route{url: proxy}, err
+	return f.current()
 }
 
 // routeKey carries the resolved route from the handler to the rewrite.

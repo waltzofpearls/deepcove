@@ -6,11 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/waltzofpearls/deepcove/internal/llmproxy"
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
 )
 
@@ -313,7 +315,7 @@ func TestLLMProxyURLIsSafeUnderConcurrentUse(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 25; i++ {
-			if _, err := svc.SaveLLMProxy("http://100.75.35.244:9000"); err != nil {
+			if err := svc.SaveLLMProxy("http://100.75.35.244:9000", nil); err != nil {
 				t.Errorf("save: %v", err)
 				return
 			}
@@ -348,3 +350,574 @@ func TestEditSharedFoldersRefusesAWorkspaceSession(t *testing.T) {
 }
 
 var errTmuxBroken = errors.New("tmux is not there")
+
+func TestNormalizeLLMProxyHeader(t *testing.T) {
+	cases := []struct {
+		name      string
+		inName    string
+		inValue   string
+		wantName  string
+		wantValue string
+		wantErr   bool
+	}{
+		{
+			name:      "a token header",
+			inName:    "Border0-Token",
+			inValue:   "b0-secret",
+			wantName:  "Border0-Token",
+			wantValue: "b0-secret",
+		},
+		{
+			name:      "the name is made canonical",
+			inName:    "border0-token",
+			inValue:   "b0-secret",
+			wantName:  "Border0-Token",
+			wantValue: "b0-secret",
+		},
+		{
+			name:      "surrounding space is trimmed",
+			inName:    " X-Team ",
+			inValue:   "  infra  ",
+			wantName:  "X-Team",
+			wantValue: "infra",
+		},
+		{
+			name:      "Authorization may be set",
+			inName:    "authorization",
+			inValue:   "Bearer gw-1234",
+			wantName:  "Authorization",
+			wantValue: "Bearer gw-1234",
+		},
+		{
+			name:    "an empty name",
+			inName:  "",
+			inValue: "x",
+			wantErr: true,
+		},
+		{
+			name:    "a name with a space",
+			inName:  "Border0 Token",
+			inValue: "x",
+			wantErr: true,
+		},
+		{
+			name:    "a name with a colon",
+			inName:  "Border0-Token:",
+			inValue: "x",
+			wantErr: true,
+		},
+		{
+			name:    "an empty value",
+			inName:  "X-Team",
+			inValue: "  ",
+			wantErr: true,
+		},
+		// A newline would start a header of its own on the wire.
+		{
+			name:    "a value with a newline",
+			inName:  "X-Team",
+			inValue: "infra\r\nHost: evil",
+			wantErr: true,
+		},
+		{
+			name:    "a value with a NUL",
+			inName:  "X-Team",
+			inValue: "in\x00fra",
+			wantErr: true,
+		},
+		{
+			name:    "Host is deepcove's",
+			inName:  "host",
+			inValue: "ai.corp.ts.net",
+			wantErr: true,
+		},
+		{
+			name:    "Content-Length is deepcove's",
+			inName:  "Content-Length",
+			inValue: "1",
+			wantErr: true,
+		},
+		{
+			name:    "a hop by hop header",
+			inName:  "Connection",
+			inValue: "close",
+			wantErr: true,
+		},
+		{
+			name:    "the provider key header",
+			inName:  "x-api-key",
+			inValue: "sk-ant-1234",
+			wantErr: true,
+		},
+		{
+			name:    "a forwarding header",
+			inName:  "X-Forwarded-For",
+			inValue: "10.0.0.1",
+			wantErr: true,
+		},
+		{
+			name:    "a Proxy- header",
+			inName:  "Proxy-Authorization",
+			inValue: "Basic x",
+			wantErr: true,
+		},
+		{
+			name:    "a Sec- header",
+			inName:  "Sec-Fetch-Site",
+			inValue: "none",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotName, gotValue, err := NormalizeLLMProxyHeader(tc.inName, tc.inValue)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want an error: %v", err, tc.wantErr)
+			}
+			if err != nil {
+				if value := strings.TrimSpace(tc.inValue); value != "" && strings.Contains(err.Error(), value) {
+					t.Errorf("error %q repeats the value", err)
+				}
+				return
+			}
+			if gotName != tc.wantName || gotValue != tc.wantValue {
+				t.Errorf("got %q: %q, want %q: %q", gotName, gotValue, tc.wantName, tc.wantValue)
+			}
+		})
+	}
+}
+
+func TestLLMProxyHeaderEndpoints(t *testing.T) {
+	svc, _, _, database := newTestService(t)
+	svc.SetLLMProxyStore(NewDuckDBLLMProxyStore(database))
+	mux := http.NewServeMux()
+	svc.AttachRoutes(mux)
+
+	put := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/llm-proxy", strings.NewReader(body)))
+		return w
+	}
+	names := func(w *httptest.ResponseRecorder) []string {
+		t.Helper()
+		var body struct {
+			Headers []string `json:"headers"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode %q: %v", w.Body.String(), err)
+		}
+		return body.Headers
+	}
+	const border0 = "https://rollie-llm-sandbox-rollie-vpn.border0.io"
+
+	w := put(`{"url":"` + border0 + `","headers":[{"name":"border0-token","value":"b0-secret"},{"name":"X-Team","value":"infra"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save: status %d, body %s", w.Code, w.Body)
+	}
+	if got := names(w); !slices.Equal(got, []string{"Border0-Token", "X-Team"}) {
+		t.Errorf("names = %v, want both, canonical", got)
+	}
+	// Values are write only.
+	get := httptest.NewRecorder()
+	mux.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/llm-proxy", nil))
+	if strings.Contains(get.Body.String(), "b0-secret") {
+		t.Errorf("GET returned a value: %s", get.Body)
+	}
+
+	// A refused header is named, so the UI can show the reason on its row, and nothing is saved.
+	w = put(`{"url":"` + border0 + `","headers":[{"name":"Host","value":"ai.corp.ts.net"}]}`)
+	var refused struct {
+		Header string `json:"header"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &refused)
+	if w.Code != http.StatusBadRequest || refused.Header != "Host" {
+		t.Errorf("a reserved name: status %d, body %s, want 400 naming Host", w.Code, w.Body)
+	}
+
+	// A header sent with no value keeps the saved one. One left out is removed.
+	if w := put(`{"url":"` + border0 + `","headers":[{"name":"Border0-Token"}]}`); w.Code != http.StatusOK {
+		t.Fatalf("keep: status %d, body %s", w.Code, w.Body)
+	}
+	stored, err := LoadLLMProxy(database)
+	if err != nil {
+		t.Fatalf("LoadLLMProxy: %v", err)
+	}
+	if stored.URL != border0 || stored.Headers.Get("Border0-Token") != "b0-secret" || len(stored.Headers) != 1 {
+		t.Errorf("stored %v, want the URL and only the kept token", stored)
+	}
+	if got := svc.LLMProxy().Headers.Get("Border0-Token"); got != "b0-secret" {
+		t.Errorf("the forwarder would send %q, want the saved value", got)
+	}
+
+	// A UI older than headers sends the URL alone. That keeps them, and an empty list removes them.
+	if w := put(`{"url":"` + border0 + `"}`); w.Code != http.StatusOK || len(names(w)) != 1 {
+		t.Errorf("an older UI's save: status %d, body %s, want the token kept", w.Code, w.Body)
+	}
+	if w := put(`{"url":"` + border0 + `","headers":[]}`); w.Code != http.StatusOK || len(names(w)) != 0 {
+		t.Errorf("an empty list: status %d, body %s, want no headers left", w.Code, w.Body)
+	}
+}
+
+func TestService_handleTestLLMProxy(t *testing.T) {
+	var gotToken string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("Border0-Token")
+	}))
+	defer proxy.Close()
+	svc, _, _, _ := newTestService(t)
+	svc.SetLLMProxyURL(proxy.URL)
+	svc.SetLLMProxyHeaders(http.Header{"Border0-Token": {"b0-secret"}})
+	mux := http.NewServeMux()
+	svc.AttachRoutes(mux)
+
+	// A UI older than testing the form sends no body.
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/llm-proxy/test", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), proxy.URL) {
+		t.Fatalf("no body: status %d, body %s, want the saved proxy tested", w.Code, w.Body)
+	}
+	if gotToken != "b0-secret" {
+		t.Errorf("the proxy saw token %q, want the saved one", gotToken)
+	}
+}
+
+func TestApplyLLMProxyEdits(t *testing.T) {
+	const border0 = "https://rollie-llm-sandbox-rollie-vpn.border0.io"
+	saved := llmproxy.Proxy{
+		URL:     border0,
+		Headers: http.Header{"Border0-Token": {"b0-secret"}},
+	}
+	value := func(text string) *string {
+		return &text
+	}
+	cases := []struct {
+		name          string
+		saved         llmproxy.Proxy
+		url           string
+		edits         []LLMProxyHeaderEdit
+		wantHeaders   http.Header
+		wantErr       bool
+		wantErrHeader string
+	}{
+		{
+			name: "the first save sends the URL and the headers together",
+			url:  border0,
+			edits: []LLMProxyHeaderEdit{
+				{
+					Name:  "border0-token",
+					Value: value("b0-secret"),
+				},
+			},
+			wantHeaders: http.Header{
+				"Border0-Token": {"b0-secret"},
+			},
+		},
+		{
+			name:  "a header with no value keeps the saved one",
+			saved: saved,
+			url:   border0,
+			edits: []LLMProxyHeaderEdit{{Name: "Border0-Token"}},
+			wantHeaders: http.Header{
+				"Border0-Token": {"b0-secret"},
+			},
+		},
+		{
+			name:  "a header with a value replaces the saved one",
+			saved: saved,
+			url:   border0,
+			edits: []LLMProxyHeaderEdit{
+				{
+					Name:  "Border0-Token",
+					Value: value("b0-new"),
+				},
+			},
+			wantHeaders: http.Header{
+				"Border0-Token": {"b0-new"},
+			},
+		},
+		{
+			name:        "a header left out is removed",
+			saved:       saved,
+			url:         border0,
+			edits:       []LLMProxyHeaderEdit{},
+			wantHeaders: http.Header{},
+		},
+		{
+			name:  "a UI older than headers sends no list, and the same host keeps them",
+			saved: saved,
+			url:   border0,
+			wantHeaders: http.Header{
+				"Border0-Token": {"b0-secret"},
+			},
+		},
+		{
+			name:        "a UI older than headers sends no list, and a new host drops them",
+			saved:       saved,
+			url:         "https://gateway.example.com",
+			wantHeaders: http.Header{},
+		},
+		{
+			name:  "a new port or scheme on the same host keeps the saved value",
+			saved: saved,
+			url:   "http://rollie-llm-sandbox-rollie-vpn.border0.io:8443",
+			edits: []LLMProxyHeaderEdit{{Name: "Border0-Token"}},
+			wantHeaders: http.Header{
+				"Border0-Token": {"b0-secret"},
+			},
+		},
+		{
+			name:  "the host name is compared without case",
+			saved: saved,
+			url:   "https://Rollie-LLM-Sandbox-Rollie-VPN.border0.io",
+			edits: []LLMProxyHeaderEdit{{Name: "Border0-Token"}},
+			wantHeaders: http.Header{
+				"Border0-Token": {"b0-secret"},
+			},
+		},
+		{
+			name:          "a new host refuses a saved value",
+			saved:         saved,
+			url:           "https://gateway.example.com",
+			edits:         []LLMProxyHeaderEdit{{Name: "Border0-Token"}},
+			wantErr:       true,
+			wantErrHeader: "Border0-Token",
+		},
+		{
+			name:  "a new host takes a value entered again",
+			saved: saved,
+			url:   "https://gateway.example.com",
+			edits: []LLMProxyHeaderEdit{
+				{
+					Name:  "Border0-Token",
+					Value: value("gw-1234"),
+				},
+			},
+			wantHeaders: http.Header{
+				"Border0-Token": {"gw-1234"},
+			},
+		},
+		{
+			name:          "clearing the URL refuses a saved value",
+			saved:         saved,
+			url:           "",
+			edits:         []LLMProxyHeaderEdit{{Name: "Border0-Token"}},
+			wantErr:       true,
+			wantErrHeader: "Border0-Token",
+		},
+		{
+			name: "headers with no URL are refused",
+			url:  "",
+			edits: []LLMProxyHeaderEdit{
+				{
+					Name:  "Border0-Token",
+					Value: value("b0-secret"),
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name:          "a header with no saved value needs one",
+			url:           border0,
+			edits:         []LLMProxyHeaderEdit{{Name: "X-Team"}},
+			wantErr:       true,
+			wantErrHeader: "X-Team",
+		},
+		{
+			name: "a refused header is named",
+			url:  border0,
+			edits: []LLMProxyHeaderEdit{
+				{
+					Name:  "Host",
+					Value: value("ai.corp.ts.net"),
+				},
+			},
+			wantErr:       true,
+			wantErrHeader: "Host",
+		},
+		{
+			name: "the same header twice is refused",
+			url:  border0,
+			edits: []LLMProxyHeaderEdit{
+				{
+					Name:  "X-Team",
+					Value: value("infra"),
+				},
+				{
+					Name:  "x-team",
+					Value: value("web"),
+				},
+			},
+			wantErr:       true,
+			wantErrHeader: "X-Team",
+		},
+		{
+			name:    "a URL that is not usable is refused",
+			url:     "ftp://rollie-llm-sandbox-rollie-vpn.border0.io",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := applyLLMProxyEdits(tc.saved, tc.url, tc.edits)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want an error: %v", err, tc.wantErr)
+			}
+			var headerErr LLMProxyHeaderError
+			errors.As(err, &headerErr)
+			if headerErr.Name != tc.wantErrHeader {
+				t.Errorf("refused header = %q, want %q", headerErr.Name, tc.wantErrHeader)
+			}
+			if err == nil && !reflect.DeepEqual(got.Headers, tc.wantHeaders) {
+				t.Errorf("headers = %v, want %v", got.Headers, tc.wantHeaders)
+			}
+		})
+	}
+}
+
+func TestLLMProxyWithURL(t *testing.T) {
+	saved := llmproxy.Proxy{
+		URL:     "https://rollie-llm-sandbox-rollie-vpn.border0.io",
+		Headers: http.Header{"Border0-Token": {"b0-secret"}},
+	}
+	cases := []struct {
+		name        string
+		url         string
+		wantHeaders int
+	}{
+		{
+			name:        "the same host keeps the headers",
+			url:         "https://rollie-llm-sandbox-rollie-vpn.border0.io:8443",
+			wantHeaders: 1,
+		},
+		{
+			name: "a new host drops them",
+			url:  "https://gateway.example.com",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := LLMProxyWithURL(saved, tc.url)
+			if err != nil {
+				t.Fatalf("LLMProxyWithURL: %v", err)
+			}
+			if len(got.Headers) != tc.wantHeaders {
+				t.Errorf("headers = %v, want %d", got.Headers, tc.wantHeaders)
+			}
+		})
+	}
+}
+
+func TestService_TestLLMProxy(t *testing.T) {
+	var redirectedTo bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirectedTo = true
+	}))
+	defer elsewhere.Close()
+	var gotToken string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("Border0-Token")
+		http.Redirect(w, r, elsewhere.URL+"/login?state=b0-state", http.StatusFound)
+	}))
+	defer proxy.Close()
+
+	svc, _, _, _ := newTestService(t)
+	svc.SetLLMProxyURL(proxy.URL)
+	svc.SetLLMProxyHeaders(http.Header{"Border0-Token": {"b0-secret"}})
+
+	// No value in the form, so the test sends the saved one, the same as a session would.
+	result, err := svc.TestLLMProxy(context.Background(), proxy.URL, []LLMProxyHeaderEdit{{Name: "Border0-Token"}})
+	if err != nil {
+		t.Fatalf("TestLLMProxy: %v", err)
+	}
+	if gotToken != "b0-secret" {
+		t.Errorf("the proxy saw token %q, want the saved one", gotToken)
+	}
+	// Following it would hand the token to another host.
+	if redirectedTo {
+		t.Error("the check followed a redirect")
+	}
+	if !strings.Contains(result.Result, "302") || !strings.Contains(result.Result, elsewhere.URL+"/login") {
+		t.Errorf("result = %q, want the proxy's own answer and where it points", result.Result)
+	}
+	// A login redirect can carry a token in its query.
+	if strings.Contains(result.Result, "b0-state") {
+		t.Errorf("result = %q repeats the redirect's query", result.Result)
+	}
+
+	proxy.Close()
+	result, err = svc.TestLLMProxy(context.Background(), proxy.URL, []LLMProxyHeaderEdit{{Name: "Border0-Token"}})
+	if err != nil || result.Verdict != LLMProxyUnreachable {
+		t.Errorf("a closed proxy: %+v, %v, want unreachable and no error", result, err)
+	}
+}
+
+func TestLLMProxyTestVerdict(t *testing.T) {
+	const border0 = "https://rollie-llm-sandbox-rollie-vpn.border0.io"
+	cases := []struct {
+		name     string
+		status   int
+		location string
+		want     LLMProxyTestVerdict
+	}{
+		{
+			name:   "200",
+			status: http.StatusOK,
+			want:   LLMProxyReached,
+		},
+		{
+			name:   "a proxy that refuses a bare GET",
+			status: http.StatusMethodNotAllowed,
+			want:   LLMProxyReached,
+		},
+		{
+			name:     "a redirect to the proxy's own page",
+			status:   http.StatusFound,
+			location: border0 + "/chat",
+			want:     LLMProxyReached,
+		},
+		{
+			name:     "a relative redirect stays on the proxy",
+			status:   http.StatusFound,
+			location: "/chat",
+			want:     LLMProxyReached,
+		},
+		{
+			name:   "401",
+			status: http.StatusUnauthorized,
+			want:   LLMProxyRejected,
+		},
+		{
+			name:   "403",
+			status: http.StatusForbidden,
+			want:   LLMProxyRejected,
+		},
+		{
+			name:   "407",
+			status: http.StatusProxyAuthRequired,
+			want:   LLMProxyRejected,
+		},
+		{
+			name:     "a redirect to a login page on another host",
+			status:   http.StatusFound,
+			location: "https://login.border0.io/authorize",
+			want:     LLMProxyRejected,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, border0, nil)
+			resp := &http.Response{
+				StatusCode: tc.status,
+				Header:     http.Header{},
+				Request:    req,
+			}
+			if tc.location != "" {
+				resp.Header.Set("Location", tc.location)
+			}
+			if got := llmProxyTestVerdict(border0, resp); got != tc.want {
+				t.Errorf("verdict = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

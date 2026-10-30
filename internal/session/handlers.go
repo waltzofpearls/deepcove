@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/waltzofpearls/deepcove/internal/sandbox"
@@ -127,37 +128,76 @@ func (s *Service) handleListLocal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// llmProxyView is what the API says about the proxy. Header values are write only, so only the names
+// are in it. One read, so a save in between never pairs one proxy's URL with another's names.
+func (s *Service) llmProxyView() map[string]any {
+	proxy := s.LLMProxy()
+	return map[string]any{
+		"url":     proxy.URL,
+		"headers": sortedHeaderNames(proxy.Headers),
+	}
+}
+
 // handleGetLLMProxy serves GET /api/llm-proxy: where this node's sessions send LLM requests.
 func (s *Service) handleGetLLMProxy(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"url": s.LLMProxyURL()})
+	writeJSON(w, http.StatusOK, s.llmProxyView())
+}
+
+// llmProxyRequest is the body of a save and of a test: the URL and the full list of headers.
+type llmProxyRequest struct {
+	URL     string               `json:"url"`
+	Headers []LLMProxyHeaderEdit `json:"headers"`
 }
 
 // handleSetLLMProxy serves PUT /api/llm-proxy. An empty url sends sessions to the provider.
 func (s *Service) handleSetLLMProxy(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		URL string `json:"url"`
-	}
+	var req llmProxyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	url, err := s.SaveLLMProxy(req.URL)
-	if err != nil {
-		writeSandboxError(w, err)
+	if err := s.SaveLLMProxy(req.URL, req.Headers); err != nil {
+		writeLLMProxyError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+	writeJSON(w, http.StatusOK, s.llmProxyView())
 }
 
-// handleTestLLMProxy serves POST /api/llm-proxy/test: one request to the configured address, so the UI
-// can report whether this node can reach it.
+// handleTestLLMProxy serves POST /api/llm-proxy/test: one request with the values in the form, so the
+// UI can report whether this node can reach the proxy before they are saved.
 func (s *Service) handleTestLLMProxy(w http.ResponseWriter, r *http.Request) {
-	result, err := s.TestLLMProxy(r.Context())
+	var req llmProxyRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	// A UI older than testing the form sends no body, and means the saved proxy.
+	if errors.Is(err, io.EOF) {
+		req.URL = s.LLMProxyURL()
+		err = nil
+	}
 	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	result, err := s.TestLLMProxy(r.Context(), req.URL, req.Headers)
+	if err != nil {
+		writeLLMProxyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// writeLLMProxyError adds the header's name when one header was refused, so the UI can show the
+// reason on that row.
+func writeLLMProxyError(w http.ResponseWriter, err error) {
+	var headerErr LLMProxyHeaderError
+	if !errors.As(err, &headerErr) {
 		writeSandboxError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"result": result})
+	writeJSON(w, http.StatusBadRequest, map[string]string{
+		"error":  headerErr.Reason,
+		"code":   codeInvalidInput,
+		"header": headerErr.Name,
+	})
 }
 
 // handlePatch updates one session. PATCH /api/sessions/{id} with any of {"name": "...",

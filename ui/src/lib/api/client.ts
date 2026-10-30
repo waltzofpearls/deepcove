@@ -12,6 +12,8 @@ import type {
   CreateTmuxWindowRequest,
   FsListResponse,
   LLMProxy,
+  LLMProxyHeaderEdit,
+  LLMProxyTestResult,
   LoginMode,
   Me,
   SharedLoginStatus,
@@ -34,10 +36,12 @@ export class ApiError extends Error {
   // code is the stable machine tag from the {error, code} envelope,
   // undefined for generic/older errors. Callers map it to friendly
   // copy + actions (see lib/api/errors.ts).
+  // header names the one header a save was refused for, so the form can show the reason on its row.
   constructor(
     public status: number,
     message: string,
     public code?: string,
+    public header?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -59,14 +63,16 @@ async function requestRaw<T>(
     // status line if the body isn't shaped that way.
     let msg = resp.statusText;
     let code: string | undefined;
+    let header: string | undefined;
     try {
-      const body = (await resp.json()) as { error?: string; code?: string };
+      const body = (await resp.json()) as { error?: string; code?: string; header?: string };
       if (body.error) msg = body.error;
       code = body.code;
+      header = body.header;
     } catch {
       /* non-JSON body */
     }
-    throw new ApiError(resp.status, msg, code);
+    throw new ApiError(resp.status, msg, code, header);
   }
   // 204 No Content means the caller doesn't get a body. Cast to satisfy T.
   if (resp.status === 204) return { data: undefined as T, resp };
@@ -284,11 +290,18 @@ export const api = {
     return request('/llm-proxy', { signal }, transportForHost(host));
   },
 
-  // An empty url sends sessions to the provider. Applies to machines built after it, not running ones.
-  saveLLMProxy(url: string, host?: SessionHost): Promise<LLMProxy> {
+  // saveLLMProxy sends the URL and the full header list together. A header left out is removed. An
+  // empty url sends sessions to the provider.
+  saveLLMProxy(url: string, headers: LLMProxyHeaderEdit[], host?: SessionHost): Promise<LLMProxy> {
     return request(
       '/llm-proxy',
-      { method: 'PUT', body: JSON.stringify({ url }) },
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          url,
+          headers,
+        }),
+      },
       transportForHost(host),
     );
   },
@@ -333,10 +346,24 @@ export const api = {
     );
   },
 
-  // testLLMProxy asks a node to make one request to its configured proxy, so the UI can report
-  // whether it is reachable from there.
-  testLLMProxy(host?: SessionHost): Promise<{ result: string }> {
-    return request('/llm-proxy/test', { method: 'POST' }, transportForHost(host));
+  // testLLMProxy asks a node to make one request with the values in the form, saved or not, so the UI
+  // can report whether the proxy is reachable from there before you save.
+  testLLMProxy(
+    url: string,
+    headers: LLMProxyHeaderEdit[],
+    host?: SessionHost,
+  ): Promise<LLMProxyTestResult> {
+    return request(
+      '/llm-proxy/test',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          url,
+          headers,
+        }),
+      },
+      transportForHost(host),
+    );
   },
 
   // workspaceVM is this node's shared machine, or null when there is none. Null is the normal state
