@@ -96,9 +96,24 @@ export interface CreateSessionRequest {
 }
 
 // LLMProxy is where this node's sessions send LLM requests. An empty url means straight to the
-// provider, with the key inside the sandbox.
+// provider, with the key inside the sandbox. Header values are write only, so only the names come back.
+// A node on a build older than headers sends no headers at all.
 export interface LLMProxy {
   url: string;
+  headers?: string[];
+}
+
+// LLMProxyTestResult is what a test found. rejected means the proxy answered but probably refused the
+// headers.
+export interface LLMProxyTestResult {
+  verdict: 'reached' | 'rejected' | 'unreachable';
+  result: string;
+}
+
+// LLMProxyHeaderEdit is one header in a save. No value keeps the one already saved.
+export interface LLMProxyHeaderEdit {
+  name: string;
+  value?: string;
 }
 
 // SharedLoginStatus mirrors internal/sharedlogin.Status, plus the node's login settings.

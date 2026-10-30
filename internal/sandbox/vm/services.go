@@ -30,10 +30,10 @@ func (g *Guest) ServeConfig(cfg guestcfg.Config) error {
 
 // ServeLLMForward answers this VM's LLM requests.
 //
-// Every VM gets one, whether or not a proxy is configured right now: the address is read per request, so
+// Every VM gets one, whether or not a proxy is configured right now: the proxy is read per request, so
 // setting one later reaches a machine that is already running.
-func (g *Guest) ServeLLMForward(proxyURL func() string, apiKeyFor func(sessionID string) (llmproxy.APIKey, error), client func() *http.Client) error {
-	forwarder := llmproxy.NewForwarder(proxyURL, apiKeyFor, client, func(err error) {
+func (g *Guest) ServeLLMForward(proxy func() llmproxy.Proxy, apiKeyFor func(sessionID string) (llmproxy.APIKey, error), client func() *http.Client) error {
+	forwarder := llmproxy.NewForwarder(proxy, apiKeyFor, client, func(err error) {
 		g.logger.Warn("llm proxy request failed", "err", err)
 	}, func(sessionID, method, path string) {
 		g.logger.Info("llm proxy request", "session", sessionID, "method", method, "path", path)

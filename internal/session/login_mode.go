@@ -57,8 +57,13 @@ func (s *Service) checkLoginMode(mode LoginMode, agent AgentSpec, runtime sandbo
 			return fmt.Errorf("%w: no API key is saved. Add one in Settings", ErrInvalidInput)
 		}
 	case LoginWithLLMProxy:
-		if s.LLMProxyURL() == "" {
+		proxy := s.LLMProxy()
+		if proxy.URL == "" {
 			return fmt.Errorf("%w: this node has no LLM proxy. Add one in Settings", ErrInvalidInput)
+		}
+		// With no sandbox the agent calls the proxy itself, so nothing on the way can add them.
+		if !forwards && len(proxy.Headers) > 0 {
+			return fmt.Errorf("%w: a session with no sandbox can't send the LLM proxy's headers", ErrInvalidInput)
 		}
 	}
 	return nil

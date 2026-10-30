@@ -50,10 +50,10 @@ type Driver struct {
 	// after the runtimes and may connect later still.
 	tailnetClient func() *http.Client
 
-	// llmProxyURL is asked on every request, not once at boot, so changing it in the UI reaches machines
-	// that are already running. Nil, or an empty answer, makes the forwarder refuse with an error the
-	// agent can read.
-	llmProxyURL func() string
+	// llmProxy is asked on every request, not once at boot, so changing it in the UI reaches machines
+	// that are already running. Nil, or an empty URL, makes the forwarder refuse with an error the agent
+	// can read.
+	llmProxy func() llmproxy.Proxy
 	// apiKeyFor is the user's API key for a session on a VM that uses it. Asked per request.
 	apiKeyFor func(sandboxID sandbox.ID, sessionID string) (llmproxy.APIKey, error)
 
@@ -105,9 +105,11 @@ func WithTailnetClient(client func() *http.Client) Option {
 	return func(d *Driver) { d.tailnetClient = client }
 }
 
-// WithLLMProxyURL tells the driver where to forward LLM requests. Read per request.
-func WithLLMProxyURL(current func() string) Option {
-	return func(d *Driver) { d.llmProxyURL = current }
+// WithLLMProxy tells the driver where to forward LLM requests and what headers to add. Read per request.
+func WithLLMProxy(current func() llmproxy.Proxy) Option {
+	return func(d *Driver) {
+		d.llmProxy = current
+	}
 }
 
 // WithAPIKeys gives the driver the user's API key for each session that uses it. Read per request.
@@ -288,7 +290,7 @@ func (d *Driver) Start(ctx context.Context, sandboxID sandbox.ID) error {
 	d.mu.Unlock()
 
 	homeDevice, swapDevice := guestDevices(home, swap)
-	if err := guest.ServeLLMForward(d.llmProxyURL, d.apiKeysOn(sandboxID), d.tailnetClient); err != nil {
+	if err := guest.ServeLLMForward(d.llmProxy, d.apiKeysOn(sandboxID), d.tailnetClient); err != nil {
 		return d.abandon(state, guest, err)
 	}
 	// Served whether or not the session shares now: the keeper asks on every request, so the switch

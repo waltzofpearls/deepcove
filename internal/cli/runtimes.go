@@ -153,7 +153,7 @@ func (deps runtimeDeps) vmDriver(name string, backend vm.Backend, kernel, guestI
 		vm.WithShareRoots(deps.shareRoots),
 		vm.WithNetworkAllow(deps.cfg.AllowSandboxHosts...),
 		vm.WithTailnetClient(deps.tailnetClient),
-		vm.WithLLMProxyURL(deps.svc.LLMProxyURL),
+		vm.WithLLMProxy(deps.svc.LLMProxy),
 		vm.WithAPIKeys(deps.svc.APIKeyFor),
 		vm.WithSharedLogin(deps.sharedLogin),
 		vm.WithOnSilentGuestStopped(func(sandboxID sandbox.ID) {

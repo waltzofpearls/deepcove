@@ -22,7 +22,17 @@ func serveOverPipe(t *testing.T, upstream string, client *http.Client) net.Conn 
 // serveOverPipeFunc is the same, for tests that change the address while the connection is open.
 func serveOverPipeFunc(t *testing.T, upstream func() string, client *http.Client) net.Conn {
 	t.Helper()
-	forwarder := NewForwarder(upstream, nil, func() *http.Client { return client }, nil, nil)
+	forwarder := NewForwarder(
+		func() Proxy {
+			return Proxy{URL: upstream()}
+		},
+		nil,
+		func() *http.Client {
+			return client
+		},
+		nil,
+		nil,
+	)
 	guest, host := net.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -207,7 +217,9 @@ func TestForwarderReportsAnUnreachableProxy(t *testing.T) {
 
 	var logged []error
 	forwarder := NewForwarder(
-		func() string { return deadURL },
+		func() Proxy {
+			return Proxy{URL: deadURL}
+		},
 		nil,
 		func() *http.Client { return nil },
 		func(err error) { logged = append(logged, err) },
@@ -246,7 +258,9 @@ func TestForwarderAttributesRequestsToASession(t *testing.T) {
 
 	var seen []string
 	forwarder := NewForwarder(
-		func() string { return upstream.URL },
+		func() Proxy {
+			return Proxy{URL: upstream.URL}
+		},
 		nil,
 		func() *http.Client { return nil },
 		nil,
@@ -282,13 +296,21 @@ func TestForwarderAttributesRequestsToASession(t *testing.T) {
 }
 
 func TestForwarder_route(t *testing.T) {
-	type seen struct{ server, auth, apiKey string }
+	type seen struct {
+		server, auth, apiKey, token string
+	}
 	var got []seen
 	serverNamed := func(name string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got = append(got, seen{name, r.Header.Get("Authorization"), r.Header.Get("X-Api-Key")})
+			got = append(got, seen{
+				server: name,
+				auth:   r.Header.Get("Authorization"),
+				apiKey: r.Header.Get("X-Api-Key"),
+				token:  r.Header.Get("Border0-Token"),
+			})
 		}))
 	}
+	token := http.Header{"Border0-Token": {"b0-secret"}}
 	proxy, provider := serverNamed("proxy"), serverNamed("provider")
 	defer proxy.Close()
 	defer provider.Close()
@@ -298,23 +320,98 @@ func TestForwarder_route(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		sessionID  string
-		sentAPIKey string
-		wantStatus int
-		want       seen
+		name         string
+		sessionID    string
+		sentAPIKey   string
+		proxyHeaders http.Header
+		wantStatus   int
+		want         seen
 	}{
-		{name: "a session with the API key goes to the provider with it", sessionID: "with-key", wantStatus: http.StatusOK, want: seen{"provider", "", "sk-ant-1234"}},
-		{name: "a provider that takes a bearer key gets it in Authorization", sessionID: "with-bearer", sentAPIKey: "sk-from-the-guest", wantStatus: http.StatusOK, want: seen{"provider", "Bearer sk-proj-1234", ""}},
-		{name: "any other session goes to the proxy", sessionID: "without", wantStatus: http.StatusOK, want: seen{"proxy", "Bearer deepcove", ""}},
-		{name: "a key the agent sends never reaches the proxy", sessionID: "without", sentAPIKey: "sk-from-the-guest", wantStatus: http.StatusOK, want: seen{"proxy", "Bearer deepcove", ""}},
-		{name: "a session whose key cannot be read is told why", sessionID: "broken", wantStatus: http.StatusBadGateway},
+		{
+			name:       "a session with the API key goes to the provider with it",
+			sessionID:  "with-key",
+			wantStatus: http.StatusOK,
+			want: seen{
+				server: "provider",
+				apiKey: "sk-ant-1234",
+			},
+		},
+		{
+			name:       "a provider that takes a bearer key gets it in Authorization",
+			sessionID:  "with-bearer",
+			sentAPIKey: "sk-from-the-guest",
+			wantStatus: http.StatusOK,
+			want: seen{
+				server: "provider",
+				auth:   "Bearer sk-proj-1234",
+			},
+		},
+		{
+			name:       "any other session goes to the proxy",
+			sessionID:  "without",
+			wantStatus: http.StatusOK,
+			want: seen{
+				server: "proxy",
+				auth:   "Bearer deepcove",
+			},
+		},
+		{
+			name:       "a key the agent sends never reaches the proxy",
+			sessionID:  "without",
+			sentAPIKey: "sk-from-the-guest",
+			wantStatus: http.StatusOK,
+			want: seen{
+				server: "proxy",
+				auth:   "Bearer deepcove",
+			},
+		},
+		{
+			name:         "the proxy gets its headers",
+			sessionID:    "without",
+			proxyHeaders: token,
+			wantStatus:   http.StatusOK,
+			want: seen{
+				server: "proxy",
+				auth:   "Bearer deepcove",
+				token:  "b0-secret",
+			},
+		},
+		{
+			name:         "the provider never gets the proxy's headers",
+			sessionID:    "with-key",
+			proxyHeaders: token,
+			wantStatus:   http.StatusOK,
+			want: seen{
+				server: "provider",
+				apiKey: "sk-ant-1234",
+			},
+		},
+		{
+			name:         "a proxy header replaces the placeholder Authorization",
+			sessionID:    "without",
+			proxyHeaders: http.Header{"Authorization": {"Bearer gw-1234"}},
+			wantStatus:   http.StatusOK,
+			want: seen{
+				server: "proxy",
+				auth:   "Bearer gw-1234",
+			},
+		},
+		{
+			name:       "a session whose key cannot be read is told why",
+			sessionID:  "broken",
+			wantStatus: http.StatusBadGateway,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got = nil
 			forwarder := NewForwarder(
-				func() string { return proxy.URL },
+				func() Proxy {
+					return Proxy{
+						URL:     proxy.URL,
+						Headers: tc.proxyHeaders,
+					}
+				},
 				func(sessionID string) (APIKey, error) {
 					if sessionID == "broken" {
 						return APIKey{}, errors.New("no API key is saved")

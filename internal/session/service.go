@@ -103,7 +103,9 @@ type Service struct {
 	// change it while a session is being built or an agent launched. See llm_proxy.go.
 	llmProxyMu  sync.RWMutex
 	llmProxyURL string
-	// llmProxyStore persists that URL. nil on a node whose proxy is set only by the flag.
+	// llmProxyHeaders go on every request to that URL. Same lock.
+	llmProxyHeaders http.Header
+	// llmProxyStore persists both. nil on a node whose proxy is set only by the flag.
 	llmProxyStore LLMProxyStore
 	// tailnetClient reaches a proxy that lives on the tailnet, for the reachability check. A function:
 	// this node may sign in long after the service is built.
