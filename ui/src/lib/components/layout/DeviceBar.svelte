@@ -3,7 +3,7 @@
   // hidden. Each device on your tailnet gets a chip:
   //   - Session node: the backend that runs your sessions (this machine's tsnet connection).
   //   - Web node:     your browser as its own tailnet device, used to reach session nodes' streams.
-  // A session node (direct boot) shows only the session node; a dashboard thin client (wasm) only the web
+  // A session node (direct boot) shows only the session node; a web node mode page (wasm) only the web
   // node.
   // Not signed in → the chip shows the type label and clicking opens a sign-in dialog. Signed in → it
   // shows the node's name with the type as a footnote, and clicking opens an info dialog.
@@ -45,8 +45,8 @@
   import Check from '@lucide/svelte/icons/check';
   import Loader2 from '@lucide/svelte/icons/loader-2';
 
-  // direct boot = a real backend node is serving this UI (a session node). wasm boot = dashboard thin
-  // client, where the only tailnet device is the browser's web node.
+  // direct boot = a real backend node is serving this UI (a session node). wasm boot = web node
+  // mode, where the only tailnet device is the browser's web node.
   const isSessionNode = transport.mode === 'direct';
 
   $effect(() => {

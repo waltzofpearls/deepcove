@@ -1,5 +1,5 @@
 // Command webnode builds the hosted web node into web-node/dist: the UI bundle from ui/build, set up the
-// way `deepcove dashboard` serves it, plus the response headers in web-node/_headers with the hashes of
+// way `deepcove open` serves it, plus the response headers in web-node/_headers with the hashes of
 // the page's inline scripts filled in. The WASM file is left out, since it is too big for a static asset
 // and goes to R2 instead; its path inside the bundle is printed for the deploy step. It runs from the
 // repository root.
@@ -75,7 +75,7 @@ func build(bundle, headers, dist string) (string, error) {
 			wasm = found
 			return nil
 		case rel == "index.html":
-			indexHTML, err = writeDashboardIndexHTML(path, to)
+			indexHTML, err = writeWebNodeIndexHTML(path, to)
 			return err
 		default:
 			return files.Copy(path, to)
@@ -93,16 +93,16 @@ func build(bundle, headers, dist string) (string, error) {
 	return wasm, nil
 }
 
-// writeDashboardIndexHTML writes index.html set up like the dashboard, and returns what it wrote.
-func writeDashboardIndexHTML(from, to string) ([]byte, error) {
+// writeWebNodeIndexHTML writes index.html set up for web node mode, and returns what it wrote.
+func writeWebNodeIndexHTML(from, to string) ([]byte, error) {
 	html, err := os.ReadFile(from)
 	if err != nil {
 		return nil, err
 	}
-	shell := ui.DashboardIndexHTML(html)
+	shell := ui.WebNodeIndexHTML(html)
 	// Served unchanged, the page would look for an API on app.deepcove.dev that is not there.
 	if bytes.Equal(shell, html) {
-		return nil, fmt.Errorf("%s has no </head> to add the dashboard settings before", from)
+		return nil, fmt.Errorf("%s has no </head> to add the web node mode settings before", from)
 	}
 	return shell, os.WriteFile(to, shell, 0o644)
 }

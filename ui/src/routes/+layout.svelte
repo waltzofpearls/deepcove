@@ -10,9 +10,11 @@
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import NewSessionDialog from '$lib/components/session/NewSessionDialog.svelte';
   import TailnetGate from '$lib/components/TailnetGate.svelte';
+  import LockedScreen from '$lib/components/LockedScreen.svelte';
   import { transport, discoveryRequired } from '$lib/api/transport';
   import { ensureTailnet, tailnetAuth, hasWebNodeSignIn } from '$lib/api/wasm';
   import { discovery } from '$lib/stores/discovery.svelte';
+  import { checkLocalLock, localLock } from '$lib/api/localLock';
   import { Sheet, SheetContent } from '$lib/components/ui/sheet';
   import { preflight } from '$lib/stores/preflight.svelte';
   import { missingReasons, runtimeSetupOffered } from '$lib/util/runtime';
@@ -38,8 +40,8 @@
 
   // In wasm mode the whole app rides the in-browser Tailscale node, so bring it
   // up on boot and gate the dashboard until it's running. Direct mode never
-  // touches this. `tailnetAuth` stays idle and `gated` is false. In dashboard
-  // discover mode there's also no server to fan out, so the in-browser node
+  // touches this. `tailnetAuth` stays idle and `gated` is false. In web node
+  // mode there's also no server to fan out, so the in-browser node
   // discovers your nodes itself (discovery.start brings the node up too).
   onMount(() => {
     if (transport.mode === 'wasm') {
@@ -47,6 +49,7 @@
       else void ensureTailnet().catch(() => {});
       return;
     }
+    void checkLocalLock();
     // Direct mode: the web node is lazy, but if it was signed in before (saved creds present), reconnect
     // it in the background so its chip persists across refreshes. The localStorage check is cheap and
     // synchronous, and the reconnect is fire-and-forget, so page load is never blocked; the wasm loads
@@ -66,6 +69,7 @@
   // rides the boot transport's primary node, so hold it until discovery is ready.
   $effect(() => {
     if (discoveryRequired() && discovery.phase !== 'ready') return;
+    if ($localLock !== 'unlocked') return;
     return preflight.subscribe();
   });
 
@@ -102,6 +106,10 @@
        in-browser node is running. Nothing mounts before then, the setup wizard included, since
        it asks a node what it can run. -->
   <TailnetGate />
+{:else if $localLock === 'checking'}
+  <!-- Nothing until the first answer says whether this browser is unlocked. -->
+{:else if $localLock === 'locked'}
+  <LockedScreen />
 {:else if page.url.pathname === '/setup'}
   <!-- The setup wizard is its own full-screen page with no topbar/sidebar chrome. -->
   {@render children()}

@@ -63,7 +63,7 @@ function waitingOnASecondTry(): boolean {
 
 async function poll(signal: AbortSignal): Promise<void> {
   try {
-    // Dashboard mode: the browser is the aggregator, so fan out across the discovered nodes
+    // Web node mode: the browser is the aggregator, so fan out across the discovered nodes
     // ourselves. Connected mode: a server node fans out behind /api/sessions.
     const resp = discoveryRequired()
       ? await api.listSessionsAcrossNodes(discovery.nodes, discovery.self, { all: true, signal })

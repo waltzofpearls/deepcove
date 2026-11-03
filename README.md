@@ -21,7 +21,7 @@ curl -fsSL https://deepcove.dev/install.sh | sh
 Runs on macOS, or Linux with KVM. It installs to `~/.local/bin` with no sudo, checks the download
 against the release's checksums, and starts deepcove in the background.
 
-Then open http://127.0.0.1:9000. To add your other machines, run `deepcove network login` on each one
+Then run `deepcove open`. To add your other machines, run `deepcove network login` on each one
 and sign in to Tailscale.
 
 ## Sandboxes
@@ -60,7 +60,7 @@ On macOS the build signs the binary with no certificate, which is what lets it s
 ./deepcove start
 ```
 
-Then open http://127.0.0.1:9000.
+Then run `./deepcove open` in another terminal.
 
 To keep it running in the background, starting again with your login session:
 

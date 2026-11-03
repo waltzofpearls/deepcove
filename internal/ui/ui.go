@@ -27,8 +27,8 @@ type UI struct {
 	// target is the deepcove node's tailnet URL the in-browser node dials in wasm
 	// mode (empty in direct mode, where the API is same-origin).
 	target string
-	// discover marks dashboard mode: the thin client hosts no API of its own, so the in-browser node
-	// must discover your nodes itself (no injected target). Only set by `deepcove dashboard`.
+	// discover marks web node mode: the thin client hosts no API of its own, so the in-browser node
+	// must discover your nodes itself (no injected target). Only set by `deepcove open`.
 	discover bool
 }
 
@@ -56,7 +56,7 @@ func WithTarget(target string) Option {
 	}
 }
 
-// WithDiscover marks dashboard mode: the SPA is told to discover your nodes via its own in-browser
+// WithDiscover marks web node mode: the SPA is told to discover your nodes via its own in-browser
 // node rather than talk to a single injected target. Implies wasm transport.
 func WithDiscover() Option {
 	return func(ui *UI) {
@@ -64,19 +64,19 @@ func WithDiscover() Option {
 	}
 }
 
-// DashboardMode is how a page with no API of its own is served: the in-browser Tailscale node signs in and
-// finds your nodes itself. `deepcove dashboard` and the hosted web node both use it.
-func DashboardMode() Option {
+// WebNodeMode is how a page with no API of its own is served: the in-browser Tailscale node signs in and
+// finds your nodes itself. `deepcove open` and the hosted web node both use it.
+func WebNodeMode() Option {
 	return func(ui *UI) {
 		WithTransport("wasm")(ui)
 		WithDiscover()(ui)
 	}
 }
 
-// DashboardIndexHTML returns the SPA shell set up for DashboardMode, for the hosted web node to ship.
-func DashboardIndexHTML(indexHTML []byte) []byte {
-	dashboard := New(DashboardMode())
-	return injectRuntimeConfig(indexHTML, dashboard.transport, dashboard.target, dashboard.discover)
+// WebNodeIndexHTML returns the SPA shell set up for WebNodeMode, for the hosted web node to ship.
+func WebNodeIndexHTML(indexHTML []byte) []byte {
+	webNode := New(WebNodeMode())
+	return injectRuntimeConfig(indexHTML, webNode.transport, webNode.target, webNode.discover)
 }
 
 func New(options ...Option) *UI {

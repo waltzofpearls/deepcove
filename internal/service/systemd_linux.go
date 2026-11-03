@@ -18,6 +18,11 @@ type systemdManager struct {
 	runner   commandRunner
 }
 
+// IsSupported is true: deepcove can install itself as a systemd user service here.
+func IsSupported() bool {
+	return true
+}
+
 // New builds the manager for this platform. The data directory is unused here: journald keeps the
 // output, so there is no log file of ours to place.
 func New(_, exePath string) (Manager, error) {

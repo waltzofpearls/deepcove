@@ -23,6 +23,11 @@ type launchdManager struct {
 	runner    commandRunner
 }
 
+// IsSupported is true: deepcove can install itself as a launchd agent here.
+func IsSupported() bool {
+	return true
+}
+
 // New builds the manager for this platform.
 func New(dataDir, exePath string) (Manager, error) {
 	home, err := os.UserHomeDir()

@@ -57,7 +57,7 @@
   } = $props();
 
   // The host's MagicDNS name as a memoized derived. The attach effect depends on THIS, not on `host`
-  // directly: in dashboard mode the sessions poll hands us a fresh `host` object every few seconds
+  // directly: in web node mode the sessions poll hands us a fresh `host` object every few seconds
   // (same dns_name, new reference), and an effect that read `host` would re-run on every poll,
   // tearing down and recreating the WS + xterm, which is the periodic flicker. A $derived only
   // propagates when its value actually changes (===), so the effect stays put unless the session
@@ -121,7 +121,7 @@
     // stable values for the lifetime of this effect run.
     const id = sessionId;
     const win = tmuxWindow;
-    // Depend on the host's stable identity (its MagicDNS name), NOT the object reference. In dashboard
+    // Depend on the host's stable identity (its MagicDNS name), NOT the object reference. In web node
     // mode the sessions poll rebuilds the host object every few seconds; depending on the object would
     // re-run this whole effect each poll, tearing down and recreating the WS + xterm, which shows up
     // as a periodic flicker. dns_name only changes if the session actually moves nodes, which is when we

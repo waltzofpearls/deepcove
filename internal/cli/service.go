@@ -54,7 +54,15 @@ func cmdService(ctx context.Context, args []string) error {
 		fmt.Println("deepcove will no longer start on its own. Your logs and data are untouched.")
 		return nil
 	case "status":
-		return printServiceStatus(manager)
+		if err := printServiceStatus(manager); err != nil {
+			return err
+		}
+		cfg, cfgErr := config.Load(ctx)
+		status, statusErr := manager.Status()
+		if cfgErr == nil && statusErr == nil {
+			printPortProblem(cfg, status.StartCommand)
+		}
+		return nil
 	case "start":
 		return manager.Start()
 	case "stop":
@@ -154,17 +162,20 @@ func cmdServiceInstall(ctx context.Context, manager service.Manager, args []stri
 		return err
 	}
 
+	cfg, err := config.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 	// Into the data dir, not the service definition: a unit file is world readable and permanent, and
 	// one of these is usually a token.
 	if len(env) > 0 {
-		cfg, err := config.Load(ctx)
-		if err != nil {
-			return fmt.Errorf("config: %w", err)
-		}
 		if err := config.SetEnvFileValues(cfg.DataDir, env); err != nil {
 			return err
 		}
 		fmt.Printf("stored %d setting(s) in %s\n", len(env), config.EnvFilePath(cfg.DataDir))
+	}
+	if err := switchToNextFreePortIfTaken(cfg, after); err != nil {
+		return err
 	}
 
 	if err := manager.Install(after, service.InstallOptions{Linger: !*noLinger}); err != nil {

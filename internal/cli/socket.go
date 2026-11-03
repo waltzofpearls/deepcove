@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,16 @@ import (
 	"runtime"
 	"time"
 )
+
+// listenAddrPath is where the socket tells the CLI which address this deepcove listens on.
+const listenAddrPath = "/listen-addr"
+
+func buildListenAddrHandler(listenAddr string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"addr": listenAddr})
+	}
+}
 
 // socketPath returns the per-OS path of the local control Unix socket for the given data dir. The name
 // is derived from the data dir so multiple `deepcove start` instances on one machine (each with its own
@@ -96,6 +107,20 @@ func listenUnixSocket(path string, handler http.Handler) (*http.Server, net.List
 // localAllowedHosts derives the LocalGate Host allowlist from the TCP bind address. Loopback is
 // always allowed by the gate; a wildcard bind (0.0.0.0 / ::) contributes nothing (only loopback
 // is trusted), while an explicit host is added so binding to a specific name/IP still works.
+// buildListenAddrFrom keeps the configured host and takes the port the listener really got, which
+// differs when the configured port is 0.
+func buildListenAddrFrom(configuredAddr string, boundAddr net.Addr) string {
+	host, _, err := net.SplitHostPort(configuredAddr)
+	if err != nil {
+		return boundAddr.String()
+	}
+	_, port, err := net.SplitHostPort(boundAddr.String())
+	if err != nil {
+		return configuredAddr
+	}
+	return net.JoinHostPort(host, port)
+}
+
 func localAllowedHosts(addr string) []string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

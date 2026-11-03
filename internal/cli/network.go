@@ -176,7 +176,7 @@ func (c *apiClient) networkRequest(
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
+		return nil, fmt.Errorf("dial deepcove service at %s: %w (is deepcove running? Start it with `%s`)", c.baseURL, err, findStartCommand())
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
@@ -230,7 +230,7 @@ func networkUsage(w *os.File) {
 		"  deepcove network logout      sign out, this machine leaves your network",
 		"  deepcove network disconnect  stop for now, without signing out",
 		"",
-		"The node has to be running already: `deepcove start`, or `deepcove service install`.",
+		"The node has to be running already: `" + findStartCommand() + "`.",
 	}
 	_, _ = fmt.Fprint(w, joinStringLines(lines))
 }

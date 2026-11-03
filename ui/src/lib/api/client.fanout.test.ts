@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Exercises the browser-side fan-out orchestration (dashboard mode): listSessionsAcrossNodes hits each
+// Exercises the browser-side fan-out orchestration (web node mode): listSessionsAcrossNodes hits each
 // online node's /api/sessions/local through transportForHost, tags hosts, marks failures unreachable,
 // and skips offline nodes. transportForHost is mocked to return a per-node fetch keyed by dns_name so
 // the test can make one node answer and another fail.

@@ -118,7 +118,7 @@ func TestNetworkCallReportsAPIErrors(t *testing.T) {
 }
 
 func TestNetworkCallSaysWhenNothingIsRunning(t *testing.T) {
-	// A closed server stands in for no node at all, which is what someone meets before `deepcove start`.
+	// A closed server stands in for no node at all, which is what someone meets before starting deepcove.
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	client := testClient(server)
 	server.Close()
@@ -127,7 +127,7 @@ func TestNetworkCallSaysWhenNothingIsRunning(t *testing.T) {
 	if err == nil {
 		t.Fatal("wanted a dial error")
 	}
-	if !strings.Contains(err.Error(), "deepcove start") {
+	if !strings.Contains(err.Error(), findStartCommand()) {
 		t.Errorf("err = %v, want it to say how to start the node", err)
 	}
 }

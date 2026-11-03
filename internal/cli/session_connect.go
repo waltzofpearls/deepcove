@@ -60,7 +60,7 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	}
 	ws, _, err := websocket.Dial(ctx, wsURL, dialOpts)
 	if err != nil {
-		return fmt.Errorf("dial attach ws: %w (is `deepcove start` running?)", err)
+		return fmt.Errorf("dial attach ws: %w (is deepcove running? Start it with `%s`)", err, findStartCommand())
 	}
 	defer func() { _ = ws.CloseNow() }()
 

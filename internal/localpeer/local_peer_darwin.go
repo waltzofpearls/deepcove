@@ -2,78 +2,87 @@
 
 package localpeer
 
+/*
+#include <libproc.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/proc_info.h>
+#include <arpa/inet.h>
+
+// find_socket_owner looks through the processes of uid for a TCP socket whose own end is client_port
+// on client_addr and whose far end is server_port on server_addr. It answers 1 when one holds it, 0
+// when none does, and -1 when the process list cannot be read.
+static int find_socket_owner(uid_t uid, int is_ipv6, const unsigned char *client_addr, int client_port,
+		const unsigned char *server_addr, int server_port) {
+	int bytes = proc_listpids(PROC_UID_ONLY, uid, NULL, 0);
+	if (bytes <= 0) return -1;
+	// Room for processes started since the size was asked.
+	bytes *= 2;
+	pid_t *pids = malloc(bytes);
+	if (pids == NULL) return -1;
+	bytes = proc_listpids(PROC_UID_ONLY, uid, pids, bytes);
+	if (bytes <= 0) {
+		free(pids);
+		return -1;
+	}
+	int found = 0;
+	for (int i = 0; i < bytes / (int)sizeof(pid_t) && !found; i++) {
+		if (pids[i] == 0) continue;
+		int fd_bytes = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, NULL, 0);
+		if (fd_bytes <= 0) continue;
+		fd_bytes *= 2;
+		struct proc_fdinfo *fds = malloc(fd_bytes);
+		if (fds == NULL) continue;
+		fd_bytes = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, fds, fd_bytes);
+		for (int j = 0; j < fd_bytes / PROC_PIDLISTFD_SIZE; j++) {
+			if (fds[j].proc_fdtype != PROX_FDTYPE_SOCKET) continue;
+			struct socket_fdinfo info;
+			int size = proc_pidfdinfo(pids[i], fds[j].proc_fd, PROC_PIDFDSOCKETINFO, &info, sizeof(info));
+			if (size != sizeof(info) || info.psi.soi_kind != SOCKINFO_TCP) continue;
+			struct in_sockinfo *ends = &info.psi.soi_proto.pri_tcp.tcpsi_ini;
+			if (ntohs(ends->insi_lport) != client_port || ntohs(ends->insi_fport) != server_port) continue;
+			found = is_ipv6
+				? memcmp(&ends->insi_laddr.ina_6, client_addr, 16) == 0
+					&& memcmp(&ends->insi_faddr.ina_6, server_addr, 16) == 0
+				: memcmp(&ends->insi_laddr.ina_46.i46a_addr4, client_addr, 4) == 0
+					&& memcmp(&ends->insi_faddr.ina_46.i46a_addr4, server_addr, 4) == 0;
+			if (found) break;
+		}
+		free(fds);
+	}
+	free(pids);
+	return found;
+}
+*/
+import "C"
+
 import (
-	"encoding/binary"
 	"errors"
-	"fmt"
 	"net/netip"
 	"os"
-
-	"golang.org/x/sys/unix"
+	"unsafe"
 )
 
-// Where the fields sit in one row of the kernel's TCP table, a struct xtcpcb64 from Apple's public
-// headers <netinet/tcp_var.h> and <sys/socketvar.h>.
-const (
-	rowMinSize      = 472
-	rowRemotePortAt = 20
-	rowLocalPortAt  = 22
-	rowIPVersionAt  = 96
-	rowRemoteAddrAt = 100
-	rowLocalAddrAt  = 116
-	rowOwnerUIDAt   = 252
-	rowIsIPv4       = 0x1
-	rowIsIPv6       = 0x2
-)
-
-// sameUser finds the client's socket in the kernel's TCP table and compares its owner, the same way
-// netstat reads it. The kernel records the uid of whoever made each socket, so this needs no
-// privileges and trusts nothing the client says.
+// sameUser looks through this user's own processes, with libproc, for the one holding the client's
+// socket. Another user's processes are never in that list, so finding it means the client is ours. This
+// is not the kernel's TCP table, which macOS 27 stopped showing in full to programs like deepcove.
 func sameUser(client, server netip.AddrPort) (bool, error) {
-	table, err := unix.SysctlRaw("net.inet.tcp.pcblist64")
-	if err != nil {
-		return false, fmt.Errorf("localpeer: read the TCP table: %w", err)
+	clientAddr := client.Addr().Unmap()
+	serverAddr := server.Addr().Unmap()
+	if clientAddr.Is6() != serverAddr.Is6() {
+		return false, errors.New("localpeer: the two ends of the connection use different IP versions")
 	}
-	uid, found := socketOwner(table, client, server)
-	if !found {
-		return false, errors.New("localpeer: the client's socket is not in the kernel's TCP table")
+	rawClient := clientAddr.AsSlice()
+	rawServer := serverAddr.AsSlice()
+	isIPv6 := C.int(0)
+	if clientAddr.Is6() {
+		isIPv6 = 1
 	}
-	return uid == os.Getuid(), nil
-}
-
-// socketOwner reads the table for the socket whose own end is client and far end server. The table is
-// a header, then one row per socket, then a closing header. Each starts with its own length.
-func socketOwner(table []byte, client, server netip.AddrPort) (uid int, found bool) {
-	if len(table) < 4 {
-		return 0, false
+	found := C.find_socket_owner(C.uid_t(os.Getuid()), isIPv6,
+		(*C.uchar)(unsafe.Pointer(&rawClient[0])), C.int(client.Port()),
+		(*C.uchar)(unsafe.Pointer(&rawServer[0])), C.int(server.Port()))
+	if found < 0 {
+		return false, errors.New("localpeer: could not list this user's processes")
 	}
-	offset := int(binary.NativeEndian.Uint32(table))
-	for offset+rowMinSize <= len(table) {
-		row := table[offset:]
-		rowLen := int(binary.NativeEndian.Uint32(row))
-		if rowLen < rowMinSize {
-			break
-		}
-		local, localOK := rowEnd(row, rowLocalAddrAt, rowLocalPortAt)
-		remote, remoteOK := rowEnd(row, rowRemoteAddrAt, rowRemotePortAt)
-		if localOK && remoteOK && local == client && remote == server {
-			return int(binary.NativeEndian.Uint32(row[rowOwnerUIDAt:])), true
-		}
-		offset += rowLen
-	}
-	return 0, false
-}
-
-// rowEnd reads one end of a row. Ports are in network order. An IPv4 address sits in the last four
-// bytes of its 16 byte field.
-func rowEnd(row []byte, addrAt, portAt int) (netip.AddrPort, bool) {
-	port := binary.BigEndian.Uint16(row[portAt:])
-	field := [16]byte(row[addrAt : addrAt+16])
-	switch {
-	case row[rowIPVersionAt]&rowIsIPv4 != 0:
-		return netip.AddrPortFrom(netip.AddrFrom4([4]byte(field[12:])), port), true
-	case row[rowIPVersionAt]&rowIsIPv6 != 0:
-		return netip.AddrPortFrom(netip.AddrFrom16(field).Unmap(), port), true
-	}
-	return netip.AddrPort{}, false
+	return found == 1, nil
 }

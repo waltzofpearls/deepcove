@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"net"
 	"slices"
 	"testing"
 )
@@ -20,6 +21,28 @@ func TestLocalAllowedHosts(t *testing.T) {
 		t.Run(tc.addr, func(t *testing.T) {
 			if got := localAllowedHosts(tc.addr); !slices.Equal(got, tc.want) {
 				t.Errorf("localAllowedHosts(%q) = %v, want %v", tc.addr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildListenAddrFrom(t *testing.T) {
+	bound := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 54321}
+	cases := []struct {
+		name           string
+		configuredAddr string
+		want           string
+	}{
+		{"a fixed port", "127.0.0.1:9000", "127.0.0.1:54321"},
+		{"port 0", "127.0.0.1:0", "127.0.0.1:54321"},
+		{"a host name", "localhost:0", "localhost:54321"},
+		{"every address", ":0", ":54321"},
+		{"no port", "127.0.0.1", "127.0.0.1:54321"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := buildListenAddrFrom(tc.configuredAddr, bound); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

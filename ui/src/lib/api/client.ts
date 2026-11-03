@@ -4,6 +4,7 @@
 
 import { transport, transportForHost, type DeepcoveSocket, type Transport } from './transport';
 import { mergeAggregated, nodeHost } from './sessions';
+import { localLock, lockedCode } from './localLock';
 import type {
   Agent,
   BootstrapResponse,
@@ -72,6 +73,7 @@ async function requestRaw<T>(
     } catch {
       /* non-JSON body */
     }
+    if (resp.status === 401 && code === lockedCode) localLock.set('locked');
     throw new ApiError(resp.status, msg, code, header);
   }
   // 204 No Content means the caller doesn't get a body. Cast to satisfy T.
@@ -103,7 +105,7 @@ function patchSessionVMSize(id: string, body: object, host?: SessionHost): Promi
 }
 
 // peerFanoutTimeoutMs bounds each per-node /api/sessions/local fetch in the browser-side fan-out
-// (dashboard mode), mirroring the Go peerFanoutTimeout. A node that doesn't answer in time is reported
+// (web node mode), mirroring the Go peerFanoutTimeout. A node that doesn't answer in time is reported
 // unreachable so one slow node never stalls the whole cross-node list.
 const peerFanoutTimeoutMs = 2000;
 
@@ -533,7 +535,7 @@ export const api = {
     return request(`/sessions${q}`, { signal: opts.signal });
   },
 
-  // Browser-side fan-out for dashboard mode: with no server node to aggregate, the browser itself
+  // Browser-side fan-out for web node mode: with no server node to aggregate, the browser itself
   // queries each discovered node's /api/sessions/local in parallel over WASM and merges the results
   // (tagging hosts, recording unreachable nodes), mirroring the Go session.ListAggregated. Offline
   // nodes are skipped, not awaited. `self` is the browser's own tailnet identity so every session
@@ -659,7 +661,7 @@ export const api = {
 
   // Create always posts to the node serving this page (the boot transport) and lets it route by
   // req.node_id: it creates locally if it's the target, else proxies to the target over its own
-  // tailnet. This works in both connected and dashboard mode without needing the in-browser WASM node
+  // tailnet. This works in both connected and web node mode without needing the in-browser WASM node
   // signed in, because host-routing the create would hang when WASM isn't up.
   createSession(req: CreateSessionRequest): Promise<Session> {
     return request('/sessions', {
