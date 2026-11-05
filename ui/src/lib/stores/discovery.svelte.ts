@@ -1,4 +1,4 @@
-// Dashboard-mode node discovery. In `deepcove dashboard` (cross-tailnet thin client) there is no
+// Web node mode discovery. In `deepcove open` (cross-tailnet thin client) there is no
 // server node to fan out for us: the in-browser Tailscale node has to find your nodes itself. This
 // store brings that node up (reusing ensureTailnet for the login lifecycle), then polls its view of the
 // tailnet (network.status()) for the user's deepcove nodes.

@@ -299,22 +299,25 @@ print_next_steps() {
 	if [ -n "$service_failed" ]; then
 		say "deepcove could not start in the background (the error is above). Once that is fixed, run:"
 		say "  deepcove service install"
-		say "Or run it in this terminal for now:"
-		say "  deepcove start"
 	elif [ -z "$running" ]; then
+		# Only reached with no login session or DEEPCOVE_NO_SERVICE, where a service cannot run.
 		say "Next, start it:"
 		say "  deepcove start"
 	elif [ -n "${SSH_CONNECTION:-}" ]; then
 		say "Next, sign in to Tailscale (or sign up, it's free) so your other machines can reach this one:"
 		say "  deepcove network login"
 		say "Then open https://app.deepcove.dev from any browser."
+	elif "$install_dir/deepcove" open; then
+		say "If it didn't open, run:"
+		say "  deepcove open"
 	else
-		say "Next, open http://127.0.0.1:9000 in your browser."
+		say "Next, open it in your browser:"
+		say "  deepcove open"
 	fi
 	say ""
 	say "More commands:"
 	if [ -z "${SSH_CONNECTION:-}" ]; then
-		say "  deepcove dashboard         open it in your browser"
+		say "  deepcove open              open it in your browser"
 	fi
 	say "  deepcove service status    is it running, and where its logs are"
 	say "  deepcove service restart   restart it"

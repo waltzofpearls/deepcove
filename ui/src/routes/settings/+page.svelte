@@ -37,7 +37,7 @@
       .catch(() => {});
   });
 
-  // Logins live on each node, so the login cards list every node. Dashboard mode finds them itself.
+  // Logins live on each node, so the login cards list every node. Web node mode finds them itself.
   let fetchedNodes = $state<NodeInfo[]>([]);
   const nodes = $derived(discoveryRequired() ? discovery.nodes : fetchedNodes);
   $effect(() => {

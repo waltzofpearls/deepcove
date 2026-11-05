@@ -10,7 +10,7 @@ import (
 )
 
 type Config struct {
-	Addr     string `env:"ADDR, default=127.0.0.1:9000"`
+	Addr     string `env:"ADDR"`
 	DataDir  string `env:"DATA_DIR"`
 	NodeName string `env:"NODE_NAME"`
 	LogLevel string `env:"LOG_LEVEL"`
@@ -47,6 +47,7 @@ type Config struct {
 }
 
 const (
+	DefaultAddr     = "127.0.0.1:9000"
 	DefaultLogLevel = "info"
 )
 
@@ -86,6 +87,9 @@ func Load(ctx context.Context) (*Config, error) {
 	var c Config
 	if err := envconfig.Process(ctx, &c); err != nil {
 		return nil, err
+	}
+	if c.Addr == "" {
+		c.Addr = DefaultAddr
 	}
 	if c.DataDir == "" {
 		dir, err := defaultDataDir()

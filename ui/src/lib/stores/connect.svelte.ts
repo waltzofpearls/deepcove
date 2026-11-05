@@ -3,7 +3,7 @@
 // so it only runs while something is mounted. Cadence is adaptive: fast while a connect is in flight so
 // the pill flips promptly, slow once it's settled.
 //
-// Only meaningful in connected/local (direct) mode, the node's own tailnet connection. Dashboard
+// Only meaningful in connected/local (direct) mode, the node's own tailnet connection. Web node
 // (wasm) mode is a thin client with no /api/connect of its own, so the topbar doesn't poll this there.
 
 import { api } from '$lib/api/client';

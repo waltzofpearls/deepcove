@@ -1,7 +1,7 @@
 // Package api implements deepcove's HTTP API surface. The same handler set is mounted on whichever
 // listeners the running mode provides:
 //   - `deepcove start`: local TCP + Unix socket + tsnet TLS (eventually)
-//   - `deepcove dashboard` (no-service): not mounted; dashboard mode is SPA-only.
+//   - `deepcove open` (no-service): not mounted; web node mode is SPA-only.
 //
 // Handlers live in sibling files (health.go, ...). New handlers register
 // themselves in AttachRoutes.

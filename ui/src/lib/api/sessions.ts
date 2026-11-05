@@ -60,7 +60,7 @@ export function missedPollsInARow(
 // mergeAggregated combines per-node /api/sessions/local results into one aggregated response, the same
 // way the Go session.ListAggregated does for server-side fan-out: each session is tagged with its host
 // node, a node whose fetch failed (sessions === null) is recorded as unreachable, and the merged list is
-// sorted by most recent activity. Used by the browser-side fan-out in dashboard mode.
+// sorted by most recent activity. Used by the browser-side fan-out in web node mode.
 export function mergeAggregated(
   perNode: { node: NodeInfo; sessions: Session[] | null }[],
   self: SessionHost | null,

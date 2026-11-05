@@ -60,7 +60,7 @@ class WasmTransport implements Transport {
     this.targetBase = targetBase.replace(/\/+$/, '');
   }
 
-  // setTargetBase re-points this transport. Used only on the boot transport in dashboard discover
+  // setTargetBase re-points this transport. Used only on the boot transport in web node
   // mode, where there is no injected target: discovery picks a primary node once the in-browser node
   // is up and points incidental app-level calls at it. No-op for per-host transports.
   setTargetBase(base: string): void {
@@ -243,8 +243,8 @@ function injectedTarget(): string {
   return cfg?.target ?? location.origin;
 }
 
-// detectDiscover reads the dashboard discover flag. When set, the page was served by a thin client that
-// hosts no API of its own (`deepcove dashboard` cross-tailnet mode): the in-browser node must discover
+// detectDiscover reads the web node mode discover flag. When set, the page was served by a thin client that
+// hosts no API of its own (`deepcove open` cross-tailnet mode): the in-browser node must discover
 // your nodes itself, so the boot transport has no target until discovery picks a primary node.
 function detectDiscover(): boolean {
   return (globalThis as { __deepcove?: { discover?: boolean } }).__deepcove?.discover === true;
@@ -265,7 +265,7 @@ function create(): Transport {
 
 export const transport: Transport = create();
 
-// discoveryRequired reports whether the app is in dashboard discover mode and must run client-side
+// discoveryRequired reports whether the app is in web node mode and must run client-side
 // discovery (bring up the in-browser node, enumerate your nodes, fan out the sessions list itself)
 // rather than talking to a single server that fans out.
 export function discoveryRequired(): boolean {

@@ -29,8 +29,8 @@ import (
 // cmdStart runs the deepcove background service. Default for solo and most users.
 //
 // Mounts the three front doors over one mux:
-//   - local TCP on cfg.Addr: SPA + runtime API, behind LocalGate (same OS user + Host allowlist)
-//   - Unix socket: full runtime API for the local CLI (filesystem perms)
+//   - local TCP on cfg.Addr: SPA + runtime API, behind LocalGate (unlocked browser + Host allowlist)
+//   - Unix socket: full runtime API for the local CLI (filesystem perms), and the codes that unlock a browser
 //   - tailnet (via connect.Manager): owner-gated, when connected
 //
 // Backed by DuckDB + migrations, the sandbox runtimes, and the session lifecycle service.
@@ -190,10 +190,20 @@ func cmdStart(ctx context.Context, args []string) error {
 	})
 	connectMgr.AutoStartIfEnabled()
 
-	// Local TCP: SPA + runtime API, behind LocalGate, which answers only the user who runs deepcove.
+	// Local TCP: SPA + runtime API, behind LocalGate, which answers only browsers that `deepcove open`
+	// unlocked.
 	ln, err := net.Listen("tcp", cfg.Addr)
+	if isPortInUseError(err) {
+		return buildPortInUseErrorFrom(cfg.Addr, args)
+	}
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
+	}
+	listenAddr := buildListenAddrFrom(cfg.Addr, ln.Addr())
+	localURL := middleware.LocalURL(listenAddr)
+	localLogin, err := middleware.NewLocalLogin(cfg.DataDir, localURL)
+	if err != nil {
+		return err
 	}
 
 	// Timeouts: even though this listener is local (127.0.0.1) by default, no-timeout net/http
@@ -201,29 +211,33 @@ func cmdStart(ctx context.Context, args []string) error {
 	// lock up a goroutine indefinitely. ReadHeaderTimeout is the load-bearing one; the others
 	// bound long-lived but stalled streams.
 	srv := &http.Server{
-		Handler:           middleware.LocalGate(mux, localAllowedHosts(cfg.Addr)),
-		ConnContext:       middleware.LocalConnContext,
+		Handler:           middleware.LocalGate(mux, localAllowedHosts(cfg.Addr), localURL, localLogin),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		ConnContext:       middleware.LocalConnContext,
 	}
 
 	// Unix socket: full runtime API for the local CLI, ungated; filesystem permissions are the
-	// trust boundary.
+	// trust boundary. It alone hands out the codes that unlock a browser.
+	socketMux := http.NewServeMux()
+	socketMux.Handle("/", mux)
+	socketMux.HandleFunc("POST "+unlockCodePath, localLogin.HandleNewCode)
+	socketMux.HandleFunc("GET "+listenAddrPath, buildListenAddrHandler(listenAddr))
 	sockPath := socketPath(cfg.DataDir)
-	sockSrv, sockLn, err := listenUnixSocket(sockPath, mux)
+	sockSrv, sockLn, err := listenUnixSocket(sockPath, socketMux)
 	if err != nil {
 		return fmt.Errorf("listen unix socket %s: %w", sockPath, err)
 	}
 	defer func() { _ = os.Remove(sockPath) }()
 
-	url := "http://" + cfg.Addr + "/"
+	url := localURL.String()
 
-	// Print the URL prominently so it's easy to copy/paste; the server runs in the foreground and
-	// the browser is the primary entry point.
 	fmt.Println()
 	fmt.Printf("  deepcove:  %s\n", url)
+	fmt.Println("  To unlock a browser, run this in another terminal:")
+	fmt.Println("    deepcove open")
 	fmt.Println()
 
 	logger.Info("server listening", "url", url, "socket", sockPath)

@@ -58,7 +58,7 @@ func (c *apiClient) Create(ctx context.Context, req session.CreateRequest) (*ses
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
+		return nil, fmt.Errorf("dial deepcove service at %s: %w (is deepcove running? Start it with `%s`)", c.baseURL, err, findStartCommand())
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -85,7 +85,7 @@ func (c *apiClient) List(ctx context.Context, includeAll bool) ([]*session.Sessi
 	}
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
+		return nil, fmt.Errorf("dial deepcove service at %s: %w (is deepcove running? Start it with `%s`)", c.baseURL, err, findStartCommand())
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -112,7 +112,7 @@ func (c *apiClient) ListEveryNode(ctx context.Context, includeAll bool) (*sessio
 	}
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
+		return nil, fmt.Errorf("dial deepcove service at %s: %w (is deepcove running? Start it with `%s`)", c.baseURL, err, findStartCommand())
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -134,7 +134,7 @@ func (c *apiClient) Stop(ctx context.Context, id string) error {
 	}
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("dial deepcove service at %s: %w (is `deepcove start` running?)", c.baseURL, err)
+		return fmt.Errorf("dial deepcove service at %s: %w (is deepcove running? Start it with `%s`)", c.baseURL, err, findStartCommand())
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {

@@ -198,12 +198,18 @@ function Write-NextSteps([string] $installDir, [string] $pathState, [bool] $runn
         Write-Host '  deepcove network login'
         Write-Host 'Then open https://app.deepcove.dev from any browser.'
     } else {
-        Write-Host 'Next, open http://127.0.0.1:9000 in your browser.'
+        & (Join-Path $installDir 'deepcove.exe') open
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "If it didn't open, run:"
+        } else {
+            Write-Host 'Next, open it in your browser:'
+        }
+        Write-Host '  deepcove open'
     }
     Write-Host ''
     Write-Host 'More commands:'
     if (-not $overSsh) {
-        Write-Host '  deepcove dashboard         open it in your browser'
+        Write-Host '  deepcove open              open it in your browser'
     }
     Write-Host '  deepcove service status    is it running, and where its logs are'
     Write-Host '  deepcove service restart   restart it'

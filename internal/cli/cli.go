@@ -24,7 +24,7 @@ type command struct {
 var commands = []command{
 	{"start", "run deepcove in the foreground", cmdStart},
 	{"service", "install deepcove as a background service", cmdService},
-	{"dashboard", "open the dashboard", cmdDashboard},
+	{"open", "open deepcove in your browser", cmdOpen},
 	{"session", "create or attach to a session", cmdSession},
 	{"network", "put this machine on your Tailscale network", cmdNetwork},
 	{"upgrade", "replace this binary with the newest release", cmdUpgrade},

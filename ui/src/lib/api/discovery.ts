@@ -1,7 +1,7 @@
 import type { NodeStatus, TailnetStatus } from 'tailscale-web';
 import type { NodeInfo, SessionHost } from './types';
 
-// Pure helpers for dashboard-mode discovery: turning the in-browser Tailscale node's view of the
+// Pure helpers for web node mode discovery: turning the in-browser Tailscale node's view of the
 // tailnet (network.status()) into the user's deepcove nodes. Kept out of the .svelte runner so they're
 // unit-testable in the node-env vitest. Mirrors the host-side tailnet.filterDeepcoveNodes so the two
 // transports (server-side fan-out and browser-side fan-out) discover the same set.

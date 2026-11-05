@@ -28,7 +28,7 @@
   const openNewSession = getContext<() => void>(NEW_SESSION_CTX);
 
   // First-run: a fresh session node (direct mode, no sessions, setup not done) goes to the setup
-  // wizard. An existing install (has sessions) is marked done so it never nags. Dashboard (wasm) mode
+  // wizard. An existing install (has sessions) is marked done so it never nags. Web node (wasm) mode
   // skips this, since its onboarding is the sign-in gate, not the wizard.
   $effect(() => {
     if (transport.mode !== 'direct' || sessions.loading) return;

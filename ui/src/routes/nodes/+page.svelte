@@ -23,7 +23,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   // Your deepcove machines: this one plus same-user tailnet peers. Connected mode reads them from a
-  // server (GET /api/nodes); dashboard mode reads the in-browser node's own discovery (status()).
+  // server (GET /api/nodes); web node mode reads the in-browser node's own discovery (status()).
   let fetched = $state<NodeInfo[] | null>(null);
   let fetchedWeb = $state<NodeInfo[]>([]);
   let connect = $state<ConnectStatus | null>(null);
@@ -78,7 +78,7 @@
   });
 
   // Other browsers' web nodes: online in-browser peers from the server (connected mode) or the
-  // in-browser netmap (dashboard mode), minus this browser, which we show from its own richer webInfo.
+  // in-browser netmap (web node mode), minus this browser, which we show from its own richer webInfo.
   const webPeers = $derived(discoveryRequired() ? discovery.webNodes : fetchedWeb);
   const otherWebNodes = $derived(webPeers.filter((n) => n.dns_name !== webInfo?.dnsName));
 
@@ -110,7 +110,7 @@
     };
   });
 
-  // Each machine's version. Connected mode gets it with the list. Dashboard mode finds machines in the
+  // Each machine's version. Connected mode gets it with the list. Web node mode finds machines in the
   // in-browser netmap, which has no versions, so it asks the primary node, which hears them by gossip.
   let gossipedVersions = $state<Record<string, string>>({});
   $effect(() => {

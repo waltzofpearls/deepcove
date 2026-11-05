@@ -172,7 +172,7 @@
   });
 
   // Load the user's nodes on open and default the target to this machine. Connected mode reads them
-  // from the server; dashboard mode reads the in-browser node's discovery. Best-effort: a failure just
+  // from the server; web node mode reads the in-browser node's discovery. Best-effort: a failure just
   // hides the selector and creates here.
   $effect(() => {
     if (!open || nodes.length > 0) return;
@@ -796,7 +796,7 @@
 
       // Create via the boot transport with node_id in the payload: the receiving node routes it (creates
       // locally if it's the target, else proxies to the target over its own tailnet). This works in both
-      // connected and dashboard mode without depending on the in-browser WASM node being signed in,
+      // connected and web node mode without depending on the in-browser WASM node being signed in,
       // unlike host-routing the create, which would hang when WASM isn't up (connected mode).
       const created = await api.createSession(payload);
       sessions.add(created);

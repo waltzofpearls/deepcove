@@ -7,6 +7,11 @@ import (
 	"runtime"
 )
 
+// IsSupported is false: this platform has no service support yet.
+func IsSupported() bool {
+	return false
+}
+
 // New reports that this platform has no service support yet, rather than pretending to install one.
 func New(_, _ string) (Manager, error) {
 	return nil, fmt.Errorf("service: deepcove cannot install itself as a service on %s yet", runtime.GOOS)
