@@ -93,3 +93,5 @@ require (
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
+
+replace github.com/Code-Hex/vz/v3 => github.com/waltzofpearls/vz/v3 v3.8.1-deepcove.1

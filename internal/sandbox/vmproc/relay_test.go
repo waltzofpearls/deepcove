@@ -109,6 +109,56 @@ func TestForwardFromGuest_WaitsForTheHostSide(t *testing.T) {
 	assertEchoes(t, conn)
 }
 
+func TestAcceptEach(t *testing.T) {
+	errAccept := errors.New("setnonblock: bad file descriptor")
+	cases := []struct {
+		name         string
+		acceptErrors []error
+		wantHandled  int
+	}{
+		{"stops when closed", nil, 0},
+		{"keeps going after an error", []error{errAccept, nil}, 1},
+		{"keeps going after errors in a row", []error{errAccept, errAccept, errAccept, nil, nil}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := &scriptedListener{acceptErrors: tc.acceptErrors}
+			handled := make(chan net.Conn, len(tc.acceptErrors))
+			acceptEach(listener, func(conn net.Conn) { handled <- conn })
+			for range tc.wantHandled {
+				select {
+				case conn := <-handled:
+					_ = conn.Close()
+				case <-time.After(time.Second):
+					t.Fatalf("handled fewer than %d connections", tc.wantHandled)
+				}
+			}
+		})
+	}
+}
+
+// scriptedListener returns acceptErrors in order, a connection for each nil, then net.ErrClosed.
+type scriptedListener struct {
+	acceptErrors []error
+}
+
+func (l *scriptedListener) Accept() (net.Conn, error) {
+	if len(l.acceptErrors) == 0 {
+		return nil, net.ErrClosed
+	}
+	err := l.acceptErrors[0]
+	l.acceptErrors = l.acceptErrors[1:]
+	if err != nil {
+		return nil, err
+	}
+	host, _ := net.Pipe()
+	return host, nil
+}
+
+func (l *scriptedListener) Close() error { return nil }
+
+func (l *scriptedListener) Addr() net.Addr { return &net.UnixAddr{Name: "scripted", Net: "unix"} }
+
 // echoGuest is a guest port that sends back whatever it gets.
 func echoGuest(context.Context, uint32) (net.Conn, error) {
 	host, guest := net.Pipe()

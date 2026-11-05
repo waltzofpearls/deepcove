@@ -2,8 +2,10 @@ package vmproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -115,13 +117,22 @@ func dialWhenListening(path string, wait time.Duration) (net.Conn, error) {
 	}
 }
 
-// acceptEach hands every connection to handle on its own goroutine until the listener closes.
+// acceptEach hands every connection to handle on its own goroutine until the listener closes. Any other
+// error is retried, because giving up would cut the guest off from the host until the VM restarts.
 func acceptEach(listener net.Listener, handle func(net.Conn)) {
+	retryDelay := time.Duration(0)
 	for {
 		conn, err := listener.Accept()
-		if err != nil {
+		if errors.Is(err, net.ErrClosed) {
 			return
 		}
+		if err != nil {
+			retryDelay = min(max(2*retryDelay, 5*time.Millisecond), time.Second)
+			slog.Warn("vmproc: accept failed, retrying", "addr", listener.Addr(), "err", err, "retry_in", retryDelay)
+			time.Sleep(retryDelay)
+			continue
+		}
+		retryDelay = 0
 		go handle(conn)
 	}
 }
