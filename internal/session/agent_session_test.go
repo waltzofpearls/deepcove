@@ -30,16 +30,16 @@ func TestStartAgentSession(t *testing.T) {
 	t.Run("starts the agent in its own tmux session and workdir", func(t *testing.T) {
 		svc, fake, _, _ := newTestService(t)
 		sess := mustRunning(t, svc)
-		// has-session fails (nothing running yet), then mkdir, new-session and set-option succeed.
-		fake.execResponses = []execResponse{{exit: 1}, {exit: 0}, {exit: 0}, {exit: 0}}
+		// has-session fails (nothing running yet), then mkdir, new-session and both set-options succeed.
+		fake.execResponses = []execResponse{{exit: 1}, {exit: 0}, {exit: 0}, {exit: 0}, {exit: 0}}
 		fake.execCalls = nil
 
 		if err := svc.startAgentSession(context.Background(), sess, "/workspace/repo"); err != nil {
 			t.Fatalf("startAgentSession: %v", err)
 		}
 
-		if len(fake.execCalls) != 4 {
-			t.Fatalf("expected has-session, mkdir, new-session, set-option; got %d: %v",
+		if len(fake.execCalls) != 5 {
+			t.Fatalf("expected has-session, mkdir, new-session, 2 set-options; got %d: %v",
 				len(fake.execCalls), fake.execCalls)
 		}
 		if got := strings.Join(fake.execCalls[1], " "); got != "mkdir -p /workspace/repo" {

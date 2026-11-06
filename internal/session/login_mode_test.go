@@ -222,7 +222,8 @@ func TestSetLoginMode_PutsTheAgentBackWhenTheRestartFails(t *testing.T) {
 		{exit: 1},            // has-session again, for the restart
 		{exit: 0},            // mkdir
 		{exit: 0},            // new-session succeeds
-		{exit: 0},            // set-option
+		{exit: 0},            // set-option mouse
+		{exit: 0},            // set-option status-style
 	}
 	fake.execCalls = nil
 
@@ -237,7 +238,7 @@ func TestSetLoginMode_PutsTheAgentBackWhenTheRestartFails(t *testing.T) {
 	if after.LoginMode == LoginWithLLMProxy {
 		t.Error("the session still says it uses the proxy, but its agent was started without it")
 	}
-	if len(fake.execCalls) != 9 {
+	if len(fake.execCalls) != 10 {
 		t.Errorf("made %d exec calls, want the failed start and the one that recovered: %v",
 			len(fake.execCalls), fake.execCalls)
 	}
