@@ -4,7 +4,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -79,6 +78,8 @@ func newVMRuntime(deps runtimeDeps) runtimeEntry {
 		// Its own folder in there. The sweep below claims everything under it, and the sandboxless
 		// runtime keeps its tmux sockets in the same ipc directory.
 		IPCDir: filepath.Join(ipcDir, "vm"),
+		// Written there below when this host needs it, so a boot it would fail can name the fix.
+		AppArmorProfile: appArmorProfileCopy(deps.cfg.DataDir),
 	}
 	// Before the driver is built: these VMs are separate processes, so a previous deepcove can have left
 	// some running, and the driver is about to sweep the disks they are still using.
@@ -139,13 +140,17 @@ func ensureHelpersCanIsolateThemselves(cfg *config.Config, binaries hostBinaries
 		return
 	}
 	logger.Warn("this host stops passt and virtiofsd isolating themselves until the profile is loaded",
-		"fix", fmt.Sprintf("sudo cp %s %s && sudo apparmor_parser -r %s",
-			path, cloudhv.InstalledAppArmorProfile, cloudhv.InstalledAppArmorProfile))
+		"fix", cloudhv.AppArmorFixCommand(path))
+}
+
+// appArmorProfileCopy is where the data dir keeps the profile for a root shell to copy.
+func appArmorProfileCopy(dataDir string) string {
+	return filepath.Join(dataDir, cloudhv.AppArmorProfileName+".apparmor")
 }
 
 // writeAppArmorProfile puts the profile in the data dir, where a root shell can copy it from.
 func writeAppArmorProfile(dataDir string, binaries hostBinaries) (string, error) {
-	path := filepath.Join(dataDir, cloudhv.AppArmorProfileName+".apparmor")
+	path := appArmorProfileCopy(dataDir)
 	profile := cloudhv.AppArmorProfile(binaries.passt.path, binaries.virtiofsd.path)
 	if err := os.WriteFile(path, []byte(profile), 0o644); err != nil {
 		return "", err
