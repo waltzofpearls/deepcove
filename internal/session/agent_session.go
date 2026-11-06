@@ -97,6 +97,9 @@ func (s *Service) startAgentSessionLocked(ctx context.Context, sess *Session, wo
 	// Mouse reporting is a server-wide option, so it needs a server, which the first session creates.
 	// It is what makes the browser's wheel scroll the pane; tmux's own defaults handle the rest.
 	_, _ = s.execTmux(ctx, sess, "set-option", "-g", "mouse", "on")
+	// tmux draws its bar in ANSI green, which our palette makes pale. Color 64 is the old bright green,
+	// and the palette leaves it alone.
+	_, _ = s.execTmux(ctx, sess, "set-option", "-g", "status-style", "bg=colour64,fg=black")
 	return nil
 }
 
