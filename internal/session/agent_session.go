@@ -100,6 +100,9 @@ func (s *Service) startAgentSessionLocked(ctx context.Context, sess *Session, wo
 	// tmux draws its bar in ANSI green, which our palette makes pale. Color 64 is the old bright green,
 	// and the palette leaves it alone.
 	_, _ = s.execTmux(ctx, sess, "set-option", "-g", "status-style", "bg=colour64,fg=black")
+	// Claude copies a drag selection with OSC 52, which tmux only passes on with this. The browser still
+	// takes a copy only right after the user's own drag.
+	_, _ = s.execTmux(ctx, sess, "set-option", "-g", "set-clipboard", "on")
 	return nil
 }
 

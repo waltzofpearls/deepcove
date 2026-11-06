@@ -81,6 +81,22 @@
     clearTimeout(uploadNoteTimer);
     uploadNoteTimer = setTimeout(() => (uploadNote = ''), ok ? 1500 : 3500);
   }
+  // Plain http on the tailnet has no navigator.clipboard. The old copy command still works there, but only
+  // during a key press. Safari runs it only when beforecopy is cancelled.
+  async function writeClipboard(text: string) {
+    if (navigator.clipboard) return navigator.clipboard.writeText(text);
+    const allow = (event: Event) => event.preventDefault();
+    const answer = (event: ClipboardEvent) => {
+      event.clipboardData?.setData('text/plain', text);
+      event.preventDefault();
+    };
+    document.addEventListener('beforecopy', allow, true);
+    document.addEventListener('copy', answer, true);
+    const copied = document.execCommand('copy');
+    document.removeEventListener('beforecopy', allow, true);
+    document.removeEventListener('copy', answer, true);
+    if (!copied) throw new Error('the browser refused the copy');
+  }
   // While bootstrap is "installing" we don't open the WS; opening before tmux is up
   // errors in a tight retry loop.
   let bootstrap = $state<BootstrapStatus>('installing');
@@ -285,6 +301,8 @@
         cursorStyle: 'block',
         scrollback: 10_000,
         allowProposedApi: true,
+        // tmux gets the mouse, so Option drag on a Mac (Shift drag elsewhere) is the way to select natively.
+        macOptionClickForcesSelection: true,
         theme: readTheme(),
       });
       fit = new FitAddon();
@@ -292,18 +310,26 @@
       term.loadAddon(new WebLinksAddon());
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = '11';
-      // Swallow the mouse-tracking DECSET enables so Claude's TUI can't grab
-      // the mouse, so a normal drag selects and Cmd-C copies natively.
-      // (Bracketed paste, alt screen, etc. pass through.) DECSET ?_h codes:
-      //   1000 = click   1001 = highlight   1002 = drag   1003 = any-motion
-      const mouseModes = new Set([1000, 1001, 1002, 1003]);
-      // Return true => handled (suppressed), only when every param is a mouse mode.
-      term.parser.registerCsiHandler(
-        { prefix: '?', final: 'h' },
-        (params) =>
-          params.length > 0 &&
-          params.every((p) => mouseModes.has(typeof p === 'number' ? p : p[0])),
-      );
+      // tmux asks for the mouse, so a drag goes to tmux as it does in a real terminal. Claude selects and
+      // scrolls its own transcript, and a shell pane uses tmux copy mode. Either one copies with OSC 52 on
+      // release.
+      // That copy waits here until the user presses Cmd+C, so output alone never fills the clipboard.
+      // Reading the clipboard is never answered.
+      let pendingCopy = '';
+      const copyKeyLabel = /Mac/.test(navigator.userAgent) ? '⌘C' : 'Ctrl+Shift+C';
+      term.parser.registerOscHandler(52, (data) => {
+        const encoded = data.slice(data.indexOf(';') + 1);
+        if (encoded === '?') return true;
+        try {
+          const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+          pendingCopy = new TextDecoder().decode(bytes);
+          // A click that moves one cell copies a blank, which is not worth a note.
+          if (pendingCopy.trim() !== '') flashNote(`Press ${copyKeyLabel} to copy`, true);
+        } catch {
+          // Not base64, so there is nothing to copy.
+        }
+        return true;
+      });
       // No @xterm/addon-webgl on purpose; its sprite atlas can't draw many glyphs
       // Claude's TUI uses and falls back to underline placeholders. DOM renderer
       // delegates to browser text rendering, which handles everything correctly.
@@ -321,6 +347,19 @@
       // xterm.js sends Shift+Enter as a plain Enter, which submits. Ctrl+J is a newline in both Claude
       // Code and Codex, so Shift+Enter sends that instead.
       term.attachCustomKeyEventHandler((event) => {
+        // Ctrl+C stops the agent, so other systems copy with Ctrl+Shift+C like most terminals.
+        const isCopyKey =
+          event.key.toLowerCase() === 'c' && (event.metaKey || (event.ctrlKey && event.shiftKey));
+        const isCopyOfAgentSelection = isCopyKey && !term?.hasSelection() && pendingCopy !== '';
+        if (isCopyOfAgentSelection) {
+          if (event.type === 'keydown') {
+            event.preventDefault();
+            writeClipboard(pendingCopy)
+              .then(() => flashNote('Copied', true))
+              .catch(() => flashNote('The browser blocked the copy', false));
+          }
+          return false;
+        }
         const shiftEnter =
           event.key === 'Enter' &&
           event.shiftKey &&
@@ -367,8 +406,7 @@
       //
       // So hand the wheel to tmux as an SGR mouse report and let ITS defaults decide: forward to a TUI
       // that grabbed the mouse (the agent scrolls its own transcript), or scroll tmux's scrollback for a
-      // shell pane. Only the wheel is synthesized. xterm.js's own mouse reporting stays suppressed above,
-      // so a drag still selects text natively and Cmd-C still copies.
+      // shell pane. The wheel stays ours rather than xterm.js's, which turns a trackpad nudge into arrows.
       const WHEEL_UP = 64;
       const WHEEL_DOWN = 65;
       let wheelCarry = 0;

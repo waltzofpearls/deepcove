@@ -100,12 +100,12 @@ note_conversation() {
 # model provider of its own. The token names the session, and the host replaces it on the way out.
 run_codex() {
   codex_binary=$1
+  # Inline rather than full screen, so the transcript lands in tmux's history and a drag can scroll it.
+  set -- -c tui.alternate_screen=never
   if [ -n "${DEEPCOVE_LLM_BASE_URL:-}" ]; then
-    set -- -c model_provider=deepcove -c model_providers.deepcove.name=deepcove \
+    set -- "$@" -c model_provider=deepcove -c model_providers.deepcove.name=deepcove \
       -c "model_providers.deepcove.base_url=$DEEPCOVE_LLM_BASE_URL/v1" \
       -c model_providers.deepcove.env_key=DEEPCOVE_LLM_TOKEN
-  else
-    set --
   fi
   resume=$(conversation)
   if [ -n "$resume" ]; then
