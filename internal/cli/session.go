@@ -21,7 +21,7 @@ import (
 func cmdSession(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		sessionUsage(os.Stderr)
-		return errors.New("agent name required (e.g. `deepcove session claude`)")
+		return errors.New("agent name required (e.g. `deepcove claude`)")
 	}
 
 	switch args[0] {
@@ -43,19 +43,21 @@ func sessionUsage(w *os.File) {
 		"deepcove session: create, list, and connect to coding-agent sessions",
 		"",
 		"Usage:",
-		"  deepcove session <agent> [--name <name>] [flags]   create + attach",
-		"  deepcove session connect <id-or-name>              connect to an existing session",
-		"  deepcove session list                              list sessions (or ls)",
+		"  deepcove <agent> [--name <name>] [flags]   create a session",
+		"  deepcove connect <id-or-name>              connect to an existing session",
+		"  deepcove ls                                list sessions",
+		"",
+		"The longer forms work too: deepcove session <agent>, session connect, session list.",
 		"",
 		"Agents: claude, codex, gemini, openclaw, ...",
 		"",
 		"Examples:",
-		"  deepcove session claude                                       # create + attach a claude session, auto-named",
-		"  deepcove session claude --name auth-redesign                  # create + attach with a name",
-		"  deepcove session claude --share ~/code/myapp:/workspace       # share a host folder with the sandbox (rw)",
-		"  deepcove session claude --share ~/data:/seed:ro --share ...   # repeat for several folders; :ro for read-only",
-		"  deepcove session connect auth-redesign                        # connect by name",
-		"  deepcove session ls                                           # list sessions on this host",
+		"  deepcove claude                                       # create a claude session, auto-named",
+		"  deepcove claude --name auth-redesign                  # create one with a name",
+		"  deepcove claude --share ~/code/myapp:/workspace       # share a host folder with the sandbox (rw)",
+		"  deepcove claude --share ~/data:/seed:ro --share ...   # repeat for several folders; :ro for read-only",
+		"  deepcove connect auth-redesign                        # connect by name",
+		"  deepcove ls                                           # list sessions",
 	}
 	_, _ = fmt.Fprint(w, joinStringLines(lines))
 }

@@ -10,9 +10,9 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// cmdSessionCreate handles `deepcove session <agent>` with optional --name and repeatable --share
+// cmdSessionCreate handles `deepcove <agent>` and `deepcove session <agent>` with optional --name and repeatable --share
 // flags. Creates a session on the local background service via the API, printing the id + name.
-// Connecting is its own command, `deepcove session connect`.
+// Connecting is its own command, `deepcove connect`.
 //
 // If --name is omitted, the service auto-generates one in the form "<agent>-<adjective>_<scientist>".
 //
@@ -20,11 +20,11 @@ import (
 // anything under /root, the agent's home.
 func cmdSessionCreate(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("agent name required (e.g. `deepcove session claude`)")
+		return fmt.Errorf("agent name required (e.g. `deepcove claude`)")
 	}
 	agent := args[0]
 
-	fs := flag.NewFlagSet("session "+agent, flag.ContinueOnError)
+	fs := flag.NewFlagSet(agent, flag.ContinueOnError)
 	var name, image, setupScript, runtime, workDir string
 	fs.StringVar(&name, "name", "", "session name (auto-generated if omitted)")
 	fs.StringVar(&runtime, "runtime", "", "runtime to host the session: applevf, cloudhv or sandboxless (default: DEEPCOVE_DEFAULT_RUNTIME if the service sets it, else this node's VM runtime; required if neither is available)")

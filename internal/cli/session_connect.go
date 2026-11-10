@@ -14,19 +14,19 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// cmdSessionConnect handles `deepcove session connect <id-or-name>`. It dials the local service's
+// cmdSessionConnect handles `deepcove connect <id-or-name>`, also run as `deepcove session connect`. It dials the local service's
 // WebSocket attach endpoint (preferring the Unix socket), puts the terminal into raw mode, and
 // bridges stdin/stdout with the tmux session inside the sandbox. Terminal-size changes propagate
 // as JSON resize control frames via resizeNotify: SIGWINCH on Unix, polling on Windows (no SIGWINCH).
 func cmdSessionConnect(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("session connect", flag.ContinueOnError)
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	rest := fs.Args()
 	if len(rest) != 1 {
-		return fmt.Errorf("usage: deepcove session connect <id-or-name>")
+		return fmt.Errorf("usage: deepcove connect <id-or-name>")
 	}
 	target := rest[0]
 
@@ -47,7 +47,7 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	// stdin must be a TTY for any of this to make sense.
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("`session connect` requires a terminal on stdin")
+		return fmt.Errorf("`connect` requires a terminal on stdin")
 	}
 
 	// Prefer the local control socket, falling back to TCP. The "unix" host is a placeholder,

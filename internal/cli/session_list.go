@@ -13,10 +13,10 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
-// cmdSessionList handles `deepcove session list` and `deepcove session ls`. Lists sessions on all your
+// cmdSessionList handles `deepcove ls`, also run as `deepcove session list` or `deepcove session ls`. Lists sessions on all your
 // nodes, running ones only unless -a. Output columns: ID, NAME, NODE, AGENT, RUNTIME, STATUS, AGE.
 func cmdSessionList(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("session list", flag.ContinueOnError)
+	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	var all bool
 	fs.BoolVar(&all, "a", false, "show all sessions (default: only running)")
 	if err := fs.Parse(args); err != nil {

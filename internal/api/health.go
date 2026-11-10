@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 )
 
 // handleHealth answers `GET /api/health` with a tiny JSON liveness probe.
@@ -12,5 +13,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":      true,
 		"version": s.version,
+		// Lets `deepcove status` tell whether it reached the background service or another deepcove.
+		"pid": os.Getpid(),
 	})
 }

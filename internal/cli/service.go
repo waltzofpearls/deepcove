@@ -217,13 +217,13 @@ func printServiceStatus(manager service.Manager) error {
 	fmt.Printf("running:   %v\n", status.Running)
 	fmt.Printf("defined:   %s\n", status.Unit)
 	if len(status.StartCommand) > 0 {
-		fmt.Printf("runs:      %s\n", strings.Join(status.StartCommand, " "))
+		fmt.Printf("runs:      %s\n", buildShellCommand(status.StartCommand))
 	}
 	if status.LogPath != "" {
-		fmt.Printf("logs:      %s\n", status.LogPath)
+		fmt.Printf("logs:      %s\n", buildShellArgument(status.LogPath))
 	}
 	if len(status.LogCommand) > 0 {
-		fmt.Printf("read logs: %s\n", strings.Join(status.LogCommand, " "))
+		fmt.Printf("read logs: %s\n", buildShellCommand(status.LogCommand))
 	}
 	return nil
 }

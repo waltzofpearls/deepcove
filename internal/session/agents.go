@@ -197,6 +197,12 @@ var agents = map[string]AgentSpec{
 	},
 }
 
+// IsKnownAgent reports whether name is an agent deepcove can run.
+func IsKnownAgent(name string) bool {
+	_, ok := agents[name]
+	return ok
+}
+
 func resolveAgent(name string) (AgentSpec, error) {
 	a, ok := agents[name]
 	if !ok {

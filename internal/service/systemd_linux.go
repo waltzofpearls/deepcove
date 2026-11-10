@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -124,6 +125,8 @@ func (m *systemdManager) Status() (Status, error) {
 	// `systemctl status` is prose and exits non-zero when inactive. `show` is the machine interface.
 	out, _ := m.runner.output("systemctl", "--user", "show", "-p", "ActiveState", "--value", unitName)
 	status.Running = strings.TrimSpace(out) == "active"
+	mainPID, _ := m.runner.output("systemctl", "--user", "show", "-p", "MainPID", "--value", unitName)
+	status.PID, _ = strconv.Atoi(strings.TrimSpace(mainPID))
 	return status, nil
 }
 

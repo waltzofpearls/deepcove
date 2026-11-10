@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/waltzofpearls/deepcove/internal/session"
 )
 
 // command is one top-level subcommand. Each lives in its own file (start.go, status.go, session.go,
@@ -24,7 +26,10 @@ type command struct {
 var commands = []command{
 	{"start", "run deepcove in the foreground", cmdStart},
 	{"service", "install deepcove as a background service", cmdService},
+	{"status", "is deepcove running, and where to reach it", cmdStatus},
 	{"open", "open deepcove in your browser", cmdOpen},
+	{"connect", "connect to a session", cmdSessionConnect},
+	{"ls", "list sessions", cmdSessionList},
 	{"session", "create or attach to a session", cmdSession},
 	{"network", "put this machine on your Tailscale network", cmdNetwork},
 	{"upgrade", "replace this binary with the newest release", cmdUpgrade},
@@ -55,25 +60,35 @@ func Run(args []string) int {
 		return 0
 	}
 
-	for _, cmd := range slices.Concat(commands, internalCommands) {
-		if cmd.name != name {
-			continue
-		}
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-		if err := cmd.run(ctx, rest); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return 0
-			}
-			fmt.Fprintln(os.Stderr, "deepcove:", err)
-			return 1
-		}
-		return 0
+	run, rest, found := findCommand(name, rest)
+	if !found {
+		_, _ = fmt.Fprintf(os.Stderr, "deepcove: unknown command %q\n\n", name)
+		usage(os.Stderr)
+		return 2
 	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := run(ctx, rest); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, "deepcove:", err)
+		return 1
+	}
+	return 0
+}
 
-	_, _ = fmt.Fprintf(os.Stderr, "deepcove: unknown command %q\n\n", name)
-	usage(os.Stderr)
-	return 2
+// findCommand finds what runs name. An agent's name creates a session, as `deepcove session <agent>` does.
+func findCommand(name string, rest []string) (func(context.Context, []string) error, []string, bool) {
+	for _, cmd := range slices.Concat(commands, internalCommands) {
+		if cmd.name == name {
+			return cmd.run, rest, true
+		}
+	}
+	if session.IsKnownAgent(name) {
+		return cmdSessionCreate, append([]string{name}, rest...), true
+	}
+	return nil, nil, false
 }
 
 func usage(w *os.File) {
@@ -88,6 +103,7 @@ func usage(w *os.File) {
 	for _, c := range commands {
 		lines = append(lines, fmt.Sprintf("  %-10s  %s", c.name, c.summary))
 	}
+	lines = append(lines, fmt.Sprintf("  %-10s  %s", "<agent>", "create a session, e.g. deepcove claude"))
 	lines = append(lines, "", "Run 'deepcove <command> -h' for command-specific help.")
 	_, _ = fmt.Fprint(w, joinStringLines(lines))
 }
