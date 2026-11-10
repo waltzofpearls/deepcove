@@ -58,10 +58,10 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 		return fmt.Errorf("session %s is %s, not running", sess.Name, sess.Status)
 	}
 
-	// stdin must be a TTY for any of this to make sense.
+	// Both must be a TTY, also so a stalled pipe on stdout cannot block the output after a detach.
 	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		return fmt.Errorf("`connect` requires a terminal on stdin")
+	if !term.IsTerminal(fd) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("`connect` requires a terminal on stdin and stdout")
 	}
 
 	// Prefer the local control socket, falling back to TCP. The "unix" host is a placeholder,
