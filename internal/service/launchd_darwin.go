@@ -151,8 +151,19 @@ func (m *launchdManager) Status() (Status, error) {
 	out, err := m.runner.output("launchctl", "print", m.target())
 	if err == nil {
 		status.Running = strings.Contains(out, "state = running")
+		status.PID = extractLaunchdPID(out)
 	}
 	return status, nil
+}
+
+func extractLaunchdPID(printed string) int {
+	for line := range strings.SplitSeq(printed, "\n") {
+		if after, ok := strings.CutPrefix(strings.TrimSpace(line), "pid = "); ok {
+			pid, _ := strconv.Atoi(after)
+			return pid
+		}
+	}
+	return 0
 }
 
 // commandFromPlist reads back what the installed agent runs, so status shows the flags it was actually

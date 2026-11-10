@@ -16,6 +16,21 @@ func cmdDB(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: deepcove db <check|repair>")
 	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		fmt.Println("usage: deepcove db <check|repair>, with deepcove stopped")
+		return nil
+	case "check":
+		return runOnDatabase(ctx, checkDatabase)
+	case "repair":
+		return runOnDatabase(ctx, repairDatabase)
+	default:
+		return fmt.Errorf("unknown command %q: deepcove db <check|repair>", args[0])
+	}
+}
+
+// runOnDatabase opens the database, which only works with deepcove stopped, and runs one command on it.
+func runOnDatabase(ctx context.Context, run func(context.Context, *sql.DB) error) error {
 	cfg, err := config.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -26,22 +41,14 @@ func cmdDB(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = database.Close() }()
 
-	switch args[0] {
-	case "check", "repair":
-		ready, err := db.SetUp(ctx, database)
-		if err != nil {
-			return err
-		}
-		if !ready {
-			return fmt.Errorf("%w: start deepcove once and it builds one", db.ErrNotSetUp)
-		}
-		if args[0] == "check" {
-			return checkDatabase(ctx, database)
-		}
-		return repairDatabase(ctx, database)
-	default:
-		return fmt.Errorf("unknown command %q: deepcove db <check|repair>", args[0])
+	ready, err := db.SetUp(ctx, database)
+	if err != nil {
+		return err
 	}
+	if !ready {
+		return fmt.Errorf("%w: start deepcove once and it builds one", db.ErrNotSetUp)
+	}
+	return run(ctx, database)
 }
 
 func checkDatabase(ctx context.Context, database *sql.DB) error {

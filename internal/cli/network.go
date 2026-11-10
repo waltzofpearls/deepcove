@@ -179,7 +179,7 @@ func (c *apiClient) networkRequest(
 		return nil, fmt.Errorf("dial deepcove service at %s: %w (is deepcove running? Start it with `%s`)", c.baseURL, err, findStartCommand())
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, readAPIError(resp)
 	}
 	var out connect.Status

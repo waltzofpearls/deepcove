@@ -188,3 +188,22 @@ func TestStatusOnAMachineWithNothingInstalled(t *testing.T) {
 		t.Errorf("reported something installed: %+v", status)
 	}
 }
+
+func TestExtractLaunchdPID(t *testing.T) {
+	cases := []struct {
+		name    string
+		printed string
+		want    int
+	}{
+		{name: "running", printed: "gui/501/dev.deepcove = {\n\tstate = running\n\tpid = 5278\n}\n", want: 5278},
+		{name: "not running", printed: "gui/501/dev.deepcove = {\n\tstate = not running\n}\n", want: 0},
+		{name: "empty", printed: "", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractLaunchdPID(tc.printed); got != tc.want {
+				t.Errorf("extractLaunchdPID = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

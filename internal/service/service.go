@@ -7,15 +7,21 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// statusQueryTimeout bounds a status query, so a stuck launchctl or systemctl cannot hang the CLI.
+const statusQueryTimeout = 5 * time.Second
 
 // Status is what `deepcove service status` reports.
 type Status struct {
 	Installed bool
 	Running   bool
+	PID       int    // the running service's process, 0 when it is not running
 	Unit      string // where this platform's service definition lives
 
 	// LogPath is the file this platform writes output to, empty when the platform keeps the logs
@@ -68,6 +74,8 @@ func (execCommandRunner) run(name string, args ...string) error {
 }
 
 func (execCommandRunner) output(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), statusQueryTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	return string(out), err
 }

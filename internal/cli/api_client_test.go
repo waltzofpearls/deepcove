@@ -38,7 +38,9 @@ func TestStopRunningSessions(t *testing.T) {
 				asked = append(asked, id)
 				if id == tc.refusing {
 					http.Error(w, "busy", http.StatusInternalServerError)
+					return
 				}
+				w.WriteHeader(http.StatusNoContent)
 			}))
 			defer srv.Close()
 

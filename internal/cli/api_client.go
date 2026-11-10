@@ -62,7 +62,7 @@ func (c *apiClient) Create(ctx context.Context, req session.CreateRequest) (*ses
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode != http.StatusCreated {
 		return nil, readAPIError(resp)
 	}
 	var out session.Session
@@ -89,7 +89,7 @@ func (c *apiClient) List(ctx context.Context, includeAll bool) ([]*session.Sessi
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, readAPIError(resp)
 	}
 	var out []*session.Session
@@ -116,7 +116,7 @@ func (c *apiClient) ListEveryNode(ctx context.Context, includeAll bool) (*sessio
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, readAPIError(resp)
 	}
 	var out session.SessionListResponse
@@ -137,7 +137,7 @@ func (c *apiClient) Stop(ctx context.Context, id string) error {
 		return fmt.Errorf("dial deepcove service at %s: %w (is deepcove running? Start it with `%s`)", c.baseURL, err, findStartCommand())
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode != http.StatusNoContent {
 		return readAPIError(resp)
 	}
 	return nil
@@ -186,4 +186,31 @@ func readAPIError(resp *http.Response) error {
 		return errors.New(resp.Status)
 	}
 	return &errAPI{Status: resp.StatusCode, Body: string(b)}
+}
+
+type nodeHealth struct {
+	Version string `json:"version"`
+	PID     int    `json:"pid"`
+}
+
+// Health asks whether deepcove answers at all. A failure to connect comes back unwrapped, so a caller
+// can tell it from deepcove answering with an error.
+func (c *apiClient) Health(ctx context.Context) (*nodeHealth, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+	var health nodeHealth
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &health, nil
 }
