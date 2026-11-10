@@ -27,7 +27,7 @@ const activityTickInterval = 30 * time.Second
 const AttachSubprotocol = "deepcove.pty.v1"
 
 // AttachControlMessage is the JSON shape of WS text frames the
-// client may send. Only "resize" is defined today; new types can be
+// client may send: "resize" and "detach". New types can be
 // added without breaking older clients (unknown types are ignored).
 type AttachControlMessage struct {
 	Type string `json:"type"`
@@ -116,6 +116,12 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusInternalServerError, codeInternal, "view session setup: "+err.Error())
 		return
 	}
+	// Only `deepcove connect` asks for it, so the web terminal's bar stays as it was.
+	if r.URL.Query().Get("detach_hint") == "true" {
+		if _, err := s.execTmux(setupCtx, sess, "set-option", "-t", viewSession, "status-right", `Ctrl+\ to disconnect `); err != nil {
+			s.logger.Warn("attach: detach hint failed", "id", id, "err", err)
+		}
+	}
 	cancelSetup()
 	defer func() {
 		// Cleanup on every return path. Killing the view session
@@ -191,7 +197,12 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	bridge(ctx, ws, proc, logger)
+	// -E skips tmux's own "[detached (from session view-…)]" line, since connect prints its own.
+	detach := func(ctx context.Context) error {
+		_, err := s.execTmux(ctx, sess, "detach-client", "-E", "true", "-s", viewSession)
+		return err
+	}
+	bridge(ctx, ws, proc, logger, detach)
 
 	// Final write on disconnect. Use a fresh, non-cancelled context
 	// so the row update lands even when the request context has
@@ -214,7 +225,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 //
 // The first goroutine to error or signal end-of-stream tears down
 // the whole bridge via ctx cancellation.
-func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger) {
+func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger, detach func(context.Context) error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -270,6 +281,10 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 				case "resize":
 					if rerr := proc.Resize(msg.Cols, msg.Rows); rerr != nil {
 						logger.Warn("attach: resize failed", "err", rerr)
+					}
+				case "detach":
+					if derr := detach(ctx); derr != nil {
+						logger.Warn("attach: detach failed", "err", derr)
 					}
 				default:
 					logger.Warn("attach: unknown control type", "type", msg.Type)

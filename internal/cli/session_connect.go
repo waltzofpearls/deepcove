@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 	"golang.org/x/term"
@@ -13,6 +16,17 @@ import (
 	"github.com/waltzofpearls/deepcove/internal/config"
 	"github.com/waltzofpearls/deepcove/internal/session"
 )
+
+// detachKey is Ctrl+\. Many terminals send it for Ctrl+4 too, which helps keyboards where \ needs AltGr.
+const detachKey = 0x1c
+
+// detachWait is how long connect waits for tmux to detach before it hangs up anyway.
+const detachWait = 3 * time.Second
+
+// tmuxScreenReset is what tmux writes when it detaches (tty_stop_tty): back to the normal screen, cursor
+// shown, and the mouse, paste, focus, key and theme report modes off.
+const tmuxScreenReset = "\x1b[m\x1b[?1l\x1b>\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l" +
+	"\x1b[?2004l\x1b[?1004l\x1b[>4m\x1b[?2031l\x1b[?1049l"
 
 // cmdSessionConnect handles `deepcove connect <id-or-name>`, also run as `deepcove session connect`. It dials the local service's
 // WebSocket attach endpoint (preferring the Unix socket), puts the terminal into raw mode, and
@@ -53,9 +67,10 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	// Prefer the local control socket, falling back to TCP. The "unix" host is a placeholder,
 	// socketHTTPClient dials the socket regardless of the URL host.
 	dialOpts := &websocket.DialOptions{Subprotocols: []string{session.AttachSubprotocol}}
-	wsURL := "ws://" + cfg.Addr + "/api/sessions/" + sess.ID + "/attach"
+	attachPath := "/api/sessions/" + sess.ID + "/attach?detach_hint=true"
+	wsURL := "ws://" + cfg.Addr + attachPath
 	if sock := socketPath(cfg.DataDir); socketAvailable(sock) {
-		wsURL = "ws://unix/api/sessions/" + sess.ID + "/attach"
+		wsURL = "ws://unix" + attachPath
 		dialOpts.HTTPClient = socketHTTPClient(sock)
 	}
 	ws, _, err := websocket.Dial(ctx, wsURL, dialOpts)
@@ -84,6 +99,7 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 		_ = sendResize(bridgeCtx, ws, cols, rows)
 	})
 
+	var isDetached atomic.Bool
 	// stdin → ws binary
 	go func() {
 		defer cancel()
@@ -91,7 +107,20 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 		for {
 			n, err := os.Stdin.Read(buf)
 			if n > 0 {
-				if werr := ws.Write(bridgeCtx, websocket.MessageBinary, buf[:n]); werr != nil {
+				input, isDetach := findDetachKey(buf[:n])
+				if len(input) > 0 {
+					if werr := ws.Write(bridgeCtx, websocket.MessageBinary, input); werr != nil {
+						return
+					}
+				}
+				if isDetach {
+					// tmux detaches itself, so it gives the terminal back the screen it had before.
+					// Set first, since the server can close the socket before sendDetach returns.
+					isDetached.Store(true)
+					detachCtx, cancelDetach := context.WithTimeout(bridgeCtx, detachWait)
+					_ = sendDetach(detachCtx, ws)
+					<-detachCtx.Done()
+					cancelDetach()
 					return
 				}
 			}
@@ -102,7 +131,9 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	}()
 
 	// ws → stdout
+	outputDone := make(chan struct{})
 	go func() {
+		defer close(outputDone)
 		defer cancel()
 		for {
 			typ, data, err := ws.Read(bridgeCtx)
@@ -119,7 +150,23 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	}()
 
 	<-bridgeCtx.Done()
+	if isDetached.Load() {
+		// Wait for the last output, so the reset below lands after it.
+		<-outputDone
+		// tmux sends this itself when it detaches, but that can be lost, and sending it twice is harmless.
+		_, _ = os.Stdout.WriteString(tmuxScreenReset)
+		_ = term.Restore(fd, old)
+		fmt.Printf("Disconnected from %s. It keeps running.\n", sess.Name)
+	}
 	return nil
+}
+
+// findDetachKey returns the input before the detach key, and whether the key was pressed.
+func findDetachKey(input []byte) ([]byte, bool) {
+	if index := bytes.IndexByte(input, detachKey); index >= 0 {
+		return input[:index], true
+	}
+	return input, false
 }
 
 // resolveSession looks up a session on any of your nodes by id prefix or name. We list all sessions and
@@ -154,5 +201,10 @@ func sendResize(ctx context.Context, ws *websocket.Conn, cols, rows uint16) erro
 		Cols: cols,
 		Rows: rows,
 	})
+	return ws.Write(ctx, websocket.MessageText, body)
+}
+
+func sendDetach(ctx context.Context, ws *websocket.Conn) error {
+	body, _ := json.Marshal(session.AttachControlMessage{Type: "detach"})
 	return ws.Write(ctx, websocket.MessageText, body)
 }
