@@ -412,3 +412,22 @@ func TestCloseAttachStreams(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildLiteralTmuxFormat(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "plain", text: "could not upload a.png", want: "could not upload a.png"},
+		{name: "format", text: "#{pane_id}", want: "##{pane_id}"},
+		{name: "command", text: "#(rm x).png", want: "##(rm x).png"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := buildLiteralTmuxFormat(tc.text); got != tc.want {
+				t.Errorf("buildLiteralTmuxFormat(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}

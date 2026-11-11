@@ -179,14 +179,17 @@ type stdinWriter struct {
 	once sync.Once
 }
 
+// Write splits p into frames of at most maxFrameSize, since io.Copy can hand over a whole file at once.
 func (w *stdinWriter) Write(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
+	written := 0
+	for written < len(p) {
+		chunk := p[written:min(written+maxFrameSize, len(p))]
+		if err := w.c.send(FrameStdin, chunk); err != nil {
+			return written, err
+		}
+		written += len(chunk)
 	}
-	if err := w.c.send(FrameStdin, p); err != nil {
-		return 0, err
-	}
-	return len(p), nil
+	return written, nil
 }
 
 func (w *stdinWriter) Close() error {

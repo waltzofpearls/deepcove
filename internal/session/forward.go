@@ -19,8 +19,8 @@ import (
 // same request back and forth.
 const forwardedHeader = "Deepcove-Forwarded"
 
-// nodeHeader names the node a request is for. Set by the browser when it wants another node.
-const nodeHeader = "Deepcove-Node"
+// NodeHeader names the node a request is for. The browser and the CLI set it when they already know.
+const NodeHeader = "Deepcove-Node"
 
 // forwardRetries is how many times a wrong guess may be corrected before we give up.
 const forwardRetries = 1
@@ -77,7 +77,7 @@ func (s *Service) forwardOrServe(inner *http.ServeMux) http.Handler {
 
 // targetNode is the node that should answer. away is false when that is us.
 func (s *Service) targetNode(inner *http.ServeMux, r *http.Request) (node NodeRef, away bool, err error) {
-	if id := r.Header.Get(nodeHeader); id != "" {
+	if id := r.Header.Get(NodeHeader); id != "" {
 		if id == s.federation.Self().StableNodeID {
 			return NodeRef{}, false, nil
 		}

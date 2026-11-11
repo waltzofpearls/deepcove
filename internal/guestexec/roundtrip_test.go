@@ -98,25 +98,36 @@ func TestExecPropagatesNonZeroExit(t *testing.T) {
 }
 
 func TestExecStdinReachesTheProcess(t *testing.T) {
-	client := startPair(t, ExecRequest{Argv: []string{"/bin/cat"}})
-
-	if _, err := client.Stdin().Write([]byte("round trip\n")); err != nil {
-		t.Fatalf("write stdin: %v", err)
+	cases := []struct {
+		name  string
+		argv  []string
+		input string
+		want  string
+	}{
+		{name: "short line", argv: []string{"/bin/cat"}, input: "round trip\n", want: "round trip"},
+		{name: "bigger than one frame", argv: []string{"/bin/sh", "-c", "wc -c"}, input: strings.Repeat("a", 3*maxFrameSize+1), want: "3145729"},
 	}
-	// Closing stdin gives cat its EOF; without it the command would never finish.
-	if err := client.Stdin().Close(); err != nil {
-		t.Fatalf("close stdin: %v", err)
-	}
-
-	out, err := io.ReadAll(client.Stdout())
-	if err != nil {
-		t.Fatalf("read stdout: %v", err)
-	}
-	if got := strings.TrimSpace(string(out)); got != "round trip" {
-		t.Errorf("stdout = %q, want %q", got, "round trip")
-	}
-	if _, err := client.Wait(context.Background()); err != nil {
-		t.Fatalf("Wait: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := startPair(t, ExecRequest{Argv: tc.argv})
+			if _, err := client.Stdin().Write([]byte(tc.input)); err != nil {
+				t.Fatalf("write stdin: %v", err)
+			}
+			// Closing stdin gives the command its EOF; without it the command would never finish.
+			if err := client.Stdin().Close(); err != nil {
+				t.Fatalf("close stdin: %v", err)
+			}
+			out, err := io.ReadAll(client.Stdout())
+			if err != nil {
+				t.Fatalf("read stdout: %v", err)
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Errorf("stdout = %q, want %q", got, tc.want)
+			}
+			if _, err := client.Wait(context.Background()); err != nil {
+				t.Fatalf("Wait: %v", err)
+			}
+		})
 	}
 }
 

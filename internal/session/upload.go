@@ -21,8 +21,8 @@ import (
 // exec, never through a host bind mount, so on a VM the file lives only in the guest.
 const uploadsDir = "/tmp/.uploads"
 
-// maxUploadBytes caps a single pasted file.
-const maxUploadBytes = 25 << 20 // 25 MiB
+// MaxUploadBytes caps a single pasted file.
+const MaxUploadBytes = 25 << 20 // 25 MiB
 
 // UploadResponse is the PUT /api/sessions/{id}/uploads payload: the in-sandbox path the SPA
 // injects into the agent's prompt.
@@ -118,7 +118,7 @@ func shQuote(s string) string {
 // the in-sandbox path. PUT /api/sessions/{id}/uploads?name=foo.png
 func (s *Service) handleUpload(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, MaxUploadBytes)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "upload too large (max 25 MiB) or read failed")

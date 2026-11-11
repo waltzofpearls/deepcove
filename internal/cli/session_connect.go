@@ -4,12 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
+	"text/tabwriter"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/coder/websocket"
 	"golang.org/x/term"
 
@@ -19,6 +28,13 @@ import (
 
 // detachKey is Ctrl+\. Many terminals send it for Ctrl+4 too, which helps keyboards where \ needs AltGr.
 const detachKey = 0x1c
+
+// maxInputPiece is the most input connect sends in one message, the same as one read from the terminal.
+const maxInputPiece = 4096
+
+// maxNoticeBytes keeps a notice far below the attach server's 32 KiB message limit, even once JSON
+// escapes it. A status line shows much less anyway.
+const maxNoticeBytes = 1024
 
 // detachWait is how long connect waits for tmux to detach before it hangs up anyway.
 const detachWait = 3 * time.Second
@@ -49,8 +65,17 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
+	// Both must be a TTY, also so a stalled pipe on stdout cannot block the output after a detach.
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("`connect` requires a terminal on stdin and stdout")
+	}
+
 	client := newAPIClient(cfg)
 	sess, err := resolveSession(ctx, client, target)
+	if errors.Is(err, huh.ErrUserAborted) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -58,15 +83,13 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 		return fmt.Errorf("session %s is %s, not running", sess.Name, sess.Status)
 	}
 
-	// Both must be a TTY, also so a stalled pipe on stdout cannot block the output after a detach.
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		return fmt.Errorf("`connect` requires a terminal on stdin and stdout")
-	}
-
 	// Prefer the local control socket, falling back to TCP. The "unix" host is a placeholder,
 	// socketHTTPClient dials the socket regardless of the URL host.
 	dialOpts := &websocket.DialOptions{Subprotocols: []string{session.AttachSubprotocol}}
+	// Name the node that listed the session, the same as an upload does, rather than leave it to a guess.
+	if sess.Host != nil && sess.Host.StableNodeID != "" {
+		dialOpts.HTTPHeader = http.Header{session.NodeHeader: []string{sess.Host.StableNodeID}}
+	}
 	attachPath := "/api/sessions/" + sess.ID + "/attach?detach_hint=true"
 	wsURL := "ws://" + cfg.Addr + attachPath
 	if sock := socketPath(cfg.DataDir); socketAvailable(sock) {
@@ -103,13 +126,62 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	// stdin → ws binary
 	go func() {
 		defer cancel()
-		buf := make([]byte, 4096)
+		reads := make(chan []byte)
+		go readTerminal(bridgeCtx, os.Stdin, reads)
+		var pastes pasteCollector
+		upload := func(ctx context.Context, localPath string) (string, error) {
+			return uploadToSession(ctx, client, sess, localPath)
+		}
+		// While a pasted file uploads, the user may keep typing. Those keys are saved here and sent once the
+		// upload is done, so they land after the pasted path instead of before it.
+		var keysTypedDuringUpload []inputPart
 		for {
-			n, err := os.Stdin.Read(buf)
-			if n > 0 {
-				input, isDetach := findDetachKey(buf[:n])
+			var parts []inputPart
+			if len(keysTypedDuringUpload) > 0 {
+				parts, keysTypedDuringUpload = keysTypedDuringUpload, nil
+			} else {
+				// A terminal sends a paste in one go, so a paste that stops short is let go as typing.
+				var pasteTimeout <-chan time.Time
+				if pastes.isPasteInProgress {
+					pasteTimeout = time.After(pasteWait)
+				}
+				select {
+				case <-bridgeCtx.Done():
+					return
+				case read, isOpen := <-reads:
+					if !isOpen {
+						return
+					}
+					parts = pastes.collect(read)
+				case <-pasteTimeout:
+					parts = pastes.flush()
+				}
+			}
+			for index, part := range parts {
+				if part.isPossiblyFilePaste {
+					// A Ctrl+\ already typed after this paste means the user is leaving, so skip the upload.
+					if hasDetachKey(parts[index+1:]) || hasDetachKey(keysTypedDuringUpload) {
+						continue
+					}
+					paste, keys, err := uploadWhileReading(bridgeCtx, part.data, reads, &pastes, upload)
+					keysTypedDuringUpload = append(keysTypedDuringUpload, keys...)
+					if err != nil {
+						_ = sendNotice(bridgeCtx, ws, "deepcove: "+err.Error())
+					}
+					if err := writeInput(bridgeCtx, ws, paste); err != nil {
+						return
+					}
+					continue
+				}
+				if part.isConsideredTextPaste {
+					if err := writeInput(bridgeCtx, ws, part.data); err != nil {
+						return
+					}
+					continue
+				}
+				input, isDetach := findDetachKey(part.data)
 				if len(input) > 0 {
-					if werr := ws.Write(bridgeCtx, websocket.MessageBinary, input); werr != nil {
+					if err := writeInput(bridgeCtx, ws, input); err != nil {
 						return
 					}
 				}
@@ -123,9 +195,6 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 					cancelDetach()
 					return
 				}
-			}
-			if err != nil {
-				return
 			}
 		}
 	}()
@@ -141,7 +210,7 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 				return
 			}
 			if typ == websocket.MessageBinary {
-				if _, werr := os.Stdout.Write(data); werr != nil {
+				if _, err := os.Stdout.Write(data); err != nil {
 					return
 				}
 			}
@@ -161,6 +230,38 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	return nil
 }
 
+// writeInput sends input in pieces the attach server accepts, since it reads at most 32 KiB per message.
+func writeInput(ctx context.Context, ws *websocket.Conn, input []byte) error {
+	for _, piece := range buildInputPieces(input) {
+		if err := ws.Write(ctx, websocket.MessageBinary, piece); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// buildInputPieces splits input into pieces of at most maxInputPiece, in order.
+func buildInputPieces(input []byte) [][]byte {
+	var pieces [][]byte
+	for len(input) > 0 {
+		size := min(len(input), maxInputPiece)
+		pieces = append(pieces, input[:size])
+		input = input[size:]
+	}
+	return pieces
+}
+
+// hasDetachKey reports whether Ctrl+\ was typed in parts. A paste can hold the same byte, but that is
+// pasted text and not a key press.
+func hasDetachKey(parts []inputPart) bool {
+	for _, part := range parts {
+		if !part.isPossiblyFilePaste && !part.isConsideredTextPaste && bytes.IndexByte(part.data, detachKey) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // findDetachKey returns the input before the detach key, and whether the key was pressed.
 func findDetachKey(input []byte) ([]byte, bool) {
 	if index := bytes.IndexByte(input, detachKey); index >= 0 {
@@ -169,29 +270,121 @@ func findDetachKey(input []byte) ([]byte, bool) {
 	return input, false
 }
 
-// resolveSession looks up a session on any of your nodes by id prefix or name. We list all sessions and
-// match; fine for personal-scale node counts, and avoids needing a dedicated lookup endpoint.
+// resolveSession looks up a session on any of your nodes by id, name or id prefix. When a name or prefix
+// matches more than one session, it asks which one in a menu.
 func resolveSession(ctx context.Context, client *apiClient, target string) (*session.Session, error) {
 	listed, err := client.ListEveryNode(ctx, true /* includeAll */)
 	if err != nil {
 		return nil, err
 	}
-	var matches []*session.Session
-	for _, s := range listed.Sessions {
-		if s.ID == target || s.Name == target {
-			return s, nil
-		}
-		if len(target) >= 4 && len(s.ID) >= len(target) && s.ID[:len(target)] == target {
-			matches = append(matches, s)
-		}
-	}
+	matches, title := findSessionMatches(listed.Sessions, target)
 	switch len(matches) {
 	case 0:
 		return nil, fmt.Errorf("no session matching %q", target)
 	case 1:
 		return matches[0], nil
 	default:
-		return nil, fmt.Errorf("%q is ambiguous; %d sessions match", target, len(matches))
+		return pickSession(ctx, title, matches)
+	}
+}
+
+// findSessionMatches returns the sessions target names, and a menu title when there is more than one.
+// A full id wins, then names, then an id prefix of at least 4 characters.
+func findSessionMatches(sessions []*session.Session, target string) ([]*session.Session, string) {
+	var named, prefixed []*session.Session
+	for _, s := range sessions {
+		if s.ID == target {
+			return []*session.Session{s}, ""
+		}
+		if s.Name == target {
+			named = append(named, s)
+		}
+		if len(target) >= 4 && strings.HasPrefix(s.ID, target) {
+			prefixed = append(prefixed, s)
+		}
+	}
+	matches, title := prefixed, fmt.Sprintf("%d sessions start with %q. Which one?", len(prefixed), target)
+	if len(named) > 0 {
+		matches, title = named, fmt.Sprintf("%d sessions are named %q. Which one?", len(named), target)
+	}
+	if len(matches) < 2 {
+		title = ""
+	}
+	return matches, title
+}
+
+// pickSession shows the matches as rows like `deepcove ls` prints, picked with the arrow keys.
+func pickSession(ctx context.Context, title string, matches []*session.Session) (*session.Session, error) {
+	header, rows := buildSessionRows(matches)
+	options := make([]huh.Option[*session.Session], 0, len(matches))
+	for index, match := range matches {
+		options = append(options, huh.NewOption(rows[index], match))
+	}
+	var picked *session.Session
+	// The header goes in the description, indented past the "> " in front of the rows.
+	menu := huh.NewSelect[*session.Session]().Title(title).Description("  " + header).Options(options...).Value(&picked)
+	if err := huh.NewForm(huh.NewGroup(menu)).WithTheme(huh.ThemeFunc(buildMenuTheme)).RunWithContext(ctx); err != nil {
+		return nil, err
+	}
+	return picked, nil
+}
+
+// buildMenuTheme is huh's default theme with the arrow and the picked row in the web UI's brand teal.
+func buildMenuTheme(isDark bool) *huh.Styles {
+	styles := huh.ThemeCharm(isDark)
+	teal := lipgloss.LightDark(isDark)(lipgloss.Color("#009d89"), lipgloss.Color("#00aa95"))
+	styles.Focused.SelectSelector = styles.Focused.SelectSelector.Foreground(teal)
+	styles.Focused.SelectedOption = styles.Focused.SelectedOption.Foreground(teal)
+	return styles
+}
+
+// buildSessionRows lines up a header and each session's id, name, node, agent, status and age into columns.
+func buildSessionRows(sessions []*session.Session) (string, []string) {
+	ids := buildUniqueIDs(sessions)
+	var table strings.Builder
+	columns := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(columns, "ID\tNAME\tNODE\tAGENT\tSTATUS\tAGE")
+	for index, s := range sessions {
+		_, _ = fmt.Fprintf(columns, "%s\t%s\t%s\t%s\t%s\t%s\n", ids[index], buildOneLineName(s.Name), nodeName(s), s.Agent, s.Status, ageOf(s.CreatedAt))
+	}
+	_ = columns.Flush()
+	lines := strings.Split(strings.TrimSuffix(table.String(), "\n"), "\n")
+	return lines[0], lines[1:]
+}
+
+// buildOneLineName shows a tab, newline or other control character in a name as an escape like \n, so a
+// session always stays on one row of the menu.
+func buildOneLineName(name string) string {
+	var line strings.Builder
+	for _, char := range name {
+		if unicode.IsControl(char) {
+			quoted := strconv.QuoteRune(char)
+			line.WriteString(quoted[1 : len(quoted)-1])
+			continue
+		}
+		line.WriteRune(char)
+	}
+	return line.String()
+}
+
+// buildUniqueIDs cuts the ids as short as `deepcove ls` does, or longer when that would make two match.
+func buildUniqueIDs(sessions []*session.Session) []string {
+	longest := 0
+	for _, s := range sessions {
+		longest = max(longest, len(s.ID))
+	}
+	ids := make([]string, len(sessions))
+	for size := min(shortIDLength, longest); ; size++ {
+		seen := make(map[string]bool, len(sessions))
+		isUnique := true
+		for index, s := range sessions {
+			ids[index] = s.ID[:min(size, len(s.ID))]
+			isUnique = isUnique && !seen[ids[index]]
+			seen[ids[index]] = true
+		}
+		if isUnique || size >= longest {
+			return ids
+		}
 	}
 }
 
@@ -207,4 +400,22 @@ func sendResize(ctx context.Context, ws *websocket.Conn, cols, rows uint16) erro
 func sendDetach(ctx context.Context, ws *websocket.Conn) error {
 	body, _ := json.Marshal(session.AttachControlMessage{Type: "detach"})
 	return ws.Write(ctx, websocket.MessageText, body)
+}
+
+// sendNotice asks the server to show text in this terminal's tmux status line, since tmux owns the screen.
+func sendNotice(ctx context.Context, ws *websocket.Conn, text string) error {
+	body, _ := json.Marshal(session.AttachControlMessage{Type: "notice", Text: buildShortNotice(text)})
+	return ws.Write(ctx, websocket.MessageText, body)
+}
+
+// buildShortNotice cuts text to maxNoticeBytes on a character boundary, and ends it with "..." when cut.
+func buildShortNotice(text string) string {
+	if len(text) <= maxNoticeBytes {
+		return text
+	}
+	cut := maxNoticeBytes - len("...")
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "..."
 }

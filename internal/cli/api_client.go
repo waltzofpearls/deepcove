@@ -143,6 +143,32 @@ func (c *apiClient) Stop(ctx context.Context, id string) error {
 	return nil
 }
 
+// Upload copies a file into a running session and returns where it landed there. It names the node
+// hosting the session, since a guess that turns out wrong cannot be retried with a big file.
+func (c *apiClient) Upload(ctx context.Context, sess *session.Session, name string, data []byte) (*session.UploadResponse, error) {
+	uploadURL := c.baseURL + "/api/sessions/" + url.PathEscape(sess.ID) + "/uploads?name=" + url.QueryEscape(name)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if sess.Host != nil && sess.Host.StableNodeID != "" {
+		httpReq.Header.Set(session.NodeHeader, sess.Host.StableNodeID)
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+	var out session.UploadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // runningSessions is what this node is running right now.
 func runningSessions(ctx context.Context, client *apiClient) ([]*session.Session, error) {
 	sessions, err := client.List(ctx, false)
