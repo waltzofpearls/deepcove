@@ -30,7 +30,8 @@ type hostSandboxFacts struct {
 	root bool
 }
 
-func hostSandbox() hostSandboxFacts {
+// hostSandbox reads this host. A variable so a test can stand in for a host it is not running on.
+var hostSandbox = func() hostSandboxFacts {
 	return hostSandboxFacts{
 		namespacesRestricted: fileSaysOne(restrictionPath),
 		profileInstalled:     fileExists(InstalledAppArmorProfile),
@@ -62,6 +63,23 @@ func passtRunAsArgsFor(facts hostSandboxFacts) []string {
 // Ubuntu 24.04 does, until the profile is loaded.
 func HelperSandboxesNeedAppArmor() bool {
 	return hostSandbox().needsProfile()
+}
+
+// AppArmorFixCommand is what a root shell runs to load the profile deepcove left at source.
+func AppArmorFixCommand(source string) string {
+	return fmt.Sprintf("sudo cp %s %s && sudo apparmor_parser -r %s",
+		source, InstalledAppArmorProfile, InstalledAppArmorProfile)
+}
+
+// checkHelpersCanStart refuses a boot passt and virtiofsd cannot survive: namespaces are restricted, the
+// profile is missing, and there is no root to fall back on. Otherwise all the user sees is "passt exited
+// before it was ready".
+func checkHelpersCanStart(profileSource string) error {
+	if host := hostSandbox(); !host.needsProfile() || host.root {
+		return nil
+	}
+	return fmt.Errorf("cloudhv: this host restricts unprivileged user namespaces and deepcove's AppArmor "+
+		"profile is not loaded, so passt and virtiofsd cannot start; run: %s", AppArmorFixCommand(profileSource))
 }
 
 func fileSaysOne(path string) bool {

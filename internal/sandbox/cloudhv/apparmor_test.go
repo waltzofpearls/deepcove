@@ -74,6 +74,39 @@ func TestPasstRunAsArgsFor(t *testing.T) {
 	}
 }
 
+// fakeHost stands in for this host until the test ends.
+func fakeHost(t *testing.T, facts hostSandboxFacts) {
+	t.Helper()
+	real := hostSandbox
+	hostSandbox = func() hostSandboxFacts { return facts }
+	t.Cleanup(func() { hostSandbox = real })
+}
+
+func TestCheckHelpersCanStart(t *testing.T) {
+	cases := []struct {
+		name    string
+		facts   hostSandboxFacts
+		wantErr bool
+	}{
+		{name: "a host that does not restrict namespaces"},
+		{name: "restricted, but the profile is installed", facts: hostSandboxFacts{namespacesRestricted: true, profileInstalled: true}},
+		{name: "restricted with no profile, but we are root", facts: hostSandboxFacts{namespacesRestricted: true, root: true}},
+		{name: "restricted with no profile, not root", facts: hostSandboxFacts{namespacesRestricted: true}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeHost(t, tc.facts)
+			err := checkHelpersCanStart("/data/deepcove.apparmor")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("got %v, want error: %v", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), AppArmorFixCommand("/data/deepcove.apparmor")) {
+				t.Errorf("the error does not say how to fix it: %v", err)
+			}
+		})
+	}
+}
+
 func TestFileSaysOne(t *testing.T) {
 	cases := []struct {
 		name    string
