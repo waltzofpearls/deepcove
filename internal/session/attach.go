@@ -27,13 +27,17 @@ const activityTickInterval = 30 * time.Second
 const AttachSubprotocol = "deepcove.pty.v1"
 
 // AttachControlMessage is the JSON shape of WS text frames the
-// client may send: "resize" and "detach". New types can be
+// client may send: "resize", "detach" and "notice". New types can be
 // added without breaking older clients (unknown types are ignored).
 type AttachControlMessage struct {
 	Type string `json:"type"`
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
+	Text string `json:"text,omitempty"`
 }
+
+// noticeMillis is how long a notice stays in the status line, long enough to read a file name and a reason.
+const noticeMillis = "5000"
 
 // handleAttach upgrades to a WebSocket and bridges it to a
 // `tmux attach -t main` exec inside the session's sandbox. Binary
@@ -202,7 +206,20 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		_, err := s.execTmux(ctx, sess, "detach-client", "-E", "true", "-s", viewSession)
 		return err
 	}
-	bridge(ctx, ws, proc, logger, detach)
+	// Only this attach's client gets the notice, since its view session is its own.
+	notify := func(ctx context.Context, text string) error {
+		clients, err := s.execTmux(ctx, sess, "list-clients", "-t", viewSession, "-F", "#{client_name}")
+		if err != nil {
+			return err
+		}
+		for _, client := range strings.Fields(string(clients)) {
+			if _, err := s.execTmux(ctx, sess, "display-message", "-d", noticeMillis, "-c", client, "--", buildLiteralTmuxFormat(text)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	bridge(ctx, ws, proc, logger, detach, notify)
 
 	// Final write on disconnect. Use a fresh, non-cancelled context
 	// so the row update lands even when the request context has
@@ -225,7 +242,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 //
 // The first goroutine to error or signal end-of-stream tears down
 // the whole bridge via ctx cancellation.
-func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger, detach func(context.Context) error) {
+func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger, detach func(context.Context) error, notify func(context.Context, string) error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -285,6 +302,10 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 				case "detach":
 					if derr := detach(ctx); derr != nil {
 						logger.Warn("attach: detach failed", "err", derr)
+					}
+				case "notice":
+					if err := notify(ctx, msg.Text); err != nil {
+						logger.Warn("attach: notice failed", "err", err)
 					}
 				default:
 					logger.Warn("attach: unknown control type", "type", msg.Type)
@@ -359,4 +380,10 @@ func (s *Service) CloseAttachStreams(timeout time.Duration) {
 	case <-time.After(timeout):
 		s.logger.Warn("gave up waiting for terminal streams to close", "streams", live)
 	}
+}
+
+// buildLiteralTmuxFormat escapes text so tmux shows it as is. tmux expands # in a message, and #() would
+// run a command.
+func buildLiteralTmuxFormat(text string) string {
+	return strings.ReplaceAll(text, "#", "##")
 }

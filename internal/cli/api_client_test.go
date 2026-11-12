@@ -58,3 +58,34 @@ func TestStopRunningSessions(t *testing.T) {
 		})
 	}
 }
+
+func TestAPIClient_Upload(t *testing.T) {
+	cases := []struct {
+		name     string
+		host     *session.NodeRef
+		wantNode string
+	}{
+		{name: "node known", host: &session.NodeRef{StableNodeID: "n2"}, wantNode: "n2"},
+		{name: "no node known", host: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotNode, gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotNode = r.Header.Get(session.NodeHeader)
+				gotPath = r.URL.Path
+				_ = json.NewEncoder(w).Encode(session.UploadResponse{Path: "/tmp/.uploads/0a1b.png"})
+			}))
+			defer srv.Close()
+
+			client := &apiClient{baseURL: srv.URL, http: srv.Client()}
+			uploaded, err := client.Upload(t.Context(), &session.Session{ID: "s1", Host: tc.host}, "a.png", []byte("x"))
+			if err != nil {
+				t.Fatalf("Upload: %v", err)
+			}
+			if gotNode != tc.wantNode || gotPath != "/api/sessions/s1/uploads" || uploaded.Path != "/tmp/.uploads/0a1b.png" {
+				t.Errorf("Upload sent node %q to %q and got %q, want node %q", gotNode, gotPath, uploaded.Path, tc.wantNode)
+			}
+		})
+	}
+}

@@ -90,10 +90,10 @@ func (f *sharedFolderFlag) Set(value string) error {
 	return nil
 }
 
+// shortIDLength is how much of an id `deepcove ls` shows.
+const shortIDLength = 12
+
 // short trims a UUID to the leading 12 characters, for terminal friendly output.
 func short(id string) string {
-	if len(id) > 12 {
-		return id[:12]
-	}
-	return id
+	return id[:min(shortIDLength, len(id))]
 }
