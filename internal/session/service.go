@@ -204,7 +204,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	if err := req.Resources.Validate(); err != nil {
 		return nil, err
 	}
-	if err := validateVMSize(req.Resources, SessionVMSizes); err != nil {
+	if err := validateVMSize(req.Resources, SessionVMSizes, hostVMLimits()); err != nil {
 		return nil, err
 	}
 

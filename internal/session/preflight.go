@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"runtime"
 	"sort"
 	"sync"
 
@@ -43,6 +44,11 @@ type RuntimesInfo struct {
 	// WorkspaceVMSizes are the sizes the workspace VM can have, each with about how many agents it runs.
 	WorkspaceVMSizes []WorkspaceVMSizeChoice `json:"workspace_vm_sizes"`
 	DefaultVMSize    string                  `json:"default_vm_size"`
+	// VMLimits caps a custom size, for a session VM and the workspace VM alike.
+	VMLimits VMLimits `json:"vm_limits"`
+	// SpareMemoryMB is what this host has for VMs after what it keeps back, which says how many of a
+	// custom size fit. Absent when the host's memory could not be measured.
+	SpareMemoryMB *int64 `json:"spare_memory_mb,omitempty"`
 	// WorkspaceRoots maps a runtime that makes a folder for each session to where those folders live, so
 	// the create form can show the path before the session exists. Only a runtime with no guest has one.
 	WorkspaceRoots map[string]string `json:"workspace_roots,omitempty"`
@@ -100,6 +106,8 @@ func (s *Service) handlePreflight(w http.ResponseWriter, r *http.Request) {
 			SessionVMSizes:   sessionVMSizeChoices(memoryMB),
 			WorkspaceVMSizes: workspaceVMSizeChoices(workspaceVMSizes(memoryMB, hostMemoryKeptBackMB)),
 			DefaultVMSize:    DefaultVMSize,
+			VMLimits:         vmLimits(runtime.NumCPU(), memoryMB, hostMemoryKeptBackMB),
+			SpareMemoryMB:    spareMemoryMB(memoryMB, hostMemoryKeptBackMB),
 			WorkspaceRoots:   s.runtimeWorkspaceRoots(),
 			AgentsToInstall:  s.runtimeAgentsToInstall(),
 		},

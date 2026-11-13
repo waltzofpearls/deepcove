@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { cn } from '$lib/utils';
   import { goto } from '$app/navigation';
   import {
     Dialog,
@@ -23,9 +22,8 @@
   import HostPathField from './HostPathField.svelte';
   import VMSizePicker from './VMSizePicker.svelte';
   import LoginModePicker from './LoginModePicker.svelte';
-  import NodeStep from './NodeStep.svelte';
-  import RuntimeStep from './RuntimeStep.svelte';
-  import WorkspaceSetupStep from './WorkspaceSetupStep.svelte';
+  import WhereItRuns from './WhereItRuns.svelte';
+  import WorkspaceVMFields from './WorkspaceVMFields.svelte';
   import { footerClass } from './wizardFooter';
   import { loginChoices, type LoginPlace } from '$lib/util/loginMode';
   import { shellQuote } from '$lib/util/shell';
@@ -41,13 +39,19 @@
     WorkspaceVM,
   } from '$lib/api/types';
   import {
+    findLastPick,
     missingReasons,
-    runtimePlaceLabel,
     runtimeTiles,
     RUNTIME_SANDBOXLESS,
     type RuntimePlace,
   } from '$lib/util/runtime';
-  import { DEFAULT_VM_SIZE, sessionVMSizeCards } from '$lib/util/vmSize';
+  import {
+    canPickVMSize,
+    customSessionVMTitleNote,
+    DEFAULT_VM_SIZE,
+    describeVMSize,
+    sessionVMSizeCards,
+  } from '$lib/util/vmSize';
   import Copy from '@lucide/svelte/icons/copy';
   import Check from '@lucide/svelte/icons/check';
   import Plus from '@lucide/svelte/icons/plus';
@@ -57,15 +61,6 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
-
-  // The dialog walks through these in order. Details holds the rest of the form.
-  type Step = 'node' | 'runtime' | 'workspace' | 'details';
-  const stepLabels: Record<Step, string> = {
-    node: 'Node',
-    runtime: 'Runtime',
-    workspace: 'Workspace VM',
-    details: 'Details',
-  };
 
   // read_only is required here so the checkbox binds to a boolean.
   type FolderRow = Required<SharedFolder>;
@@ -97,31 +92,21 @@
     if (!node || node.self) return undefined;
     return nodeHost(node);
   });
-  // The node the session lands on, by name, for the runtime step and the summary above the details.
+  // The node the session lands on, by name.
   const targetNodeName = $derived(
     hostNodes.find((node) => node.stable_node_id === nodeId)?.hostname ??
       soleRemoteNode?.hostname ??
       'this node',
   );
-  // With one node there is nothing to pick, so the dialog starts at the runtime. The workspace VM step
-  // shows only until the node has one.
-  const steps = $derived.by(() => {
-    const list: Step[] = hostNodes.length > 1 ? ['node', 'runtime'] : ['runtime'];
-    if (needsWorkspaceVM) list.push('workspace');
-    list.push('details');
-    return list;
-  });
-  // Empty means the first step. That way the node step still comes first when the nodes arrive after
-  // the dialog opens.
-  let stepChoice = $state<Step | ''>('');
-  const step = $derived(stepChoice && steps.includes(stepChoice) ? stepChoice : steps[0]);
-  const defaultNode = $derived(defaultNodeId(hostNodes));
-  function stepForward() {
-    stepChoice = steps[steps.indexOf(step) + 1] ?? step;
-  }
-  function stepBack() {
-    stepChoice = steps[steps.indexOf(step) - 1] ?? step;
-  }
+  // How your newest session runs, on any node. A new session starts from it, so nothing is stored. Read
+  // once a visit, so a session made elsewhere meanwhile can't change what you left untouched here.
+  const lastPick = $derived(
+    open && !sessions.loading ? untrack(() => findLastPick(sessions.list)) : null,
+  );
+  // The last pick applies only on its own node. No node on it means this one.
+  const isOnLastPickNode = $derived(
+    lastPick !== null && (lastPick.nodeId ? lastPick.nodeId === nodeId : !selectedHost),
+  );
   // A stable key for that host. selectedHost is a fresh object on every recompute, so an effect that
   // depends on it re-runs forever; the dns name changes only when the choice does.
   const selectedHostKey = $derived(selectedHost?.dns_name ?? '');
@@ -158,6 +143,16 @@
   let pullStatus = $state('');
   let copied = $state(false);
 
+  // Each visit starts on the agent of your last session, when this build still has it. The last pick
+  // can land after the dialog opens, so it is followed until you pick an agent yourself.
+  let isAgentPicked = $state(false);
+  $effect(() => {
+    if (!open || agents.length === 0) return;
+    const lastAgent = lastPick?.agent;
+    if (untrack(() => isAgentPicked)) return;
+    if (lastAgent && agents.some((known) => known.name === lastAgent)) agent = lastAgent;
+  });
+
   $effect(() => {
     if (!open || agents.length > 0) return;
     api
@@ -171,23 +166,38 @@
       .catch((e) => (agentsError = String(e)));
   });
 
-  // Load the user's nodes on open and default the target to this machine. Connected mode reads them
-  // from the server; web node mode reads the in-browser node's discovery. Best-effort: a failure just
-  // hides the selector and creates here.
+  // Load the user's nodes on open. Connected mode reads them from the server; web node mode reads the
+  // in-browser node's discovery. Best-effort: a failure just hides the selector and creates here.
   $effect(() => {
     if (!open || nodes.length > 0) return;
     if (discoveryRequired()) {
       nodes = discovery.nodes;
-      nodeId = defaultNodeId(discovery.nodes);
       return;
     }
     api
       .nodes()
-      .then((list) => {
-        nodes = list;
-        nodeId = defaultNodeId(list);
-      })
+      .then((list) => (nodes = list))
       .catch(() => {});
+  });
+  // Each visit starts on your last session's node while it is online, else on this machine. A node you
+  // picked yourself stays while it is online.
+  let isNodePicked = $state(false);
+  const hostNodeIds = $derived(hostNodes.map((node) => node.stable_node_id).join(','));
+  $effect(() => {
+    if (!open) return;
+    void hostNodeIds;
+    const lastNodeId = lastPick?.nodeId;
+    untrack(() => {
+      if (isNodePicked && hostNodes.some((node) => node.stable_node_id === nodeId)) return;
+      const lastNode = hostNodes.find((node) => node.stable_node_id === lastNodeId);
+      nodeId = lastNode?.stable_node_id ?? defaultNodeId(hostNodes);
+    });
+  });
+  // A pick made yourself lasts this visit only.
+  $effect(() => {
+    if (open) return;
+    isAgentPicked = false;
+    isNodePicked = false;
   });
 
   // Which runtimes the create target offers, and which of them can host right now. Both are properties
@@ -230,18 +240,17 @@
       ac.abort();
     };
   });
-  // Every visit starts at the first step.
-  $effect(() => {
-    void open;
-    stepChoice = '';
-  });
   // A pick belongs to the node it was made for, and to this visit: reopening or switching nodes starts
-  // from that node's own default, so No sandbox is never carried over unseen. Not on a re-read of the
-  // same node, such as the one after a setup, which would drop the VM you just picked.
+  // from that node's last pick or default. Not on a re-read of the same node, such as the one after a
+  // setup, which would drop the VM you just picked.
   $effect(() => {
     void open;
     void selectedHostKey;
     pickedPlace = '';
+    pickedVMSize = null;
+    draftWorkspaceRoot = '';
+    draftWorkspaceGuestRoot = '/workspace';
+    draftWorkspaceResources = { size: DEFAULT_VM_SIZE };
     // A download started for the last node is that node's. Its button is gone, so nothing else clears it.
     downloadingVM = false;
   });
@@ -262,10 +271,24 @@
   // below, NOT in an $effect: an effect that both reads and writes the same state re-triggers itself,
   // which in Svelte 5 runs until effect_update_depth_exceeded and hangs the page.
   let pickedPlace = $state<RuntimePlace | ''>('');
-  // The tile you picked, or the node's default until you pick. With no usable default, nothing is
-  // picked until you choose.
+  // Your last session's tile, when this node can run it now. No isolation is never carried over, so
+  // running without a VM is always a choice made on purpose.
+  const lastPickTile = $derived(
+    isOnLastPickNode
+      ? tiles.find(
+          (tile) =>
+            tile.place === lastPick?.place &&
+            tile.place !== 'no_sandbox' &&
+            !tile.blocked &&
+            !tile.needsSetup,
+        )
+      : undefined,
+  );
+  // The tile you picked, else your last session's, else the node's default. With no usable default,
+  // nothing is picked until you choose.
   const pickedTile = $derived(
     tiles.find((tile) => tile.place === pickedPlace) ??
+      lastPickTile ??
       tiles.find((tile) => tile.isDefault && !tile.blocked),
   );
   // True while the download runs, so its progress gets the whole row.
@@ -315,6 +338,11 @@
   );
 
   let workspaceVM = $state<WorkspaceVM | null>(null);
+  // The first shared VM on a node is set up with the session that needs it. These hold its fields
+  // until Create saves it.
+  let draftWorkspaceRoot = $state('');
+  let draftWorkspaceGuestRoot = $state('/workspace');
+  let draftWorkspaceResources = $state<SessionResources>({ size: DEFAULT_VM_SIZE });
   // False until the node says whether it has a workspace VM. Without the answer, the dialog can't tell
   // whether to set one up.
   let workspaceVMChecked = $state(false);
@@ -322,7 +350,17 @@
   let workDir = $state('');
   const onWorkspace = $derived(pickedTile?.place === 'workspace_vm' && runtimeKnown);
   const needsWorkspaceVM = $derived(onWorkspace && workspaceVMChecked && workspaceVM === null);
-  const workspaceSharedRoot = $derived(workspaceVM?.host_root ?? '');
+  const isWorkspaceSetupReady = $derived(
+    looksLikePath(draftWorkspaceRoot) &&
+      looksLikePath(draftWorkspaceGuestRoot) &&
+      (runtimes?.workspace_vm_sizes?.length ?? 0) > 0,
+  );
+  const workspaceSharedRoot = $derived(
+    workspaceVM?.host_root ?? (needsWorkspaceVM ? draftWorkspaceRoot.trim() : ''),
+  );
+  const workspaceGuestRoot = $derived(
+    workspaceVM?.guest_root ?? (needsWorkspaceVM ? draftWorkspaceGuestRoot.trim() : ''),
+  );
   // The session's folder on the workspace VM, as a path on this machine. It follows the name until you
   // change it, so the field always shows the folder the session gets.
   let workspaceFolder = $state('');
@@ -347,9 +385,9 @@
   });
   // Where the session's folder shows up in the workspace VM. It follows the folder on the node.
   const workspaceGuestFolder = $derived.by(() => {
-    if (!workspaceVM || !workspaceFolderName) return '';
-    if (workspaceFolderName === '.') return workspaceVM.guest_root;
-    return `${workspaceVM.guest_root.replace(/\/$/, '')}/${workspaceFolderName}`;
+    if (!workspaceGuestRoot || !workspaceFolderName) return '';
+    if (workspaceFolderName === '.') return workspaceGuestRoot;
+    return `${workspaceGuestRoot.replace(/\/$/, '')}/${workspaceFolderName}`;
   });
   // Whether the session's folder is already there. Null until the node answers, or when it can't say.
   let workspaceFolderExists = $state<boolean | null>(null);
@@ -408,10 +446,30 @@
     return () => ac.abort();
   });
 
-  // The size you picked, or empty to take the node's default size.
-  let pickedVMSize = $state('');
-  const vmSize = $derived(pickedVMSize || runtimes?.default_vm_size || DEFAULT_VM_SIZE);
+  // The size you picked, else your last session's when this node can give it, else the node's default.
+  let pickedVMSize = $state<SessionResources | null>(null);
   const sessionVMSizes = $derived(sessionVMSizeCards(runtimes?.session_vm_sizes ?? []));
+  const lastPickVMSize = $derived.by(() => {
+    if (!lastPick || !isOnLastPickNode || lastPick.place !== 'session_vm') return null;
+    const { size, cpu, memory_mb } = lastPick.resources;
+    const resources = size ? { size } : { cpu, memory_mb };
+    return canPickVMSize(resources, sessionVMSizes, runtimes?.vm_limits) ? resources : null;
+  });
+  const vmSize = $derived(
+    pickedVMSize ?? lastPickVMSize ?? { size: runtimes?.default_vm_size || DEFAULT_VM_SIZE },
+  );
+  const isFromLastSession = $derived(
+    lastPickTile !== undefined &&
+      pickedTile === lastPickTile &&
+      pickedPlace === '' &&
+      pickedVMSize === null &&
+      (lastPickTile.place !== 'session_vm' || lastPickVMSize !== null),
+  );
+  // What the row says about size: the session's own VM, or the shared VM it joins.
+  const sizeSummary = $derived.by(() => {
+    if (onWorkspace) return workspaceVM ? describeVMSize(workspaceVM.resources, undefined) : '';
+    return showsSizeControls ? describeVMSize(vmSize, undefined) : '';
+  });
 
   // Resolve the home dir of the node the session will run on, then seed the default folder row with it.
   // Follows the node picker: your Mac's home is not a path that exists on a droplet.
@@ -535,6 +593,9 @@
     folders = folders.filter((_, idx) => idx !== i);
   }
 
+  // The work folder's place in the VM shows as a line until you edit it.
+  let isEditingGuestFolder = $state(false);
+
   // The first row is the work folder, where the agent starts. An empty one means no folder, and then
   // a more folder would become the work folder, so that is refused.
   const workFolder = $derived(folders[0]);
@@ -575,7 +636,8 @@
     ownFolder = false;
     workDir = '';
     workspaceFolder = '';
-    pickedVMSize = '';
+    pickedVMSize = null;
+    isEditingGuestFolder = false;
     // baseImage / setupScript / imageStrategy get re-seeded by the agent-change $effect.
   }
 
@@ -685,7 +747,7 @@
     } = {
       agent,
       runtime: effectiveRuntime || undefined,
-      resources: showsSizeControls ? { size: vmSize } : undefined,
+      resources: showsSizeControls ? vmSize : undefined,
       name: name.trim() || undefined,
       login_mode: pickedLogin,
       // Only send a target when there's a real choice; on a single node the backend creates here.
@@ -787,19 +849,34 @@
     }
     submitting = true;
     submitError = null;
+    // Read before anything is awaited: closing the dialog resets the form while this runs.
+    const payload = buildPayload();
+    const host = selectedHost;
+    const isImageMissing = !onWorkspace && !onSandboxless && imagePresent === false;
 
     try {
-      const payload = buildPayload();
+      // Saved first, so the session's folder is inside the folder the VM can see.
+      if (needsWorkspaceVM) {
+        workspaceVM = await api.saveWorkspaceVM(
+          {
+            host_root: draftWorkspaceRoot.trim(),
+            guest_root: draftWorkspaceGuestRoot.trim(),
+            resources: draftWorkspaceResources,
+          },
+          host,
+        );
+      }
       // Download first if we know it's absent, so the create itself is fast and we can show a real
       // progress bar. The workspace VM already has its image.
-      if (!onWorkspace && !onSandboxless && imagePresent === false) await pullCurrentImage();
+      if (isImageMissing) await pullCurrentImage();
 
       // Create via the boot transport with node_id in the payload: the receiving node routes it (creates
       // locally if it's the target, else proxies to the target over its own tailnet). This works in both
       // connected and web node mode without depending on the in-browser WASM node being signed in,
       // unlike host-routing the create, which would hang when WASM isn't up (connected mode).
       const created = await api.createSession(payload);
-      sessions.add(created);
+      // The list tags each session with its node, and this one is new to it.
+      sessions.add(host ? { ...created, host } : created);
       open = false;
       resetForm();
       await goto(`/sessions/${created.id}`);
@@ -825,121 +902,68 @@
 
 <Dialog bind:open>
   <DialogContent
-    class="flex h-dvh max-h-dvh w-full max-w-full flex-col gap-0 rounded-none p-0 sm:h-auto sm:max-h-[90vh] sm:w-[calc(100%-2rem)] sm:max-w-4xl sm:rounded-xl"
+    class="flex h-dvh max-h-dvh w-full max-w-full flex-col gap-0 rounded-none p-0 sm:h-auto sm:max-h-[90vh] sm:w-[calc(100%-2rem)] sm:max-w-2xl sm:rounded-xl"
   >
-    <DialogHeader class="relative border-b border-border py-4 pl-4 pr-12 sm:pl-6">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <DialogTitle>New session</DialogTitle>
-        <span class="text-xs text-muted-foreground sm:hidden">
-          {steps.indexOf(step) + 1} of {steps.length}
-        </span>
-        <ol class="hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
-          {#each steps as stepName, i (stepName)}
-            {@const current = stepName === step}
-            {@const done = steps.indexOf(step) > i}
-            {#if i > 0}
-              <li
-                aria-hidden="true"
-                class={cn('h-px w-5', done || current ? 'bg-primary' : 'bg-border')}
-              ></li>
-            {/if}
-            <li
-              class={cn('flex items-center gap-1.5', current && 'text-foreground')}
-              aria-current={current ? 'step' : undefined}
-            >
-              <span
-                class={cn(
-                  'flex size-[18px] items-center justify-center rounded-full text-[11px] font-bold',
-                  current && 'bg-primary text-primary-foreground',
-                  done && 'bg-primary/20 text-primary',
-                  !current && !done && 'border border-border',
-                )}
-              >
-                {i + 1}
-              </span>
-              {stepLabels[stepName]}
-            </li>
-          {/each}
-        </ol>
-      </div>
-      <div class="absolute inset-x-0 -bottom-px h-0.5 bg-border sm:hidden">
-        <div
-          class="h-full bg-primary transition-[width]"
-          style:width="{((steps.indexOf(step) + 1) / steps.length) * 100}%"
-        ></div>
-      </div>
+    <DialogHeader class="border-b border-border py-4 pl-4 pr-12 sm:pl-6">
+      <DialogTitle>New session</DialogTitle>
       <DialogDescription class="sr-only">
-        Pick how the session runs, then fill in the details.
+        Pick where the session runs, then fill in the details.
       </DialogDescription>
     </DialogHeader>
 
     <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 pt-4 sm:px-6 sm:pb-6">
-      {#if step === 'node'}
-        <NodeStep
-          nodes={hostNodes}
-          picked={nodeId}
-          defaultId={defaultNode}
-          onpick={(stableNodeId) => (nodeId = stableNodeId)}
-        />
-      {:else if step === 'runtime'}
-        {#if waitingForNodeRuntimes}
-          <p class="text-xs text-muted-foreground">
-            Checking what {selectedHost?.hostname ?? 'that machine'} can run…
-          </p>
-        {:else if runtimes === null && !nodeRuntimesError}
-          <p class="text-xs text-muted-foreground">
-            Checking what {soleRemoteNode?.hostname ?? 'this machine'} can run…
-          </p>
-        {/if}
+      <WhereItRuns
+        nodes={hostNodes}
+        {nodeId}
+        onpicknode={(stableNodeId) => {
+          nodeId = stableNodeId;
+          isNodePicked = true;
+        }}
+        nodeName={targetNodeName}
+        host={selectedHost}
+        {tiles}
+        picked={pickedTile}
+        onpickplace={(place) => (pickedPlace = place)}
+        isChecking={waitingForNodeRuntimes || (runtimes === null && !nodeRuntimesError)}
+        {isFromLastSession}
+        {sizeSummary}
+        isForcedOpen={!!runtimeBlocked || !!pickedTile?.needsSetup || needsWorkspaceVM}
+        isCreating={submitting || pulling}
+        onsetupdone={refreshRuntimes}
+        bind:downloading={downloadingVM}
+        sizeControls={showsSizeControls ? sessionSizeControls : undefined}
+        workspaceSetup={needsWorkspaceVM ? firstWorkspaceVMSetup : undefined}
+      />
 
-        {#if tiles.length > 0}
-          <RuntimeStep
-            {tiles}
-            picked={pickedTile}
-            onpick={(place) => (pickedPlace = place)}
-            nodeName={targetNodeName}
+      {#snippet sessionSizeControls()}
+        <VMSizePicker
+          title="Size"
+          cards={sessionVMSizes}
+          selected={vmSize}
+          onselect={(picked) => (pickedVMSize = picked)}
+          limits={runtimes?.vm_limits}
+          customTitleNote={(memoryMB) =>
+            customSessionVMTitleNote(memoryMB, runtimes?.spare_memory_mb)}
+        />
+      {/snippet}
+
+      {#snippet firstWorkspaceVMSetup()}
+        <div class="space-y-3 border-t border-border pt-3">
+          <p class="text-sm">
+            This is the first shared VM on {targetNodeName}. It's set up with this session, once.
+          </p>
+          <WorkspaceVMFields
+            bind:hostRoot={draftWorkspaceRoot}
+            bind:guestRoot={draftWorkspaceGuestRoot}
+            bind:resources={draftWorkspaceResources}
             host={selectedHost}
-            onsetupdone={refreshRuntimes}
-            bind:downloading={downloadingVM}
+            sizes={runtimes?.workspace_vm_sizes}
+            limits={runtimes?.vm_limits}
           />
-        {/if}
-      {:else if step === 'workspace'}
-        <WorkspaceSetupStep
-          host={selectedHost}
-          nodeName={targetNodeName}
-          sizes={runtimes?.workspace_vm_sizes}
-          onback={stepBack}
-          oncreated={(vm) => {
-            workspaceVM = vm;
-            stepChoice = 'details';
-          }}
-        />
-      {:else}
-        {#if pickedTile}
-          <div
-            class="flex items-center gap-2.5 rounded-md border border-border bg-secondary/40 px-3 py-2.5 text-sm"
-          >
-            <span class="min-w-0 flex-1">
-              {runtimePlaceLabel(pickedTile.place)} on {targetNodeName}
-              {#if onWorkspace && workspaceVM}
-                <span class="text-muted-foreground">
-                  · sees {workspaceVM.host_root}
-                  {#if workspaceVM.resources?.size}
-                    · <span class="capitalize">{workspaceVM.resources.size}</span>
-                  {/if}
-                </span>
-              {/if}
-            </span>
-            <button
-              type="button"
-              onclick={() => (stepChoice = steps[0])}
-              class="text-sm text-primary underline-offset-4 hover:underline"
-            >
-              Change
-            </button>
-          </div>
-        {/if}
+        </div>
+      {/snippet}
 
+      {#if runtimeKnown}
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div class="space-y-2">
             <Label for="agent">Agent</Label>
@@ -949,6 +973,7 @@
               <select
                 id="agent"
                 bind:value={agent}
+                onchange={() => (isAgentPicked = true)}
                 class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
               >
                 {#each agents as a (a.name)}
@@ -982,38 +1007,28 @@
 
         {#if onWorkspace}
           <div class="space-y-2">
-            <Label>Work folder</Label>
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-5">
-              <div class="min-w-0 space-y-1 sm:col-span-3">
-                <Label class="text-xs font-normal text-muted-foreground" for="work-dir">
-                  On {targetNodeName}
-                </Label>
-                <HostPathField
-                  id="work-dir"
-                  bind:value={workspaceFolder}
-                  host={selectedHost}
-                  startsEmpty
-                  disabled={!looksLikePath(workspaceSharedRoot)}
-                />
-              </div>
-              <div class="min-w-0 space-y-1 sm:col-span-2">
-                <span class="block text-xs text-muted-foreground">In the VM</span>
-                <p
-                  class="flex h-9 items-center truncate rounded-md border border-dashed border-border px-3 font-mono text-xs text-muted-foreground"
-                  title={workspaceGuestFolder}
-                >
-                  {workspaceGuestFolder}
-                </p>
-              </div>
-            </div>
-            {#if workspaceFolderName === null}
+            <Label for="work-dir">Work folder</Label>
+            <HostPathField
+              id="work-dir"
+              bind:value={workspaceFolder}
+              host={selectedHost}
+              startsEmpty
+              disabled={!looksLikePath(workspaceSharedRoot)}
+            />
+            {#if !looksLikePath(workspaceSharedRoot)}
+              <p class="text-xs text-muted-foreground">
+                Pick the folder the shared VM can see first.
+              </p>
+            {:else if workspaceFolderName === null}
               <p class="text-xs text-destructive">Must be inside {workspaceSharedRoot}.</p>
             {:else}
               <p class="text-xs text-muted-foreground">
-                Must be inside {workspaceSharedRoot}. The VM path follows from it.
+                Must be inside {workspaceSharedRoot}.
                 {#if workspaceFolderExists !== null}
                   {workspaceFolderExists ? 'Existing folder.' : 'New folder.'}
                 {/if}
+                In the VM:
+                <span class="font-mono text-foreground">{workspaceGuestFolder}</span>
               </p>
             {/if}
           </div>
@@ -1052,22 +1067,20 @@
               <p class="text-xs text-muted-foreground">It is deleted with the session.</p>
             {/if}
           </div>
-        {:else if runtimeKnown && workFolder}
+        {:else if workFolder}
           <div class="space-y-2">
-            <Label>Work folder</Label>
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-5">
-              <div class="min-w-0 space-y-1 sm:col-span-3">
-                <Label class="text-xs font-normal text-muted-foreground" for="work-folder-host">
-                  On {targetNodeName}
-                </Label>
-                <HostPathField
-                  id="work-folder-host"
-                  bind:value={workFolder.host_path}
-                  host={selectedHost}
-                />
-              </div>
-              <div class="min-w-0 space-y-1 sm:col-span-2">
-                <Label class="text-xs font-normal text-muted-foreground" for="work-folder-guest">
+            <Label for="work-folder-host">Work folder</Label>
+            <HostPathField
+              id="work-folder-host"
+              bind:value={workFolder.host_path}
+              host={selectedHost}
+            />
+            {#if isEditingGuestFolder}
+              <div class="flex items-center gap-2.5">
+                <Label
+                  class="shrink-0 text-xs font-normal text-muted-foreground"
+                  for="work-folder-guest"
+                >
                   In the VM
                 </Label>
                 <Input
@@ -1076,7 +1089,7 @@
                   placeholder="/workspace"
                 />
               </div>
-            </div>
+            {/if}
             {#if workFolderGuestInvalid}
               <p class="text-xs text-destructive">
                 The folder in the VM needs a full path, starting with /.
@@ -1085,9 +1098,21 @@
               <p class="text-xs text-muted-foreground">
                 No folder. The agent starts in an empty folder in the VM.
               </p>
+            {:else if isEditingGuestFolder}
+              <p class="text-xs text-muted-foreground">The agent edits your real files.</p>
             {:else}
-              <p class="text-xs text-muted-foreground">
-                The agent starts here and edits your real files.
+              <p class="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                In the VM:
+                <span class="font-mono text-foreground">{workFolder.guest_path}</span>
+                <button
+                  type="button"
+                  onclick={() => (isEditingGuestFolder = true)}
+                  class="px-0.5 py-1 text-primary underline-offset-4 hover:underline"
+                >
+                  Edit
+                </button>
+                <span aria-hidden="true">·</span>
+                The agent edits your real files.
               </p>
             {/if}
           </div>
@@ -1102,7 +1127,7 @@
           />
         {/if}
 
-        {#if onWorkspace}
+        {#if onWorkspace && !needsWorkspaceVM}
           <p class="text-xs text-muted-foreground">
             Size and image come from the workspace VM. Change them on the Nodes page.
           </p>
@@ -1118,19 +1143,10 @@
               />
               <span class="font-medium">More options</span>
               <span class="text-xs text-muted-foreground">
-                {showsSizeControls ? 'Size, image, more folders, CLI command' : 'CLI command'}
+                {showsSizeControls ? 'Image, more folders, CLI command' : 'CLI command'}
               </span>
             </summary>
             <div class="space-y-5 border-t border-border p-3">
-              {#if showsSizeControls}
-                <VMSizePicker
-                  title="Session VM size"
-                  cards={sessionVMSizes}
-                  selected={vmSize}
-                  onselect={(name) => (pickedVMSize = name)}
-                />
-              {/if}
-
               {#if showsImageControls}
                 <div class="space-y-2">
                   <Label>Image</Label>
@@ -1355,7 +1371,7 @@
         </div>
       {/if}
 
-      {#if step !== 'node' && (preflightLoaded || nodeRuntimesError) && runtimeBlocked}
+      {#if (preflightLoaded || nodeRuntimesError) && runtimeBlocked}
         <div
           class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
         >
@@ -1397,7 +1413,7 @@
             {/if}
           </div>
         </div>
-      {:else if step === 'details' && imagePresent === false && !submitError}
+      {:else if imagePresent === false && !submitError}
         <!-- Proactive heads-up so the download isn't a surprise on click. -->
         <div
           class="flex items-start gap-2 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground"
@@ -1410,81 +1426,48 @@
         </div>
       {/if}
 
-      {#if step === 'node'}
-        <div class={footerClass}>
-          <Button variant="ghost" class="max-sm:hidden" onclick={() => (open = false)}>
-            Cancel
-          </Button>
-          <Button onclick={stepForward}>Next</Button>
-        </div>
-      {:else if step === 'runtime'}
-        <div class={footerClass}>
-          {#if steps[0] === 'node'}
-            <Button variant="ghost" class="mr-auto" onclick={stepBack} disabled={downloadingVM}>
-              Back
-            </Button>
+      <div class={footerClass}>
+        <Button
+          variant="ghost"
+          class="max-sm:hidden"
+          onclick={() => (open = false)}
+          disabled={downloadingVM}
+        >
+          Cancel
+        </Button>
+        <Button
+          onclick={submit}
+          disabled={submitting ||
+            pulling ||
+            downloadingVM ||
+            waitingForNodeRuntimes ||
+            !name.trim() ||
+            !!runtimeBlocked ||
+            // Nothing is sent until the runtime is known: the sections that depend on it are hidden.
+            !runtimeKnown ||
+            (onSandboxless && ownFolder && !workDir.trim()) ||
+            (onWorkspace && !workspaceVMChecked) ||
+            (needsWorkspaceVM && !isWorkspaceSetupReady) ||
+            (onWorkspace &&
+              (workspaceFolderName === null || !looksLikePath(workspaceSharedRoot))) ||
+            (showsSizeControls &&
+              (moreFoldersWithoutWorkFolder || workFolderGuestInvalid || moreFolderGuestMissing)) ||
+            (showsImageControls &&
+              imageStrategy === 'official' &&
+              !selectedAgent?.sandboxed.official_image) ||
+            (showsImageControls && imageStrategy === 'custom' && !customImage.trim())}
+        >
+          {#if pulling}
+            Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}
+          {:else if submitting}
+            Creating…
+          {:else if imagePresent === false}
+            Download & create
+          {:else}
+            Create session
           {/if}
-          <Button
-            variant="ghost"
-            class="max-sm:hidden"
-            onclick={() => (open = false)}
-            disabled={downloadingVM}
-          >
-            Cancel
-          </Button>
-          <Button
-            onclick={stepForward}
-            disabled={waitingForNodeRuntimes ||
-              !runtimeKnown ||
-              !!runtimeBlocked ||
-              downloadingVM ||
-              (onWorkspace && !workspaceVMChecked)}
-          >
-            Next
-          </Button>
-        </div>
-      {:else if step === 'details'}
-        <div class={footerClass}>
-          <Button
-            variant="ghost"
-            class="mr-auto"
-            onclick={stepBack}
-            disabled={submitting || pulling}
-          >
-            Back
-          </Button>
-          <Button
-            onclick={submit}
-            disabled={submitting ||
-              pulling ||
-              waitingForNodeRuntimes ||
-              !name.trim() ||
-              !!runtimeBlocked ||
-              // Nothing is sent until the runtime is known: the sections that depend on it are hidden.
-              !runtimeKnown ||
-              (onSandboxless && ownFolder && !workDir.trim()) ||
-              (onWorkspace && workspaceFolderName === null) ||
-              (showsSizeControls &&
-                (moreFoldersWithoutWorkFolder ||
-                  workFolderGuestInvalid ||
-                  moreFolderGuestMissing)) ||
-              (showsImageControls &&
-                imageStrategy === 'official' &&
-                !selectedAgent?.sandboxed.official_image) ||
-              (showsImageControls && imageStrategy === 'custom' && !customImage.trim())}
-          >
-            {#if pulling}
-              Downloading image…{pullPercent >= 0 ? ` ${pullPercent}%` : ''}
-            {:else if submitting}
-              Creating…
-            {:else if imagePresent === false}
-              Download & create
-            {:else}
-              Create session
-            {/if}
-          </Button>
-        </div>
-      {/if}
+        </Button>
+      </div>
     </div>
   </DialogContent>
 </Dialog>

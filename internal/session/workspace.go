@@ -189,6 +189,23 @@ func (s *Service) WorkspaceVM(ctx context.Context) (*WorkspaceVM, error) {
 	return s.workspaceVM.Load(ctx)
 }
 
+// ConvertLargeWorkspaceVM gives a workspace VM saved as Large the CPU and memory Large gave it on this
+// host, so it keeps its size now that Large is gone.
+func (s *Service) ConvertLargeWorkspaceVM(ctx context.Context) error {
+	if s.workspaceVM == nil {
+		return nil
+	}
+	vm, err := s.workspaceVM.Load(ctx)
+	if errors.Is(err, ErrNoWorkspaceVM) {
+		return nil
+	}
+	if err != nil || vm.Resources.Size != legacyVMSizeLarge {
+		return err
+	}
+	vm.Resources = largeWorkspaceVMResources(hostVMLimits().MaxCPU, hostMemoryMB(), hostMemoryKeptBackMB)
+	return s.workspaceVM.Save(ctx, vm)
+}
+
 // SaveWorkspaceVM records the shared machine without building it, so a mistyped folder fails here
 // rather than halfway through a boot. A resize applies at the next rebuild.
 func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (*WorkspaceVM, error) {
@@ -209,8 +226,13 @@ func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (
 	if len(sizes) == 0 {
 		return nil, fmt.Errorf("%w: this machine has too little memory for a workspace VM, use a session VM", ErrInvalidInput)
 	}
-	if err := validateVMSize(req.Resources, sizes); err != nil {
-		return nil, err
+	// The size the machine has already is not checked again, so a size an older version took still
+	// saves with a new folder or script.
+	existing, _ := s.workspaceVM.Load(ctx)
+	if existing == nil || req.Resources != existing.Resources {
+		if err := validateVMSize(req.Resources, sizes, hostVMLimits()); err != nil {
+			return nil, err
+		}
 	}
 	if !req.Resources.Asked() {
 		req.Resources = Resources{Size: defaultWorkspaceVMSize(sizes)}
@@ -241,7 +263,7 @@ func (s *Service) SaveWorkspaceVM(ctx context.Context, req WorkspaceVMRequest) (
 		return nil, err
 	}
 	// A machine that is already running keeps running: this changes the record, not the VM.
-	if existing, err := s.workspaceVM.Load(ctx); err == nil {
+	if existing != nil {
 		vm.SandboxID, vm.CreatedAt = existing.SandboxID, existing.CreatedAt
 	}
 	if err := s.workspaceVM.Save(ctx, vm); err != nil {

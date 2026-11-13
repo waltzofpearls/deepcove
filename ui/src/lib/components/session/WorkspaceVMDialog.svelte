@@ -15,9 +15,15 @@
   import { Label } from '$lib/components/ui/label';
   import { api, preflightTimeoutMs } from '$lib/api/client';
   import { cleanPath, looksLikePath } from '$lib/util/path';
-  import { DEFAULT_VM_SIZE, describeVMSize, formatRunningSize } from '$lib/util/vmSize';
+  import {
+    DEFAULT_VM_SIZE,
+    describeVMSize,
+    formatRunningSize,
+    isPickedVMSize,
+    sameVMSize,
+  } from '$lib/util/vmSize';
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
-  import type { RuntimesInfo, SandboxView, WorkspaceVM } from '$lib/api/types';
+  import type { RuntimesInfo, SandboxView, SessionResources, WorkspaceVM } from '$lib/api/types';
 
   let {
     open = $bindable(false),
@@ -63,7 +69,7 @@
   const sizesReady = $derived((sizeChoices?.length ?? 0) > 0);
 
   let hostRoot = $state('');
-  let size = $state(DEFAULT_VM_SIZE);
+  let resources = $state<SessionResources>({ size: DEFAULT_VM_SIZE });
   let setupScript = $state('');
   let error = $state<string | null>(null);
   let saving = $state(false);
@@ -95,7 +101,7 @@
   const changed = $derived(
     Boolean(savedVM) &&
       (cleanPath(hostRoot) !== savedVM?.host_root ||
-        size !== (savedVM?.resources?.size ?? '') ||
+        !sameVMSize(resources, savedVM?.resources) ||
         setupScript.trim() !== (savedVM?.setup_script ?? '')),
   );
   // A change only reaches a running VM when it restarts, so then you pick when.
@@ -118,7 +124,8 @@
     if (!open) return;
     untrack(() => {
       hostRoot = vm?.host_root ?? '';
-      size = vm?.resources?.size || DEFAULT_VM_SIZE;
+      resources =
+        vm?.resources && isPickedVMSize(vm.resources) ? vm.resources : { size: DEFAULT_VM_SIZE };
       setupScript = vm?.setup_script ?? '';
       error = null;
       savedVM = vm;
@@ -135,7 +142,7 @@
         {
           host_root: hostRoot.trim(),
           setup_script: setupScript.trim() || undefined,
-          resources: { size },
+          resources,
         },
         host,
       );
@@ -230,7 +237,13 @@
     </DialogHeader>
 
     <div class="space-y-4">
-      <WorkspaceVMFields bind:hostRoot bind:size {host} sizes={sizeChoices} />
+      <WorkspaceVMFields
+        bind:hostRoot
+        bind:resources
+        {host}
+        sizes={sizeChoices}
+        limits={nodeRuntimes?.vm_limits}
+      />
       <div class="space-y-2">
         <Label for="workspace-setup">Setup script</Label>
         <textarea

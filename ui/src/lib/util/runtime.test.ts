@@ -1,4 +1,4 @@
-import type { RuntimesInfo } from '$lib/api/types';
+import type { RuntimesInfo, Session } from '$lib/api/types';
 import { describe, it, expect } from 'vitest';
 import {
   RUNTIME_APPLEVF,
@@ -15,6 +15,8 @@ import {
   runtimeSummary,
   runtimeMissingShort,
   runtimeTiles,
+  findLastPick,
+  runtimePlaceOf,
   type RuntimeTile,
 } from './runtime';
 
@@ -477,6 +479,64 @@ describe('missingReasons', () => {
   for (const tc of cases) {
     it(tc.name, () => {
       expect(missingReasons(tc.info)).toEqual(tc.want);
+    });
+  }
+});
+
+describe('runtimePlaceOf', () => {
+  const cases = [
+    { name: 'its own VM', session: { runtime: RUNTIME_APPLEVF }, want: 'session_vm' },
+    {
+      name: 'the workspace VM',
+      session: { runtime: RUNTIME_CLOUDHV, on_workspace_vm: true },
+      want: 'workspace_vm',
+    },
+    { name: 'no sandbox', session: { runtime: RUNTIME_SANDBOXLESS }, want: 'no_sandbox' },
+  ];
+  for (const tc of cases) {
+    it(tc.name, () => {
+      expect(runtimePlaceOf(tc.session)).toBe(tc.want);
+    });
+  }
+});
+
+describe('findLastPick', () => {
+  const session = (fields: Partial<Session>) =>
+    ({
+      agent: 'claude',
+      runtime: RUNTIME_APPLEVF,
+      resources: {},
+      created_at: '2026-11-01T00:00:00Z',
+      ...fields,
+    }) as Session;
+  const cases = [
+    { name: 'no sessions', sessions: [], want: null },
+    {
+      name: 'the newest wins, whatever the list order',
+      sessions: [
+        session({
+          created_at: '2026-11-02T00:00:00Z',
+          runtime: RUNTIME_SANDBOXLESS,
+          host: { stable_node_id: 'droplet', hostname: 'droplet' },
+        }),
+        session({ created_at: '2026-11-01T00:00:00Z' }),
+      ],
+      want: { agent: 'claude', nodeId: 'droplet', place: 'no_sandbox', resources: {} },
+    },
+    {
+      name: 'a list with no node on it means this node',
+      sessions: [session({ resources: { cpu: 2, memory_mb: 4096 } })],
+      want: {
+        agent: 'claude',
+        nodeId: '',
+        place: 'session_vm',
+        resources: { cpu: 2, memory_mb: 4096 },
+      },
+    },
+  ];
+  for (const tc of cases) {
+    it(tc.name, () => {
+      expect(findLastPick(tc.sessions)).toEqual(tc.want);
     });
   }
 });

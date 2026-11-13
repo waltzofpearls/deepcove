@@ -112,6 +112,9 @@ func cmdStart(ctx context.Context, args []string) error {
 	sessionRepo := session.NewDuckDBSessionRepository(sqlDB)
 	sessionSvc := session.NewService(sessionRepo, logger)
 	sessionSvc.SetWorkspaceVMStore(session.NewDuckDBWorkspaceVMStore(sqlDB))
+	if err := sessionSvc.ConvertLargeWorkspaceVM(ctx); err != nil {
+		return fmt.Errorf("workspace vm: %w", err)
+	}
 	sessionSvc.SetDataDir(cfg.DataDir)
 	sessionSvc.SetLLMProxyStore(session.NewDuckDBLLMProxyStore(sqlDB))
 	sessionSvc.SetLLMProxyURL(llmProxy.URL)

@@ -83,7 +83,7 @@ func TestCreateOnWorkspaceVM(t *testing.T) {
 			Agent:         "claude",
 			OnWorkspaceVM: true,
 			Image:         "alpine:3.20",
-			Resources:     Resources{CPU: 8, MemoryMB: 16384},
+			Resources:     Resources{CPU: 1, MemoryMB: 1024},
 		})
 		if err != nil {
 			t.Fatalf("Create: %v", err)
@@ -246,14 +246,14 @@ func TestSaveWorkspaceVM(t *testing.T) {
 		}
 
 		root := t.TempDir()
-		saved, err := svc.SaveWorkspaceVM(ctx, WorkspaceVMRequest{HostRoot: root, Resources: Resources{CPU: 6}})
+		saved, err := svc.SaveWorkspaceVM(ctx, WorkspaceVMRequest{HostRoot: root, Resources: Resources{CPU: 2, MemoryMB: 1 << 10}})
 		if err != nil {
 			t.Fatalf("SaveWorkspaceVM: %v", err)
 		}
 		if saved.SandboxID != built.SandboxID {
 			t.Errorf("sandbox %q, want the running %q kept", saved.SandboxID, built.SandboxID)
 		}
-		if saved.HostRoot != root || saved.Resources.CPU != 6 {
+		if saved.HostRoot != root || saved.Resources.CPU != 2 {
 			t.Errorf("got %+v, want the new root and size recorded", saved)
 		}
 	})

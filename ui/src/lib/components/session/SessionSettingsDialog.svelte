@@ -12,7 +12,13 @@
   import VMSizePicker from './VMSizePicker.svelte';
   import LoginModePicker from './LoginModePicker.svelte';
   import { changesAgentEnv, loginChoices } from '$lib/util/loginMode';
-  import { describeVMSize, formatRunningSize, sessionVMSizeCards } from '$lib/util/vmSize';
+  import {
+    customSessionVMTitleNote,
+    describeVMSize,
+    formatRunningSize,
+    sameVMSize,
+    sessionVMSizeCards,
+  } from '$lib/util/vmSize';
   import { folderAwaitingRestart, sizeAwaitingRestart } from '$lib/util/pendingRestart';
   import type {
     Agent,
@@ -21,6 +27,7 @@
     SandboxView,
     Session,
     SessionHost,
+    SessionResources,
     SharedLoginStatus,
     WorkspaceVM,
   } from '$lib/api/types';
@@ -209,7 +216,7 @@
     !session.on_workspace_vm && !onThisMachine && bootsVMs(session.runtime),
   );
 
-  let pickedSize = $state('');
+  let pickedSize = $state<SessionResources>({});
   // Which size save is running, so only its own button says so.
   let sizeSave = $state<'restart now' | 'restart later' | null>(null);
   const resizing = $derived(sizeSave !== null);
@@ -218,12 +225,14 @@
     if (!open) return;
     sessionId;
     untrack(() => {
-      pickedSize = session.resources?.size ?? '';
+      pickedSize = session.resources ?? {};
       resizeError = null;
     });
   });
 
-  const sizeChanged = $derived(Boolean(pickedSize) && pickedSize !== session.resources?.size);
+  const sizeChanged = $derived(
+    Boolean(pickedSize.size || pickedSize.cpu) && !sameVMSize(pickedSize, session.resources),
+  );
   // Starting counts as running: a restart passes through it, and the buttons must not change under you.
   const running = $derived(session.status === 'running' || session.status === 'starting');
   const loginChanged = $derived(loginMode !== session.login_mode);
@@ -418,7 +427,10 @@
           title="Session VM size"
           cards={sizeCards}
           selected={pickedSize}
-          onselect={(name) => (pickedSize = name)}
+          onselect={(picked) => (pickedSize = picked)}
+          limits={nodeRuntimes?.vm_limits}
+          customTitleNote={(memoryMB) =>
+            customSessionVMTitleNote(memoryMB, nodeRuntimes?.spare_memory_mb)}
         />
         {#if savedSizeWaiting && runningSandbox}
           <div

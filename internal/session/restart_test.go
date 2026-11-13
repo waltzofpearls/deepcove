@@ -126,14 +126,14 @@ func TestRestartSandbox(t *testing.T) {
 			setup: func(t *testing.T, svc *Service) string {
 				sess, err := svc.Create(context.Background(), CreateRequest{
 					Agent:     "claude",
-					Resources: Resources{CPU: 3},
+					Resources: Resources{CPU: 2, MemoryMB: 1 << 10},
 				})
 				if err != nil {
 					t.Fatalf("setup Create: %v", err)
 				}
 				return sess.SandboxID
 			},
-			wantCPU: 3,
+			wantCPU: 2,
 		},
 		{
 			name:    "a sandbox no record owns",
