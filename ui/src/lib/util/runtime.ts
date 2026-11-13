@@ -1,4 +1,4 @@
-import type { RuntimesInfo } from '$lib/api/types';
+import type { RuntimesInfo, Session, SessionResources } from '$lib/api/types';
 
 // Presentation for sandbox runtimes. The wire values are the backend's runtime names
 // (internal/session.Runtime*), kept short and stable; these turn them into something worth reading in
@@ -92,19 +92,52 @@ export function sharesHostFolders(name: string): boolean {
   return name !== RUNTIME_SANDBOXLESS;
 }
 
-// RuntimePlace is where a session runs, one per tile in the New session dialog's runtime step.
+// RuntimePlace is where a session runs, one per choice in the New session dialog.
 export type RuntimePlace = 'session_vm' | 'workspace_vm' | 'no_sandbox';
 
-// runtimePlaceLabel names a place the way the New session dialog's tiles do.
+// runtimePlaceLabel names a place by how safe it is, the way the New session dialog does.
 export function runtimePlaceLabel(place: RuntimePlace): string {
   switch (place) {
     case 'session_vm':
-      return 'Its own VM';
+      return 'Safest';
     case 'workspace_vm':
-      return 'Workspace VM';
+      return 'Shared';
     case 'no_sandbox':
-      return 'No sandbox';
+      return 'No isolation';
   }
+}
+
+// runtimePlaceOf says where a session runs.
+export function runtimePlaceOf(
+  session: Pick<Session, 'runtime' | 'on_workspace_vm'>,
+): RuntimePlace {
+  if (session.on_workspace_vm) return 'workspace_vm';
+  if (session.runtime === RUNTIME_SANDBOXLESS) return 'no_sandbox';
+  return 'session_vm';
+}
+
+// LastPick is how your newest session runs, which a new session starts from. nodeId is empty when the
+// list does not say which node, which means this one.
+export interface LastPick {
+  agent: string;
+  nodeId: string;
+  place: RuntimePlace;
+  resources: SessionResources;
+}
+
+// findLastPick reads the newest session in the list, across every node. Null when there is none.
+export function findLastPick(sessions: Session[]): LastPick | null {
+  let newest: Session | null = null;
+  for (const session of sessions) {
+    if (!newest || Date.parse(session.created_at) > Date.parse(newest.created_at)) newest = session;
+  }
+  if (!newest) return null;
+  return {
+    agent: newest.agent,
+    nodeId: newest.host?.stable_node_id ?? '',
+    place: runtimePlaceOf(newest),
+    resources: newest.resources ?? {},
+  };
 }
 
 // RuntimeTile is one runtime choice the New session dialog offers.

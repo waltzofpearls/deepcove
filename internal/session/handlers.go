@@ -201,17 +201,22 @@ func writeLLMProxyError(w http.ResponseWriter, err error) {
 }
 
 // handlePatch updates one session. PATCH /api/sessions/{id} with any of {"name": "...",
-// "login_mode": "api_key", "vm_size": "large", "restart_now": false}. Fields left out are left alone,
-// which is why they are pointers. A new VM size restarts a running VM unless restart_now is false.
+// "login_mode": "api_key", "resources": {"size": "small"}, "restart_now": false}. The resources name a
+// size or give cpu and memory_mb. Fields left out are left alone, which is why they are pointers. New
+// resources restart a running VM unless restart_now is false.
 func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Name       *string    `json:"name"`
 		LoginMode  *LoginMode `json:"login_mode"`
-		VMSize     *string    `json:"vm_size"`
+		Resources  *Resources `json:"resources"`
 		RestartNow *bool      `json:"restart_now"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// A field it does not know is refused, so a client from another release that sends a field this one
+	// dropped gets an error rather than a success that changed nothing.
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -246,11 +251,11 @@ func (s *Service) handlePatch(w http.ResponseWriter, r *http.Request) {
 		sess, err = s.SetLoginMode(r.Context(), id, *req.LoginMode)
 	}
 	switch {
-	case err != nil || req.VMSize == nil:
+	case err != nil || req.Resources == nil:
 	case req.RestartNow != nil && !*req.RestartNow:
-		sess, err = s.SaveVMSize(r.Context(), id, *req.VMSize)
+		sess, err = s.SaveVMSize(r.Context(), id, *req.Resources)
 	default:
-		sess, err = s.ResizeVM(r.Context(), id, *req.VMSize)
+		sess, err = s.ResizeVM(r.Context(), id, *req.Resources)
 	}
 	if err == nil && sess == nil {
 		sess, err = s.Get(r.Context(), id)

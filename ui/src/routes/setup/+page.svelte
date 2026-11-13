@@ -8,6 +8,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
+  import type { SessionResources } from '$lib/api/types';
   import { preflight } from '$lib/stores/preflight.svelte';
   import { connect } from '$lib/stores/connect.svelte';
   import { isSetupDone, markSetupDone, setConnectSkipped } from '$lib/setup';
@@ -54,7 +55,7 @@
   // The workspace VM, offered here so a first run can set one up before creating anything. Skippable:
   // without one, every session gets a VM of its own, which is how deepcove worked before.
   let workspaceHostRoot = $state('');
-  let workspaceSize = $state(DEFAULT_VM_SIZE);
+  let workspaceResources = $state<SessionResources>({ size: DEFAULT_VM_SIZE });
   let workspaceError = $state<string | null>(null);
   let savingWorkspace = $state(false);
 
@@ -65,7 +66,7 @@
     try {
       await api.saveWorkspaceVM({
         host_root: workspaceHostRoot.trim(),
-        resources: { size: workspaceSize },
+        resources: workspaceResources,
       });
       step = 3;
     } catch (e) {
@@ -279,7 +280,10 @@
             One VM your sessions share, each working in its own folder inside the folder you pick.
             Skip this and every session gets a VM of its own instead.
           </p>
-          <WorkspaceVMFields bind:hostRoot={workspaceHostRoot} bind:size={workspaceSize} />
+          <WorkspaceVMFields
+            bind:hostRoot={workspaceHostRoot}
+            bind:resources={workspaceResources}
+          />
           {#if workspaceError}
             <p class="text-sm text-destructive">{workspaceError}</p>
           {/if}

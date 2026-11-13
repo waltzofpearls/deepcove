@@ -10,8 +10,8 @@ import (
 )
 
 // ResizeVM gives a session's own VM a new size now: a running VM restarts with it.
-func (s *Service) ResizeVM(ctx context.Context, id, size string) (*Session, error) {
-	sess, err := s.saveVMSize(ctx, id, size)
+func (s *Service) ResizeVM(ctx context.Context, id string, resized Resources) (*Session, error) {
+	sess, err := s.saveVMSize(ctx, id, resized)
 	if err != nil {
 		return nil, err
 	}
@@ -26,8 +26,8 @@ func (s *Service) ResizeVM(ctx context.Context, id, size string) (*Session, erro
 }
 
 // SaveVMSize records a new size without restarting. A running VM keeps its size until it next restarts.
-func (s *Service) SaveVMSize(ctx context.Context, id, size string) (*Session, error) {
-	if _, err := s.saveVMSize(ctx, id, size); err != nil {
+func (s *Service) SaveVMSize(ctx context.Context, id string, resized Resources) (*Session, error) {
+	if _, err := s.saveVMSize(ctx, id, resized); err != nil {
 		return nil, err
 	}
 	return s.Get(ctx, id)
@@ -35,9 +35,14 @@ func (s *Service) SaveVMSize(ctx context.Context, id, size string) (*Session, er
 
 // saveVMSize records the size. A stopped VM loses its old sandbox, so its next Start builds one at the
 // new size; the home disk belongs to the session, so it stays.
-func (s *Service) saveVMSize(ctx context.Context, id, size string) (*Session, error) {
-	resized := Resources{Size: size}
-	if err := validateVMSize(resized, SessionVMSizes); err != nil {
+func (s *Service) saveVMSize(ctx context.Context, id string, resized Resources) (*Session, error) {
+	if err := resized.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)
+	}
+	if !resized.Asked() {
+		return nil, fmt.Errorf("%w: pick a size, or give cpu and memory", ErrInvalidInput)
+	}
+	if err := validateVMSize(resized, SessionVMSizes, hostVMLimits()); err != nil {
 		return nil, err
 	}
 	// Held for the whole save, so a Start cannot boot the VM this may be about to drop. A resize that

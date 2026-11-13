@@ -5,6 +5,7 @@
 import { transport, transportForHost, type DeepcoveSocket, type Transport } from './transport';
 import { mergeAggregated, nodeHost } from './sessions';
 import { localLock, lockedCode } from './localLock';
+import { sameVMSize } from '../util/vmSize';
 import type {
   Agent,
   BootstrapResponse,
@@ -25,6 +26,7 @@ import type {
   SessionHost,
   SessionListResponse,
   SessionPreview,
+  SessionResources,
   SharedFolder,
   TmuxWindow,
   WorkspaceVM,
@@ -92,8 +94,14 @@ async function request<T>(path: string, init?: RequestInit, t: Transport = trans
   return (await requestRaw<T>(path, init, t)).data;
 }
 
-function patchSessionVMSize(id: string, body: object, host?: SessionHost): Promise<Session> {
-  return request(
+// A node on an older release ignores a field it does not know and answers with the session unchanged,
+// so a size it never took would look saved.
+async function patchSessionVMSize(
+  id: string,
+  body: { resources: SessionResources; restart_now?: boolean },
+  host?: SessionHost,
+): Promise<Session> {
+  const session = await request<Session>(
     `/sessions/${encodeURIComponent(id)}`,
     {
       method: 'PATCH',
@@ -102,6 +110,12 @@ function patchSessionVMSize(id: string, body: object, host?: SessionHost): Promi
     },
     transportForHost(host),
   );
+  if (!sameVMSize(session.resources, body.resources)) {
+    throw new Error(
+      "That node didn't change the size. It may run an older deepcove, so update it.",
+    );
+  }
+  return session;
 }
 
 // peerFanoutTimeoutMs bounds each per-node /api/sessions/local fetch in the browser-side fan-out
@@ -642,13 +656,13 @@ export const api = {
   },
 
   // resizeSessionVM gives a session's own VM a new size now. A running VM restarts with it.
-  resizeSessionVM(id: string, size: string, host?: SessionHost): Promise<Session> {
-    return patchSessionVMSize(id, { vm_size: size }, host);
+  resizeSessionVM(id: string, resources: SessionResources, host?: SessionHost): Promise<Session> {
+    return patchSessionVMSize(id, { resources }, host);
   },
 
   // saveSessionVMSize records a new size without restarting. A running VM gets it when it next restarts.
-  saveSessionVMSize(id: string, size: string, host?: SessionHost): Promise<Session> {
-    return patchSessionVMSize(id, { vm_size: size, restart_now: false }, host);
+  saveSessionVMSize(id: string, resources: SessionResources, host?: SessionHost): Promise<Session> {
+    return patchSessionVMSize(id, { resources, restart_now: false }, host);
   },
 
   // suggestName returns a generated session name to pre-fill the New Session

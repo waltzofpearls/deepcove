@@ -1,6 +1,9 @@
 package session
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 
 // VMSize is a named size a VM can have. A session stores the name, so a size can gain something later,
 // a disk for instance, and the sessions already made get it too.
@@ -13,7 +16,6 @@ type VMSize struct {
 const (
 	VMSizeSmall  = "small"
 	VMSizeMedium = "medium"
-	VMSizeLarge  = "large"
 )
 
 // DefaultVMSize is what a new VM gets unless you pick another size. It suits a Mac with 32 or 64 GB.
@@ -23,11 +25,10 @@ const DefaultVMSize = VMSizeMedium
 var SessionVMSizes = []VMSize{
 	{Name: VMSizeSmall, CPU: 1, MemoryMB: 1 << 10},
 	{Name: VMSizeMedium, CPU: 1, MemoryMB: 2 << 10},
-	{Name: VMSizeLarge, CPU: 2, MemoryMB: 4 << 10},
 }
 
 // workspaceVMSizeShares says how much of the host's spare memory each workspace VM size takes, and the
-// most it takes. A machine with plenty of memory gets 4, 8 and 16 GB.
+// most it takes. A machine with plenty of memory gets 4 and 8 GB.
 var workspaceVMSizeShares = []struct {
 	name    string
 	divisor int64
@@ -35,7 +36,6 @@ var workspaceVMSizeShares = []struct {
 }{
 	{VMSizeSmall, 4, 4},
 	{VMSizeMedium, 2, 8},
-	{VMSizeLarge, 1, 16},
 }
 
 // smallestScaledWorkspaceVMGB drops a scaled size too small to be worth a choice of its own.
@@ -92,6 +92,46 @@ func defaultWorkspaceVMSize(sizes []VMSize) string {
 	return sizes[len(sizes)-1].Name
 }
 
+// legacyVMSizeLarge is a size deepcove no longer offers. A workspace VM saved with it is converted at
+// start, and a migration converts the sessions.
+const legacyVMSizeLarge = "large"
+
+// largeWorkspaceVMResources is what Large booted with: the host's spare memory up to 16 GB. A host too
+// small to offer Large booted it at the default size, so it keeps that. CPUs stop at what a custom size may
+// ask, or saving the workspace VM again would be refused.
+func largeWorkspaceVMResources(cpus int, hostMemoryMB, keptBackMB int64) Resources {
+	memoryGB := int64(16)
+	if hostMemoryMB > 0 {
+		memoryGB = min((hostMemoryMB-keptBackMB)>>10, 16)
+	}
+	if hostMemoryMB > 0 && (hostMemoryMB < 2<<10 || memoryGB < smallestScaledWorkspaceVMGB) {
+		return Resources{Size: defaultWorkspaceVMSize(workspaceVMSizes(hostMemoryMB, keptBackMB))}
+	}
+	size := workspaceVMSize(legacyVMSizeLarge, memoryGB)
+	return Resources{CPU: float64(min(size.CPU, cpus)), MemoryMB: size.MemoryMB}
+}
+
+// VMLimits is the most CPU and memory one VM can be given on this host. MaxMemoryMB is 0 when the host
+// memory could not be measured.
+type VMLimits struct {
+	MaxCPU      int   `json:"max_cpu"`
+	MaxMemoryMB int64 `json:"max_memory_mb"`
+}
+
+func hostVMLimits() VMLimits {
+	return vmLimits(runtime.NumCPU(), hostMemoryMB(), hostMemoryKeptBackMB)
+}
+
+// vmLimits leaves the host what it keeps back, as the sizes do. A host short of memory still offers
+// 1 GB, as the workspace VM does. A big host offers no more than Resources.Validate lets a request ask.
+func vmLimits(cpus int, hostMemoryMB, keptBackMB int64) VMLimits {
+	limits := VMLimits{MaxCPU: min(cpus, maxCPUCores)}
+	if hostMemoryMB > 0 {
+		limits.MaxMemoryMB = min(max(hostMemoryMB-keptBackMB, 1<<10), maxMB)
+	}
+	return limits
+}
+
 // SessionVMSizeChoice is a session VM size with how many of it fit on this host. FitsOnThisHost is
 // absent when the host's memory could not be measured.
 type SessionVMSizeChoice struct {
@@ -126,6 +166,14 @@ func workspaceVMSizeChoices(sizes []VMSize) []WorkspaceVMSizeChoice {
 	return choices
 }
 
+func spareMemoryMB(hostMemoryMB, keptBackMB int64) *int64 {
+	if hostMemoryMB <= 0 {
+		return nil
+	}
+	spareMB := max(hostMemoryMB-keptBackMB, 0)
+	return &spareMB
+}
+
 func sessionVMsThatFit(size VMSize, hostMemoryMB, keptBackMB int64) int {
 	spareMB := hostMemoryMB - keptBackMB
 	if spareMB <= 0 {
@@ -148,16 +196,35 @@ func findVMSize(sizes []VMSize, name string) (VMSize, bool) {
 	return VMSize{}, false
 }
 
-// validateVMSize refuses a size name that is not one of sizes, and a size sent together with numbers.
-func validateVMSize(resources Resources, sizes []VMSize) error {
+// validateVMSize refuses a size name that is not one of sizes, a size sent together with numbers, and
+// a custom size this host cannot give.
+func validateVMSize(resources Resources, sizes []VMSize, limits VMLimits) error {
 	if resources.Size == "" {
-		return nil
+		return validateCustomVMSize(resources, limits)
 	}
 	if resources.CPU != 0 || resources.MemoryMB != 0 || resources.DiskMB != 0 {
 		return fmt.Errorf("%w: give a size, or cpu and memory, not both", ErrInvalidInput)
 	}
 	if _, ok := findVMSize(sizes, resources.Size); !ok {
 		return fmt.Errorf("%w: there is no VM size called %q", ErrInvalidInput, resources.Size)
+	}
+	return nil
+}
+
+// validateCustomVMSize needs both numbers, since one left out boots at the runtime's default, which can
+// be more than this host can give. Nothing at all is fine, as Create then gives the default size.
+func validateCustomVMSize(resources Resources, limits VMLimits) error {
+	if !resources.Asked() {
+		return nil
+	}
+	if resources.CPU < 1 || resources.MemoryMB < 1<<10 {
+		return fmt.Errorf("%w: give at least 1 cpu and 1024 MB of memory", ErrInvalidInput)
+	}
+	if resources.CPU > float64(limits.MaxCPU) {
+		return fmt.Errorf("%w: this node can give a VM at most %d CPUs", ErrInvalidInput, limits.MaxCPU)
+	}
+	if limits.MaxMemoryMB > 0 && resources.MemoryMB > limits.MaxMemoryMB {
+		return fmt.Errorf("%w: this node can give a VM at most %d MB of memory", ErrInvalidInput, limits.MaxMemoryMB)
 	}
 	return nil
 }

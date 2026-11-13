@@ -133,7 +133,7 @@ type ListFilter struct {
 // these come straight from a form field. Zero means "no explicit limit", which each runtime resolves to
 // its own default.
 type Resources struct {
-	// Size names one of the VM sizes, Small, Medium or Large. When set, CPU and memory come from the size
+	// Size names one of the VM sizes, Small or Medium. When set, CPU and memory come from the size
 	// each time the VM boots, so the numbers below stay empty.
 	Size string `json:"size,omitempty"`
 	// CPU is the number of cores. A VM rounds to whole vCPUs, since you cannot give a virtual machine

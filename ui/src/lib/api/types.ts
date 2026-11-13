@@ -310,6 +310,11 @@ export interface RuntimesInfo {
   // workspace_vm_sizes are the sizes the workspace VM can have, each with about how many agents it runs.
   workspace_vm_sizes?: WorkspaceVMSizeChoice[];
   default_vm_size?: string;
+  // vm_limits caps a custom size, for a session VM and the workspace VM alike.
+  vm_limits?: VMLimits;
+  // spare_memory_mb is what the node has for VMs after what it keeps back. Absent when its memory could
+  // not be measured.
+  spare_memory_mb?: number;
   // workspace_roots maps a runtime that makes a folder per session to where those folders live. Only a
   // runtime with no sandbox has one.
   workspace_roots?: Record<string, string>;
@@ -321,6 +326,13 @@ export interface VMSize {
   name: string;
   cpu: number;
   memory_mb: number;
+}
+
+// VMLimits is the most CPU and memory one VM can be given on a node. max_memory_mb is 0 when the
+// node's memory could not be measured.
+export interface VMLimits {
+  max_cpu: number;
+  max_memory_mb: number;
 }
 
 export interface SessionVMSizeChoice extends VMSize {
