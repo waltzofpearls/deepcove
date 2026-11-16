@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"flag"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -48,4 +49,23 @@ func (r *repeatedFlag) validateAddrs(goos string) error {
 		}
 	}
 	return nil
+}
+
+// parseFlags is fs.Parse, but a flag can also come after the other arguments, as in
+// `deepcove connect api --shell`. fs.Parse stops at the first argument that is not a flag, so each time
+// it stops, that argument is kept and parsing goes on from the next one. Everything after a "--" is kept
+// as it is.
+func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	flagArgs, afterDashDash := splitAtDashDash(args)
+	var kept []string
+	for {
+		if err := fs.Parse(flagArgs); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return append(kept, afterDashDash...), nil
+		}
+		kept = append(kept, fs.Arg(0))
+		flagArgs = fs.Args()[1:]
+	}
 }

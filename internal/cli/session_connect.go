@@ -50,13 +50,13 @@ const tmuxScreenReset = "\x1b[m\x1b[?1l\x1b>\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[
 // as JSON resize control frames via resizeNotify: SIGWINCH on Unix, polling on Windows (no SIGWINCH).
 func cmdSessionConnect(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	isOnShell := fs.Bool("shell", false, "start on the shell tab rather than the agent's")
+	rest, err := parseFlags(fs, args)
+	if err != nil {
 		return err
 	}
-
-	rest := fs.Args()
 	if len(rest) != 1 {
-		return fmt.Errorf("usage: deepcove connect <id-or-name>")
+		return fmt.Errorf("usage: deepcove connect [--shell] <id-or-name>")
 	}
 	target := rest[0]
 
@@ -90,7 +90,10 @@ func cmdSessionConnect(ctx context.Context, args []string) error {
 	if sess.Host != nil && sess.Host.StableNodeID != "" {
 		dialOpts.HTTPHeader = http.Header{session.NodeHeader: []string{sess.Host.StableNodeID}}
 	}
-	attachPath := "/api/sessions/" + sess.ID + "/attach?detach_hint=true"
+	attachPath := "/api/sessions/" + sess.ID + "/attach?detach_hint=true&shell_tab=true"
+	if *isOnShell {
+		attachPath += "&tmux_window=shell"
+	}
 	wsURL := "ws://" + cfg.Addr + attachPath
 	if sock := socketPath(cfg.DataDir); socketAvailable(sock) {
 		wsURL = "ws://unix" + attachPath

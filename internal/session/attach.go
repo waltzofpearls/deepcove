@@ -111,6 +111,14 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	if err := s.startAgentSession(setupCtx, sess, s.sessionWorkDir(sess)); err != nil {
 		s.logger.Warn("attach: could not ensure the agent session", "id", id, "err", err)
 	}
+	// Only `deepcove connect` asks for it, so its tabs match the web's. The web opens the shell tab
+	// itself when you pick Shell.
+	if r.URL.Query().Get("shell_tab") == "true" {
+		_, err := s.CreateTmuxWindow(setupCtx, id, CreateTmuxWindowRequest{Name: "shell"})
+		if err != nil && !errors.Is(err, ErrTmuxWindowExists) {
+			s.logger.Warn("attach: could not open the shell tab", "id", id, "err", err)
+		}
+	}
 
 	if _, err := s.execTmux(setupCtx, sess,
 		"new-session", "-d", "-s", viewSession, "-t", tmuxSessionName(sess.ID),

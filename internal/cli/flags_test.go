@@ -2,6 +2,8 @@ package cli
 
 import (
 	"cmp"
+	"flag"
+	"io"
 	"slices"
 	"testing"
 )
@@ -84,6 +86,36 @@ func TestRepeatedFlagCollectsEveryValue(t *testing.T) {
 			}
 			if got := []string(flag); !slices.Equal(got, tc.want) {
 				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseFlags(t *testing.T) {
+	cases := []struct {
+		name          string
+		args          []string
+		wantKept      []string
+		wantIsOnShell bool
+		hasErr        bool
+	}{
+		{name: "flag before the name", args: []string{"--shell", "api"}, wantKept: []string{"api"}, wantIsOnShell: true},
+		{name: "flag after the name", args: []string{"api", "--shell"}, wantKept: []string{"api"}, wantIsOnShell: true},
+		{name: "flag between two names", args: []string{"api", "--shell", "web"}, wantKept: []string{"api", "web"}, wantIsOnShell: true},
+		{name: "after -- is kept as it is", args: []string{"api", "--", "--shell"}, wantKept: []string{"api", "--shell"}},
+		{name: "an unknown flag after the name", args: []string{"api", "--shel"}, hasErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			isOnShell := fs.Bool("shell", false, "")
+			kept, err := parseFlags(fs, tc.args)
+			if (err != nil) != tc.hasErr {
+				t.Fatalf("parseFlags(%q) err = %v, want an error %v", tc.args, err, tc.hasErr)
+			}
+			if !slices.Equal(kept, tc.wantKept) || *isOnShell != tc.wantIsOnShell {
+				t.Errorf("parseFlags(%q) = %q, shell %v, want %q, shell %v", tc.args, kept, *isOnShell, tc.wantKept, tc.wantIsOnShell)
 			}
 		})
 	}
