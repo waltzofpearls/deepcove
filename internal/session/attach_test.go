@@ -431,3 +431,52 @@ func TestBuildLiteralTmuxFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleAttach_ShellTab(t *testing.T) {
+	cases := []struct {
+		name          string
+		windows       string
+		isNewWindowed bool
+	}{
+		{"opens the shell tab when there is none", "0 main 1\n", true},
+		{"leaves a shell tab that is there", "0 main 1\n1 shell 0\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fake, _, _ := newTestService(t)
+			sess := mustRunning(t, svc)
+			// has-session, list-windows, new-window when the tab is missing, new-session, attach, kill-session.
+			fake.execResponses = []execResponse{{exit: 0}, {stdout: tc.windows, exit: 0}}
+			if tc.isNewWindowed {
+				fake.execResponses = append(fake.execResponses, execResponse{stdout: "1\n", exit: 0})
+			}
+			fake.execResponses = append(fake.execResponses, execResponse{exit: 0}, execResponse{exit: 0}, execResponse{exit: 0})
+			fake.execCalls = nil
+
+			ts, done := newAttachTestServer(t, svc)
+			url := wsURL(t, ts.URL, "/api/sessions/"+sess.ID+"/attach?shell_tab=true")
+			dialCtx, dialCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer dialCancel()
+			ws, _, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{Subprotocols: []string{AttachSubprotocol}})
+			if err != nil {
+				t.Fatalf("ws dial: %v", err)
+			}
+			_ = ws.Close(websocket.StatusNormalClosure, "")
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("handleAttach did not return within 3s")
+			}
+
+			isNewWindowed := false
+			for _, call := range fake.execCalls {
+				if strings.Contains(strings.Join(call, " "), "new-window -d -t "+tmuxSessionName(sess.ID)+": -n shell") {
+					isNewWindowed = true
+				}
+			}
+			if isNewWindowed != tc.isNewWindowed {
+				t.Errorf("opened a shell tab = %v, want %v (calls %v)", isNewWindowed, tc.isNewWindowed, fake.execCalls)
+			}
+		})
+	}
+}
