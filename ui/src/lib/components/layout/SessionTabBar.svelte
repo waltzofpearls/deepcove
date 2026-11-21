@@ -59,7 +59,7 @@
                       : 'border-border bg-secondary/40 text-muted-foreground hover:bg-secondary/70 hover:text-foreground',
                   )}
                 >
-                  <StatusIndicator status={s.status} />
+                  <StatusIndicator session={s} />
                   <span class="max-w-[10ch] truncate">{s.name}</span>
                 </a>
               {/snippet}

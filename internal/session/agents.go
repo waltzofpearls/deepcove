@@ -11,6 +11,12 @@ import (
 // The agent scripts are .sh files so they read as shell and shellcheck can see them. Each is a fragment
 // the runtime wraps, so none of them carries a shebang.
 //
+//go:embed agents/agent_state.sh
+var agentStateFolder string
+
+//go:embed agents/claude_state.sh
+var claudeStateHooks string
+
 //go:embed agents/claude_sandboxed_setup.sh
 var claudeSandboxedSetup string
 
@@ -55,6 +61,8 @@ type AgentSpec struct {
 	// Sandboxless stays on the node. It is a command to run on the machine, and the create form has
 	// nothing to show from it: it says "not installed yet" from the preflight instead.
 	Sandboxless SandboxlessSpec `json:"-"`
+	// AgentStateSource is where deepcove reads what the agent is doing. Empty when it reads nothing.
+	AgentStateSource AgentStateSource `json:"-"`
 	// API is how the agent reaches its vendor when deepcove stands in between, for the API key and the
 	// LLM proxy. Its login is kept per agent in package sharedlogin, which the guest reads too.
 	API AgentAPI `json:"-"`
@@ -127,16 +135,17 @@ const defaultAgent = "claude"
 
 var agents = map[string]AgentSpec{
 	"claude": {
-		Name:          "claude",
-		DisplayName:   "Claude Code",
-		LoginModes:    []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey, LoginWithLLMProxy},
-		LoginHint:     "Run /login in this session.",
-		APIKeyExample: "sk-ant-…",
+		Name:             "claude",
+		DisplayName:      "Claude Code",
+		LoginModes:       []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey, LoginWithLLMProxy},
+		LoginHint:        "Run /login in this session.",
+		APIKeyExample:    "sk-ant-…",
+		AgentStateSource: AgentStateFromClaudeSessionFile,
 		Sandboxed: SandboxedSpec{
 			DefaultImage:  "alpine:3.20",
 			OfficialImage: agentsImage,
 			Setup:         claudeSandboxedSetup,
-			LaunchCmd:     claudeSandboxedLaunch,
+			LaunchCmd:     agentStateFolder + claudeStateHooks + claudeSandboxedLaunch,
 			Env: map[string]string{
 				// Claude's bundled ripgrep is glibc-linked and segfaults on Alpine musl.
 				"USE_BUILTIN_RIPGREP": "0",
@@ -152,7 +161,7 @@ var agents = map[string]AgentSpec{
 			// The official installer puts the binary in $HOME/.local/bin, and HOME is the shared agent
 			// home, so nothing outside deepcove's data directory is written.
 			Install:   "curl -fsSL https://claude.ai/install.sh | bash",
-			LaunchCmd: claudeSandboxlessLaunch,
+			LaunchCmd: agentStateFolder + claudeStateHooks + claudeSandboxlessLaunch,
 		},
 		API: AgentAPI{
 			Provider:   llmproxy.Provider{URL: "https://api.anthropic.com", KeyHeader: "X-Api-Key"},
@@ -166,13 +175,14 @@ var agents = map[string]AgentSpec{
 		DisplayName: "Codex",
 		LoginModes:  []LoginMode{LoginInSession, LoginShared, LoginWithAPIKey, LoginWithLLMProxy},
 		// The browser login cannot reach back into a VM, so the device code is the one that works.
-		LoginHint:     "Sign in with a device code in this session.",
-		APIKeyExample: "sk-proj-…",
+		LoginHint:        "Sign in with a device code in this session.",
+		APIKeyExample:    "sk-proj-…",
+		AgentStateSource: AgentStateFromEscapeSequence,
 		Sandboxed: SandboxedSpec{
 			DefaultImage:  "alpine:3.20",
 			OfficialImage: agentsImage,
 			Setup:         codexSandboxedSetup,
-			LaunchCmd:     codexConversation + codexSandboxedLaunch,
+			LaunchCmd:     agentStateFolder + codexConversation + codexSandboxedLaunch,
 			Env: map[string]string{
 				"LANG":   "C.UTF-8",
 				"LC_ALL": "C.UTF-8",
@@ -182,7 +192,7 @@ var agents = map[string]AgentSpec{
 			Binary: "codex",
 			// Same as Claude: the installer puts the binary in $HOME/.local/bin of the shared agent home.
 			Install:   "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-			LaunchCmd: codexConversation + codexSandboxlessLaunch,
+			LaunchCmd: agentStateFolder + codexConversation + codexSandboxlessLaunch,
 		},
 		API: AgentAPI{
 			Provider: llmproxy.Provider{URL: "https://api.openai.com", KeyHeader: "Authorization"},

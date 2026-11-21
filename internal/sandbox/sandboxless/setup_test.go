@@ -197,6 +197,10 @@ func TestStart(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// A script an older build wrote, which the start has to replace.
+			if err := os.WriteFile(launchScript(inst.dir), []byte("old\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			if err := d.Start(context.Background(), instanceID); err != nil {
 				t.Fatalf("Start: %v", err)
 			}
@@ -206,6 +210,13 @@ func TestStart(t *testing.T) {
 			}
 			if got := installs.Load(); got != tc.wantInstalls {
 				t.Errorf("the installer ran %d times, want %d", got, tc.wantInstalls)
+			}
+			script, err := os.ReadFile(launchScript(inst.dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(script), testAgent().LaunchCmd) {
+				t.Errorf("launch script = %q, want one running %q", script, testAgent().LaunchCmd)
 			}
 		})
 	}

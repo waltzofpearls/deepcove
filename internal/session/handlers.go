@@ -122,6 +122,7 @@ func (s *Service) handleListLocal(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
+	s.reportAgentState(r.Context(), out)
 	if out == nil {
 		out = []*Session{}
 	}
@@ -282,6 +283,7 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
+	s.reportAgentState(r.Context(), []*Session{sess})
 	writeJSON(w, http.StatusOK, sess)
 }
 

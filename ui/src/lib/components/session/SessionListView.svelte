@@ -25,7 +25,7 @@
       {#each sessions as session (session.id)}
         <tr class="border-t border-border hover:bg-secondary">
           <td class="px-4 py-3">
-            <StatusIndicator status={session.status} />
+            <StatusIndicator {session} />
           </td>
           <td class="px-4 py-3 font-mono">
             {session.name}{#if sessionsStore.isRemote(session)}

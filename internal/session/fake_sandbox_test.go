@@ -42,6 +42,8 @@ type fakeSandbox struct {
 	// asserting on execCalls verifies the cmds the service issued.
 	execResponses []execResponse
 	execCalls     [][]string
+	// processes are the ones Exec handed out, in order.
+	processes []*scriptedProcess
 
 	// removedStorage records every RemoveStorage call argument in
 	// order. Used by destroy tests to assert the session's storage
@@ -68,6 +70,8 @@ type execResponse struct {
 	stderr string
 	exit   int
 	err    error
+	// stdoutAfter holds stdout back until it closes. One that never closes is a wedged guest.
+	stdoutAfter <-chan struct{}
 }
 
 func newFakeSandbox() *fakeSandbox {
@@ -172,7 +176,12 @@ func (f *fakeSandbox) Exec(ctx context.Context, h sandbox.ID, cmd sandbox.ExecSp
 	if resp.err != nil {
 		return nil, resp.err
 	}
-	return newScriptedProcess(resp.stdout, resp.stderr, resp.exit), nil
+	proc := newScriptedProcess(resp.stdout, resp.stderr, resp.exit)
+	f.processes = append(f.processes, proc)
+	if resp.stdoutAfter != nil {
+		return &gatedProcess{scriptedProcess: proc, gate: resp.stdoutAfter, closed: make(chan struct{})}, nil
+	}
+	return proc, nil
 }
 
 // scriptedProcess is a sandbox.Process driven by canned stdout / stderr / exit code; used by
@@ -181,6 +190,7 @@ type scriptedProcess struct {
 	stdout *strings.Reader
 	stderr *strings.Reader
 	exit   int
+	waited bool
 }
 
 func newScriptedProcess(stdout, stderr string, exit int) *scriptedProcess {
@@ -193,13 +203,42 @@ func newScriptedProcess(stdout, stderr string, exit int) *scriptedProcess {
 
 var _ sandbox.Process = (*scriptedProcess)(nil)
 
-func (p *scriptedProcess) Stdout() io.ReadCloser                 { return io.NopCloser(p.stdout) }
-func (p *scriptedProcess) Stderr() io.ReadCloser                 { return io.NopCloser(p.stderr) }
-func (p *scriptedProcess) Stdin() io.WriteCloser                 { return nopWriteCloser{} }
-func (p *scriptedProcess) Wait(ctx context.Context) (int, error) { return p.exit, nil }
-func (p *scriptedProcess) Signal(s os.Signal) error              { return sandbox.ErrNotSupported }
-func (p *scriptedProcess) Resize(cols, rows uint16) error        { return nil }
-func (p *scriptedProcess) Close() error                          { return nil }
+func (p *scriptedProcess) Stdout() io.ReadCloser { return io.NopCloser(p.stdout) }
+func (p *scriptedProcess) Stderr() io.ReadCloser { return io.NopCloser(p.stderr) }
+func (p *scriptedProcess) Stdin() io.WriteCloser { return nopWriteCloser{} }
+func (p *scriptedProcess) Wait(ctx context.Context) (int, error) {
+	p.waited = true
+	return p.exit, nil
+}
+func (p *scriptedProcess) Signal(s os.Signal) error       { return sandbox.ErrNotSupported }
+func (p *scriptedProcess) Resize(cols, rows uint16) error { return nil }
+func (p *scriptedProcess) Close() error                   { return nil }
+
+// gatedProcess is a process whose stdout waits for gate to close, or for Close.
+type gatedProcess struct {
+	*scriptedProcess
+	gate      <-chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (p *gatedProcess) Stdout() io.ReadCloser { return io.NopCloser(p) }
+
+func (p *gatedProcess) Read(buf []byte) (int, error) {
+	select {
+	case <-p.gate:
+		return p.stdout.Read(buf)
+	case <-p.closed:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (p *gatedProcess) Close() error {
+	p.closeOnce.Do(func() {
+		close(p.closed)
+	})
+	return nil
+}
 
 type nopWriteCloser struct{}
 

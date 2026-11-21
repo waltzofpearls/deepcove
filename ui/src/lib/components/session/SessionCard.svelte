@@ -311,7 +311,7 @@
 
   <div class="flex flex-col gap-1.5 border-t border-border px-3 py-2">
     <div class="flex items-center gap-2">
-      <StatusIndicator status={session.status} />
+      <StatusIndicator {session} />
       <div class="min-w-0 flex-1 truncate font-mono text-sm font-medium">{session.name}</div>
       <!-- relative z-20 raises just the menu above the full-card nav link; the rest of the footer
            stays below it so a click there still opens the session. -->

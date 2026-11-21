@@ -209,7 +209,8 @@ func (d *Driver) hasInstance(instanceID sandbox.ID) bool {
 }
 
 // Start has no machine to boot. It puts the agent in place instead, in the background, and the session
-// layer waits on Setup before it starts anything. A start with the agent already here does nothing.
+// layer waits on Setup before it starts anything. A start with the agent already here only writes its
+// launch script again.
 func (d *Driver) Start(_ context.Context, instanceID sandbox.ID) error {
 	inst, err := d.lookup(instanceID)
 	if err != nil {
@@ -224,6 +225,10 @@ func (d *Driver) Start(_ context.Context, instanceID sandbox.ID) error {
 	// The launch script names the path the agent was found at, so one that has gone since is worth
 	// looking for again rather than opening a window on nothing. A setup that failed retries here too.
 	provision := inst.setup.Status != sandbox.SetupInstalling && !isExecutable(inst.agentPath)
+	// The script is the one its last start wrote, so a newer build's way of starting the agent only gets
+	// in by writing it again.
+	isScriptRewritten := inst.setup.Status != sandbox.SetupInstalling && !provision
+	agentPath := inst.agentPath
 	var setupCtx context.Context
 	if provision {
 		inst.setup = sandbox.SetupState{Status: sandbox.SetupInstalling}
@@ -233,6 +238,14 @@ func (d *Driver) Start(_ context.Context, instanceID sandbox.ID) error {
 
 	if provision {
 		go d.provisionAgent(setupCtx, instanceID, inst)
+	}
+	if isScriptRewritten {
+		if err := writeLaunchScript(inst.dir, agentPath, inst.spec.Agent.LaunchCmd); err != nil {
+			d.mu.Lock()
+			inst.running = false
+			d.mu.Unlock()
+			return err
+		}
 	}
 	return nil
 }

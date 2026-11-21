@@ -455,7 +455,8 @@
         </Tooltip>
       </TooltipProvider>
       {#if session}
-        <StatusIndicator status={session.status} />
+        <!-- The list carries the agent's state, but a start or stop reaches session first. -->
+        <StatusIndicator session={listed?.status === session.status ? listed : session} />
         <div class="min-w-0">
           {#if editingName}
             <input

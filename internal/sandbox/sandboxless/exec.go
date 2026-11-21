@@ -65,6 +65,8 @@ func (d *Driver) environment(inst *instance, callEnv map[string]string) []string
 	// Anything in here that runs tmux gets this instance's own folder, never the user's server. A
 	// missing folder would send tmux back to the default socket, so this one has to exist, and it does.
 	env["TMUX_TMPDIR"] = inst.dir
+	// Inside the instance's own folder, so other users on the machine cannot read what the agent said.
+	env["DEEPCOVE_AGENT_STATE_DIR"] = filepath.Join(inst.dir, "agent_state")
 	delete(env, "TMUX")
 	delete(env, "TMUX_PANE")
 	// HOME is the agent's, so the rc files that define what this calls never load and every prompt
