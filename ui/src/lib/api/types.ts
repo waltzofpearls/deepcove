@@ -5,6 +5,9 @@
 
 export type SessionStatus = 'created' | 'running' | 'starting' | 'stopped' | 'errored';
 
+// What a running session's agent is doing. done is a turn that finished since you last looked.
+export type AgentState = 'working' | 'needs_you' | 'done' | 'idle' | 'error';
+
 export interface Session {
   id: string;
   name: string;
@@ -16,6 +19,10 @@ export interface Session {
   status: SessionStatus;
   // Why deepcove stopped this session on its own. Absent when you stopped it.
   stop_reason?: 'unresponsive' | 'runtime_missing' | 'sandbox_lost';
+  // Absent when nothing could say, such as an agent still starting.
+  agent_state?: AgentState;
+  // What the agent waits for, or what failed.
+  agent_state_detail?: string;
   env: Record<string, string> | null;
   // The user's folders shared into the sandbox. The agent's /root
   // home is NOT included, because deepcove manages it, not the user.

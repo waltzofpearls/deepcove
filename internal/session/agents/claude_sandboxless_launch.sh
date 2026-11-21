@@ -8,9 +8,9 @@ fi
 # it. No out-of-memory branch here, because the machine has swap and this session has no memory cap.
 while true; do
 	if ls "$HOME"/.claude/projects/*/"$DEEPCOVE_SESSION_ID".jsonl >/dev/null 2>&1; then
-		"$DEEPCOVE_AGENT" --resume "$DEEPCOVE_SESSION_ID"
+		"$DEEPCOVE_AGENT" --settings "$claude_settings" --resume "$DEEPCOVE_SESSION_ID"
 	else
-		"$DEEPCOVE_AGENT" --session-id "$DEEPCOVE_SESSION_ID"
+		"$DEEPCOVE_AGENT" --settings "$claude_settings" --session-id "$DEEPCOVE_SESSION_ID"
 	fi
 	ec=$?
 	echo ""

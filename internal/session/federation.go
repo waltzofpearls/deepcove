@@ -60,6 +60,7 @@ func (s *Service) ListAggregated(ctx context.Context, filter ListFilter) (*Sessi
 	if err != nil {
 		return nil, err
 	}
+	s.reportAgentState(ctx, local)
 	resp := &SessionListResponse{Sessions: []*Session{}}
 
 	if s.federation == nil {

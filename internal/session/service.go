@@ -161,6 +161,17 @@ type Service struct {
 		mu  sync.Mutex
 		ids map[string]bool
 	}
+
+	// The last read of each agent, shared by everyone listing sessions.
+	agentStateCache struct {
+		mu        sync.Mutex
+		bySession map[string]cachedAgentStateRead
+	}
+	// How many viewers each session has right now.
+	sessionViewersCount struct {
+		mu     sync.Mutex
+		counts map[string]int
+	}
 }
 
 // NewService builds the service with NO runtimes. The caller registers each one it can provide and then

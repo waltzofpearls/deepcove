@@ -32,6 +32,7 @@ import {
 import { discoveryRequired } from '$lib/api/transport';
 import type { Session, SessionHost } from '$lib/api/types';
 import { usePolling } from '$lib/polling';
+import { busyPollIntervalMs, isChangingSoon } from '$lib/util/agentState';
 import { discovery } from './discovery.svelte';
 import { preferences } from './preferences.svelte';
 
@@ -91,7 +92,12 @@ function startIfIdle(): void {
   stopPolling = usePolling(
     () => poll(signal),
     // Retry sooner while failing, so a restart is picked up quickly instead of after a full cycle.
-    () => (error || waitingOnASecondTry() ? retryIntervalMs : preferences.pollIntervalMs),
+    () => {
+      if (error || waitingOnASecondTry()) return retryIntervalMs;
+      if (list.some(isChangingSoon))
+        return Math.min(busyPollIntervalMs, preferences.pollIntervalMs);
+      return preferences.pollIntervalMs;
+    },
   );
 }
 

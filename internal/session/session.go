@@ -75,10 +75,14 @@ type Session struct {
 	WorkDir string `json:"work_dir,omitempty"`
 	// AgentWorkDir is the folder the agent works in, answered by the runtime and filled on the way out,
 	// never stored. A runtime that makes the folder itself is the only one that can name it.
-	AgentWorkDir   string    `json:"agent_work_dir,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	LastActivityAt time.Time `json:"last_activity_at"`
+	AgentWorkDir string `json:"agent_work_dir,omitempty"`
+	// AgentState is what a running session's agent is doing, and AgentStateDetail what it waits for or what
+	// failed. Read from the agent on the way out, never stored.
+	AgentState       AgentState `json:"agent_state,omitempty"`
+	AgentStateDetail string     `json:"agent_state_detail,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	LastActivityAt   time.Time  `json:"last_activity_at"`
 
 	// Host is the node this session lives on. Set only by ListAggregated (fan-out); never persisted.
 	// nil on the single-session endpoints.

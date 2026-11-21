@@ -109,7 +109,7 @@
                         class:hover:bg-secondary={!isCurrentSession(s.id)}
                         class:hover:text-foreground={!isCurrentSession(s.id)}
                       >
-                        <StatusIndicator status={s.status} />
+                        <StatusIndicator session={s} />
                         <span class="truncate font-mono">{s.name}</span>
                       </a>
                     {/snippet}

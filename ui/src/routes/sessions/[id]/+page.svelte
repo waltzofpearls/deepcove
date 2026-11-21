@@ -455,7 +455,7 @@
         </Tooltip>
       </TooltipProvider>
       {#if session}
-        <StatusIndicator status={session.status} />
+        <StatusIndicator session={listed ?? session} />
         <div class="min-w-0">
           {#if editingName}
             <input
