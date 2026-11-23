@@ -142,6 +142,10 @@ func (s *Service) fetchLivePreview(ctx context.Context, sess *Session) *PreviewR
 	return &PreviewResponse{Ansi: string(ansi)}
 }
 
+// maxCaptureBytes is the most execCapture reads. The machine decides how much it prints, and an agent can
+// fill what it prints, so a capture past this fails rather than grow without bound.
+const maxCaptureBytes = 1 << 20
+
 func (s *Service) execCapture(ctx context.Context, sess *Session, cmd []string) ([]byte, bool) {
 	runtime, err := s.runtimeFor(sess)
 	if err != nil {
@@ -155,11 +159,22 @@ func (s *Service) execCapture(ctx context.Context, sess *Session, cmd []string) 
 		s.logger.Debug("preview: exec failed", "sandbox", sess.SandboxID, "cmd", cmd[0], "err", err)
 		return nil, false
 	}
-	defer func() { _ = proc.Close() }()
+	// Close kills it and Wait reaps it, so a capture that stops early leaves no zombie behind.
+	defer func() {
+		_ = proc.Close()
+		_, _ = proc.Wait(ctx)
+	}()
+	// Neither runtime ends a read at ctx's deadline, so a stalled exec would otherwise wait forever.
+	stopClosingAtDeadline := context.AfterFunc(ctx, func() { _ = proc.Close() })
+	defer stopClosingAtDeadline()
 
-	out, err := io.ReadAll(proc.Stdout())
+	out, err := io.ReadAll(io.LimitReader(proc.Stdout(), maxCaptureBytes+1))
 	if err != nil {
 		s.logger.Debug("preview: stdout read failed", "sandbox", sess.SandboxID, "err", err)
+		return nil, false
+	}
+	if len(out) > maxCaptureBytes {
+		s.logger.Debug("preview: stdout too large", "sandbox", sess.SandboxID, "cmd", cmd[0])
 		return nil, false
 	}
 	if exit, werr := proc.Wait(ctx); werr != nil || exit != 0 {

@@ -189,6 +189,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// writes are best-effort; a DB hiccup shouldn't kill the
 	// terminal session.
 	logger := s.logger.With("session_id", id)
+	defer s.trackCurrentSessionViewers(id)()
 	if rerr := s.RecordActivity(ctx, id); rerr != nil {
 		logger.Warn("attach: record activity on open", "err", rerr)
 	}

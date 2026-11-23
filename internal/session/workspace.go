@@ -358,6 +358,7 @@ func (s *Service) DeleteWorkspaceVM(ctx context.Context, withSessions bool) erro
 			return fmt.Errorf("session: delete %s: %w", sess.ID, err)
 		}
 		s.previewCache.Delete(sess.ID)
+		s.forgetAgentState(sess.ID)
 		s.logger.Info("session deleted with the workspace vm", "id", sess.ID, "name", sess.Name)
 	}
 

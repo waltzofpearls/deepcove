@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -60,6 +61,12 @@ func (s *Service) ListAggregated(ctx context.Context, filter ListFilter) (*Sessi
 	if err != nil {
 		return nil, err
 	}
+	// Alongside the peers, so a slow local agent never adds to their wait.
+	var localAgentStates sync.WaitGroup
+	localAgentStates.Go(func() {
+		s.reportAgentState(ctx, local)
+	})
+	defer localAgentStates.Wait()
 	resp := &SessionListResponse{Sessions: []*Session{}}
 
 	if s.federation == nil {

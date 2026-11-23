@@ -345,6 +345,14 @@ func TestExec(t *testing.T) {
 			},
 		},
 		{
+			name: "a private folder for the agent's state",
+			arrange: func(t *testing.T, d *Driver) (sandbox.ID, sandbox.ExecSpec, string) {
+				instanceID := created(t, d)
+				spec := sandbox.ExecSpec{Cmd: []string{"sh", "-c", "echo $DEEPCOVE_AGENT_STATE_DIR"}}
+				return instanceID, spec, filepath.Join(instanceOf(t, d, instanceID).dir, "agent_state")
+			},
+		},
+		{
 			name: "none of deepcove's own secrets",
 			arrange: func(t *testing.T, d *Driver) (sandbox.ID, sandbox.ExecSpec, string) {
 				t.Setenv("TS_AUTHKEY", "tskey-auth-secret")

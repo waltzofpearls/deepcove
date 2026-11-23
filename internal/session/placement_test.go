@@ -300,10 +300,14 @@ func TestWorkspaceVMSurvivesItsSessions(t *testing.T) {
 	t.Run("the last session out leaves the machine up", func(t *testing.T) {
 		svc, lister := workspaceService(t)
 		only := onWorkspace(t, svc, "first", "")
+		svc.agentStateCache.bySession = map[string]*cachedAgentStateRead{only.ID: {}}
 
 		lister.destroyed = map[sandbox.ID]bool{}
 		if err := svc.Destroy(ctx, only.ID); err != nil {
 			t.Fatalf("Destroy: %v", err)
+		}
+		if _, ok := svc.agentStateCache.bySession[only.ID]; ok {
+			t.Error("the session's agent state is still cached")
 		}
 		if len(lister.destroyed) != 0 {
 			t.Errorf("the machine was destroyed with its last session: %v", lister.destroyed)
@@ -483,6 +487,7 @@ func TestDeleteWorkspaceVMWithItsSessions(t *testing.T) {
 
 	first := onWorkspace(t, svc, "first", "")
 	second := onWorkspace(t, svc, "second", "second")
+	svc.agentStateCache.bySession = map[string]*cachedAgentStateRead{first.ID: {}, second.ID: {}}
 	vm, err := svc.WorkspaceVM(ctx)
 	if err != nil {
 		t.Fatalf("WorkspaceVM: %v", err)
@@ -495,6 +500,9 @@ func TestDeleteWorkspaceVMWithItsSessions(t *testing.T) {
 	for _, sess := range []*Session{first, second} {
 		if _, err := svc.Get(ctx, sess.ID); !errors.Is(err, ErrNotFound) {
 			t.Errorf("session %s survived: %v", sess.Name, err)
+		}
+		if _, ok := svc.agentStateCache.bySession[sess.ID]; ok {
+			t.Errorf("session %s's agent state is still cached", sess.Name)
 		}
 	}
 	if !lister.destroyed[sandbox.ID(vm.SandboxID)] {

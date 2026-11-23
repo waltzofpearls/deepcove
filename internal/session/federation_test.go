@@ -47,6 +47,7 @@ type fakeFederation struct {
 	peers   []NodeRef
 	results map[string][]*Session // keyed by peer StableNodeID
 	errs    map[string]error      // keyed by peer StableNodeID
+	asked   chan struct{}         // closed by FetchSessions, when set
 
 	createdOn string             // StableNodeID of the peer CreateSession was proxied to
 	client    *http.Client       // nil unless a test forwards a request
@@ -61,6 +62,9 @@ func (f *fakeFederation) FindSessionHost(_ context.Context, sessionID string) (N
 }
 func (f *fakeFederation) Peers() []NodeRef { return f.peers }
 func (f *fakeFederation) FetchSessions(_ context.Context, peer NodeRef, _ bool) ([]*Session, error) {
+	if f.asked != nil {
+		close(f.asked)
+	}
 	if err := f.errs[peer.StableNodeID]; err != nil {
 		return nil, err
 	}
@@ -170,6 +174,23 @@ func TestCreateRouted(t *testing.T) {
 	// An unknown id is ErrNodeNotFound.
 	if _, err := svc.CreateRouted(ctx, CreateRequest{Agent: "claude", NodeID: "nope"}); !errors.Is(err, ErrNodeNotFound) {
 		t.Errorf("unknown NodeID: got %v, want ErrNodeNotFound", err)
+	}
+}
+
+func TestListAggregated_ReadsLocalAgentsWhilePeersAnswer(t *testing.T) {
+	// The local agent answers only once a peer is asked, so a read that waits for the peers times out.
+	asked := make(chan struct{})
+	fake := newFakeSandbox()
+	fake.execResponses = []execResponse{{stdout: "now 1000\nsession_file {\"status\":\"busy\"}\n", stdoutAfter: asked}}
+	svc := NewService(newFakeRepoWith(&Session{ID: "local", Status: StatusRunning, Agent: "claude", Runtime: runtimeFake, SandboxID: "sb1"}), nil)
+	svc.RegisterRuntime(runtimeFake, fake)
+	svc.SetFederation(&fakeFederation{peers: []NodeRef{{StableNodeID: "n-server"}}, asked: asked})
+	resp, err := svc.ListAggregated(t.Context(), ListFilter{})
+	if err != nil {
+		t.Fatalf("ListAggregated: %v", err)
+	}
+	if got := resp.Sessions[0].AgentState; got != AgentStateWorking {
+		t.Errorf("AgentState = %q, want %q", got, AgentStateWorking)
 	}
 }
 

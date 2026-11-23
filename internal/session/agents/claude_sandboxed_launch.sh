@@ -21,7 +21,7 @@ while true; do
   cd "$session_folder" || exit 1
   # Unquoted on purpose: conversation prints a flag and its value, which have to arrive as two arguments.
   # shellcheck disable=SC2046
-  claude $(conversation)
+  claude --settings "$claude_settings" $(conversation)
   ec=$?
   echo ""
   # 137 is SIGKILL, and in a VM with no swap that is almost always the kernel reclaiming memory. Say so

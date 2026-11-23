@@ -58,6 +58,7 @@ func (s *Service) startAgentSessionLocked(ctx context.Context, sess *Session, wo
 	}
 	name := tmuxSessionName(sess.ID)
 	if _, err := s.execTmux(ctx, sess, "has-session", "-t", name); err == nil {
+		s.startSavingEscapeSequence(ctx, sess)
 		return nil
 	}
 	// Nobody could say where this session works. Guessing would make a folder somewhere nobody asked
@@ -93,6 +94,7 @@ func (s *Service) startAgentSessionLocked(ctx context.Context, sess *Session, wo
 	if _, err := s.execTmux(ctx, sess, newSession...); err != nil {
 		return fmt.Errorf("session: start agent: %w", err)
 	}
+	s.startSavingEscapeSequence(ctx, sess)
 
 	// Mouse reporting is a server-wide option, so it needs a server, which the first session creates.
 	// It is what makes the browser's wheel scroll the pane; tmux's own defaults handle the rest.
@@ -104,6 +106,20 @@ func (s *Service) startAgentSessionLocked(ctx context.Context, sess *Session, wo
 	// takes a copy only right after the user's own drag.
 	_, _ = s.execTmux(ctx, sess, "set-option", "-g", "set-clipboard", "on")
 	return nil
+}
+
+// startSavingEscapeSequence pipes the agent's pane into its state folder, for an agent that prints its
+// own status. Right after the pane starts, so the agent's first status is caught too. Each call replaces
+// the pipe, since -o would close one already there.
+func (s *Service) startSavingEscapeSequence(ctx context.Context, sess *Session) {
+	agent, err := resolveAgent(sess.Agent)
+	if err != nil || agent.AgentStateSource != AgentStateFromEscapeSequence {
+		return
+	}
+	target := tmuxSessionName(sess.ID) + ":" + AgentTmuxWindowName
+	if _, err := s.execTmux(ctx, sess, "pipe-pane", "-O", "-t", target, saveEscapeSequenceCommand(sess.ID)); err != nil {
+		s.logger.Warn("session: could not save the agent's status", "id", sess.ID, "err", err)
+	}
 }
 
 // stopAgentSessionLocked stops a session's agent. Only tmux saying the session is gone counts, since
