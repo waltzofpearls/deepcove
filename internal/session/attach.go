@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -26,14 +27,16 @@ const activityTickInterval = 30 * time.Second
 // explicit; future versions can bump the v1 suffix.
 const AttachSubprotocol = "deepcove.pty.v1"
 
-// AttachControlMessage is the JSON shape of WS text frames the
-// client may send: "resize", "detach" and "notice". New types can be
-// added without breaking older clients (unknown types are ignored).
+// AttachControlMessage is the JSON shape of WS text frames the client may send: "resize", "detach",
+// "notice" and "visibility". New types can be added without breaking older clients (unknown types are
+// ignored).
 type AttachControlMessage struct {
 	Type string `json:"type"`
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
 	Text string `json:"text,omitempty"`
+	// Visible is whether the browser tab showing this terminal is on screen.
+	Visible bool `json:"visible,omitempty"`
 }
 
 // noticeMillis is how long a notice stays in the status line, long enough to read a file name and a reason.
@@ -42,7 +45,10 @@ const noticeMillis = "5000"
 // handleAttach upgrades to a WebSocket and bridges it to a
 // `tmux attach -t main` exec inside the session's sandbox. Binary
 // frames are bytes flowing both ways (terminal I/O); text frames
-// are JSON control messages (resize today).
+// are JSON control messages (AttachControlMessage).
+//
+// Optional ?hidden=true says the browser tab opened in the background, so the attach does not count as
+// looking at the session until a "visibility" message says it is on screen.
 //
 // Optional ?tmux_window= query param attaches the client to a specific tmux window. tmux tracks
 // "current window" per-client, so two simultaneous attaches with different ?tmux_window= values each
@@ -189,9 +195,13 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 	// writes are best-effort; a DB hiccup shouldn't kill the
 	// terminal session.
 	logger := s.logger.With("session_id", id)
-	defer s.trackCurrentSessionViewers(id)()
-	if rerr := s.RecordActivity(ctx, id); rerr != nil {
-		logger.Warn("attach: record activity on open", "err", rerr)
+	view := &sessionView{service: s, id: id}
+	defer view.end()
+	// A tab that opens in the background has not looked at the session yet. Anything else has.
+	if r.URL.Query().Get("hidden") != "true" {
+		if rerr := view.setVisible(ctx, true); rerr != nil {
+			logger.Warn("attach: record activity on open", "err", rerr)
+		}
 	}
 	tickerCtx, cancelTicker := context.WithCancel(ctx)
 	defer cancelTicker()
@@ -203,6 +213,10 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 			case <-tickerCtx.Done():
 				return
 			case <-t.C:
+				// A terminal in a background tab is not activity, and would mark a finished turn as seen.
+				if !view.isVisible() {
+					continue
+				}
 				if rerr := s.RecordActivity(tickerCtx, id); rerr != nil {
 					logger.Warn("attach: record activity tick", "err", rerr)
 				}
@@ -228,15 +242,77 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
-	bridge(ctx, ws, proc, logger, detach, notify)
+	bridge(ctx, ws, proc, logger, detach, notify, view.setVisible)
 
 	// Final write on disconnect. Use a fresh, non-cancelled context
 	// so the row update lands even when the request context has
 	// already been cancelled by the client closing the WS.
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelClose()
+	// A terminal that went out of view already recorded when it did.
+	if !view.isVisible() {
+		return
+	}
 	if rerr := s.RecordActivity(closeCtx, id); rerr != nil {
 		logger.Warn("attach: record activity on close", "err", rerr)
+	}
+}
+
+// sessionView is one attach's part in whether its session is being looked at. It counts while its
+// terminal is on screen. A terminal with no tabs is always on screen.
+type sessionView struct {
+	// service is the session Service that is handling this attach, the receiver of handleAttach. It
+	// holds the count of each session's viewers and writes last_activity_at to the database, so the
+	// view needs it to count itself as a viewer and to record when it was last on screen.
+	service *Service
+	id      string
+
+	mu sync.Mutex
+	// untrack is nil while the terminal is out of view.
+	untrack func()
+	// isEnded is set once the attach is over, since its reader can still be handling a frame.
+	isEnded bool
+}
+
+// setVisible counts the session as viewed only while its terminal is on screen. A change records
+// activity, since coming into view is looking at the session and going out of view is the last moment
+// you did. Going out of view records first, so no moment reads as unviewed with the old time.
+func (v *sessionView) setVisible(ctx context.Context, visible bool) error {
+	v.mu.Lock()
+	isChanged := !v.isEnded && visible != (v.untrack != nil)
+	if isChanged && visible {
+		v.untrack = v.service.trackCurrentSessionViewers(v.id)
+	}
+	v.mu.Unlock()
+	if !isChanged {
+		return nil
+	}
+	err := v.service.RecordActivity(ctx, v.id)
+	if !visible {
+		v.mu.Lock()
+		v.stopCountingLocked()
+		v.mu.Unlock()
+	}
+	return err
+}
+
+func (v *sessionView) isVisible() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.untrack != nil
+}
+
+func (v *sessionView) end() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.isEnded = true
+	v.stopCountingLocked()
+}
+
+func (v *sessionView) stopCountingLocked() {
+	if v.untrack != nil {
+		v.untrack()
+		v.untrack = nil
 	}
 }
 
@@ -251,7 +327,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 //
 // The first goroutine to error or signal end-of-stream tears down
 // the whole bridge via ctx cancellation.
-func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger, detach func(context.Context) error, notify func(context.Context, string) error) {
+func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger, detach func(context.Context) error, notify func(context.Context, string) error, setVisible func(context.Context, bool) error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -315,6 +391,10 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 				case "notice":
 					if err := notify(ctx, msg.Text); err != nil {
 						logger.Warn("attach: notice failed", "err", err)
+					}
+				case "visibility":
+					if err := setVisible(ctx, msg.Visible); err != nil {
+						logger.Warn("attach: record activity on a visibility change", "err", err)
 					}
 				default:
 					logger.Warn("attach: unknown control type", "type", msg.Type)

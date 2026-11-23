@@ -73,12 +73,28 @@ describe('api client routes through the transport seam', () => {
     expect(await api.myProfilePicture()).toBeNull();
   });
 
-  it('openAttachSocket() opens via transport.openSocket with the pty subprotocol', () => {
-    openSocketMock.mockReturnValue({});
-    api.openAttachSocket('sess-1', 'win-2');
-    expect(openSocketMock).toHaveBeenCalledWith(
-      '/api/sessions/sess-1/attach?tmux_window=win-2',
-      'deepcove.pty.v1',
-    );
-  });
+  const attachCases: {
+    name: string;
+    visibility?: DocumentVisibilityState;
+    want: string;
+  }[] = [
+    {
+      name: 'a tab in front',
+      visibility: 'visible',
+      want: '/api/sessions/sess-1/attach?tmux_window=win-2',
+    },
+    {
+      name: 'a tab in the background',
+      visibility: 'hidden',
+      want: '/api/sessions/sess-1/attach?tmux_window=win-2&hidden=true',
+    },
+    { name: 'no tab to ask', want: '/api/sessions/sess-1/attach?tmux_window=win-2' },
+  ];
+  for (const tc of attachCases) {
+    it(`openAttachSocket() opens via transport.openSocket with the pty subprotocol: ${tc.name}`, () => {
+      openSocketMock.mockReturnValue({});
+      api.openAttachSocket('sess-1', 'win-2', undefined, tc.visibility);
+      expect(openSocketMock).toHaveBeenCalledWith(tc.want, 'deepcove.pty.v1');
+    });
+  }
 });

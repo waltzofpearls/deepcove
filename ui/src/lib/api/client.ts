@@ -779,8 +779,17 @@ export const api = {
   // simultaneous attaches can each pin to their own window (per-client window
   // focus is a tmux native feature). Omit for legacy follow-the-session's-
   // current-window behavior.
-  openAttachSocket(id: string, tmuxWindow?: string, host?: SessionHost): DeepcoveSocket {
-    const q = tmuxWindow ? `?tmux_window=${encodeURIComponent(tmuxWindow)}` : '';
+  openAttachSocket(
+    id: string,
+    tmuxWindow?: string,
+    host?: SessionHost,
+    visibility?: DocumentVisibilityState,
+  ): DeepcoveSocket {
+    const params = new URLSearchParams();
+    if (tmuxWindow) params.set('tmux_window', tmuxWindow);
+    // A tab that opens in the background has not looked at the session yet.
+    if (visibility === 'hidden') params.set('hidden', 'true');
+    const q = params.toString() ? `?${params}` : '';
     return transportForHost(host).openSocket(
       `${BASE}/sessions/${encodeURIComponent(id)}/attach${q}`,
       'deepcove.pty.v1',

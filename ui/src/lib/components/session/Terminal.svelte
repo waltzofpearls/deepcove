@@ -192,6 +192,14 @@
       lastRows = rows;
       ws.send(JSON.stringify({ type: 'resize', cols, rows }));
     };
+    // A session open in a background tab is not being looked at, so a turn that finishes there stays Done.
+    const sendVisibility = () => {
+      if (ws?.readyState !== 1) return;
+      ws.send(
+        JSON.stringify({ type: 'visibility', visible: document.visibilityState === 'visible' }),
+      );
+    };
+    document.addEventListener('visibilitychange', sendVisibility);
 
     // reattach waits for the session to be usable again, then opens a new stream. The bootstrap poll
     // does double duty: it holds until setup finishes, and its fetch refreshes the local token, which
@@ -210,7 +218,7 @@
     function connect() {
       if (disposed) return;
       status = 'connecting';
-      ws = api.openAttachSocket(id, win, node);
+      ws = api.openAttachSocket(id, win, node, document.visibilityState);
       ws.binaryType = 'arraybuffer';
 
       const openedAt = Date.now();
@@ -228,6 +236,7 @@
         attempts = 0;
         status = 'open';
         sendResize();
+        sendVisibility();
         // A touch device only shows its keyboard for a tap, so focusing here would leave the mobile key bar
         // saying the keyboard is up while it is not.
         if (!touchPrimary) term?.focus();
@@ -501,6 +510,7 @@
       if (onDrop) container.removeEventListener('drop', onDrop);
       pressKey = undefined;
       toggleKeyboard = undefined;
+      document.removeEventListener('visibilitychange', sendVisibility);
       ro?.disconnect();
       ws?.close();
       term?.dispose();

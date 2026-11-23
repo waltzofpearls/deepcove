@@ -5,13 +5,17 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// fakeRepo is a minimal SessionRepository for the aggregation tests: only List returns data (the
-// rest are unused by ListAggregated). List honors the repo contract of last-activity-desc order.
-type fakeRepo struct{ sessions []*Session }
+// fakeRepo is a minimal SessionRepository: only List returns data, in the repo contract's
+// last-activity-desc order, and UpdateActivity counts its calls for the attach tests.
+type fakeRepo struct {
+	sessions        []*Session
+	activityUpdates atomic.Int32
+}
 
 func newFakeRepoWith(sessions ...*Session) *fakeRepo { return &fakeRepo{sessions: sessions} }
 
@@ -27,7 +31,10 @@ func (r *fakeRepo) MarkStopped(context.Context, string, string, time.Time) error
 func (r *fakeRepo) MarkStoppedBecause(context.Context, string, string, StopReason, time.Time) error {
 	return nil
 }
-func (r *fakeRepo) UpdateActivity(context.Context, string, string, time.Time) error { return nil }
+func (r *fakeRepo) UpdateActivity(context.Context, string, string, time.Time) error {
+	r.activityUpdates.Add(1)
+	return nil
+}
 func (r *fakeRepo) Rename(context.Context, string, string, string, time.Time) error { return nil }
 func (r *fakeRepo) UpdateLoginMode(context.Context, string, string, LoginMode, time.Time) error {
 	return nil

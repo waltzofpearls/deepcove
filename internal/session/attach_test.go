@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -476,6 +477,153 @@ func TestHandleAttach_ShellTab(t *testing.T) {
 			}
 			if isNewWindowed != tc.isNewWindowed {
 				t.Errorf("opened a shell tab = %v, want %v (calls %v)", isNewWindowed, tc.isNewWindowed, fake.execCalls)
+			}
+		})
+	}
+}
+
+func TestSessionView(t *testing.T) {
+	cases := []struct {
+		name string
+		// visibility is what the attach reports, in order, starting with how it opened.
+		visibility  []bool
+		wantViewed  bool
+		wantRecords int32
+	}{
+		{name: "opened in front", visibility: []bool{true}, wantViewed: true, wantRecords: 1},
+		{name: "opened in the background", visibility: []bool{false}},
+		{name: "sent to the background", visibility: []bool{true, false}, wantRecords: 2},
+		{name: "back in front", visibility: []bool{true, false, true}, wantViewed: true, wantRecords: 3},
+		{name: "in front twice", visibility: []bool{true, true}, wantViewed: true, wantRecords: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepoWith()
+			svc := NewService(repo, nil)
+			view := &sessionView{service: svc, id: "s1"}
+			for _, visible := range tc.visibility {
+				if err := view.setVisible(t.Context(), visible); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := svc.isSessionCurrentlyBeingViewed("s1"); got != tc.wantViewed {
+				t.Errorf("viewed = %t, want %t", got, tc.wantViewed)
+			}
+			if got := repo.activityUpdates.Load(); got != tc.wantRecords {
+				t.Errorf("activity recorded %d times, want %d", got, tc.wantRecords)
+			}
+			view.end()
+			if svc.isSessionCurrentlyBeingViewed("s1") {
+				t.Error("still viewed after the attach ended")
+			}
+			// A frame the reader was handling as the attach ended must not count the viewer again.
+			_ = view.setVisible(t.Context(), true)
+			if svc.isSessionCurrentlyBeingViewed("s1") {
+				t.Error("viewed again by a visibility change after the attach ended")
+			}
+		})
+	}
+}
+
+func TestHandleAttach_RecordsActivity(t *testing.T) {
+	cases := []struct {
+		name         string
+		query        string
+		wantRecorded bool
+	}{
+		{name: "a terminal on screen", wantRecorded: true},
+		{name: "a tab that opened in the background", query: "?hidden=true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fake, _, _ := newTestService(t)
+			sess := mustRunning(t, svc)
+			before, err := svc.Get(t.Context(), sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// has-session, new-session, attach (empty, so the bridge ends at once), kill-session.
+			fake.execResponses = []execResponse{{}, {}, {}, {}}
+			ts, done := newAttachTestServer(t, svc)
+			ws, _, err := websocket.Dial(t.Context(), wsURL(t, ts.URL, "/api/sessions/"+sess.ID+"/attach"+tc.query),
+				&websocket.DialOptions{Subprotocols: []string{AttachSubprotocol}})
+			if err != nil {
+				t.Fatalf("ws dial: %v", err)
+			}
+			_ = ws.Close(websocket.StatusNormalClosure, "")
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("handleAttach did not return within 3s")
+			}
+			after, err := svc.Get(t.Context(), sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := after.LastActivityAt.After(before.LastActivityAt); got != tc.wantRecorded {
+				t.Errorf("activity recorded = %t, want %t", got, tc.wantRecorded)
+			}
+		})
+	}
+}
+
+func TestBridge_Visibility(t *testing.T) {
+	cases := []struct {
+		name string
+		// visibility is what the browser sends, in order.
+		visibility []bool
+	}{
+		{name: "sent to the background", visibility: []bool{false}},
+		{name: "back in front", visibility: []bool{false, true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reported := make(chan bool, len(tc.visibility))
+			setVisible := func(_ context.Context, visible bool) error {
+				reported <- visible
+				return nil
+			}
+			// A terminal whose output never ends, so the bridge stays up while the frames arrive.
+			proc := &gatedProcess{scriptedProcess: newScriptedProcess("", "", 0), gate: make(chan struct{}), closed: make(chan struct{})}
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ws, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				detach := func(context.Context) error {
+					return nil
+				}
+				notify := func(context.Context, string) error {
+					return nil
+				}
+				bridge(r.Context(), ws, proc, slog.New(slog.DiscardHandler), detach, notify, setVisible)
+			}))
+			defer ts.Close()
+			defer func() {
+				_ = proc.Close()
+			}()
+			ws, _, err := websocket.Dial(t.Context(), wsURL(t, ts.URL, "/"), nil)
+			if err != nil {
+				t.Fatalf("ws dial: %v", err)
+			}
+			defer func() {
+				_ = ws.Close(websocket.StatusNormalClosure, "")
+			}()
+			for _, visible := range tc.visibility {
+				frame, _ := json.Marshal(AttachControlMessage{Type: "visibility", Visible: visible})
+				if err := ws.Write(t.Context(), websocket.MessageText, frame); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+			}
+			for index, want := range tc.visibility {
+				select {
+				case got := <-reported:
+					if got != want {
+						t.Errorf("visibility change %d = %t, want %t", index, got, want)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatalf("visibility change %d never reached setVisible", index)
+				}
 			}
 		})
 	}
