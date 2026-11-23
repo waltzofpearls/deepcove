@@ -17,7 +17,7 @@
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { terminalColorPalette } from '$lib/util/terminalColorPalette';
   import { api } from '$lib/api/client';
-  import { wheelSteps } from '$lib/util/wheel';
+  import { moveTouchScroll, startTouchScroll, wheelSteps, type TouchScroll } from '$lib/util/wheel';
   import { reconnectAction } from '$lib/util/reconnect';
   import type { DeepcoveSocket } from '$lib/api/transport';
   import type { BootstrapStatus, SessionHost } from '$lib/api/types';
@@ -152,6 +152,8 @@
     let onPaste: ((e: ClipboardEvent) => void) | undefined;
     let onDragOver: ((e: DragEvent) => void) | undefined;
     let onDrop: ((e: DragEvent) => void) | undefined;
+    let onTouchStart: ((event: TouchEvent) => void) | undefined;
+    let onTouchMove: ((event: TouchEvent) => void) | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let bootstrapTimer: ReturnType<typeof setTimeout> | undefined;
@@ -418,26 +420,25 @@
       // shell pane. The wheel stays ours rather than xterm.js's, which turns a trackpad nudge into arrows.
       const WHEEL_UP = 64;
       const WHEEL_DOWN = 65;
+      // tmux picks the target pane from the coordinates, so a split has to report where the pointer
+      // actually is rather than a fixed corner.
+      const scrollTmux = (steps: number, clientX: number, clientY: number) => {
+        // With mouse reporting off, the reports would reach the pane as typed garbage.
+        if (!term || steps === 0 || term.modes.mouseTrackingMode === 'none') return;
+        const rect = container.getBoundingClientRect();
+        const col = cellIndex(clientX - rect.left, rect.width, term.cols);
+        const row = cellIndex(clientY - rect.top, rect.height, term.rows);
+        const button = steps < 0 ? WHEEL_UP : WHEEL_DOWN;
+        send(`\x1b[<${button};${col};${row}M`.repeat(Math.abs(steps)));
+      };
       let wheelCarry = 0;
       term.attachCustomWheelEventHandler((ev) => {
-        const t = term;
-        if (!t) return true;
         // On the normal screen xterm's own scrollback is the right thing; leave it alone.
-        if (t.buffer.active.type !== 'alternate') return true;
+        if (term?.buffer.active.type !== 'alternate') return true;
 
         const { steps, carry } = wheelSteps(ev.deltaY, ev.deltaMode, wheelCarry);
         wheelCarry = carry;
-        if (steps !== 0) {
-          // tmux picks the target pane from the coordinates, so a split has to report where the pointer
-          // actually is rather than a fixed corner.
-          const rect = container.getBoundingClientRect();
-          const col = cellIndex(ev.clientX - rect.left, rect.width, t.cols);
-          const row = cellIndex(ev.clientY - rect.top, rect.height, t.rows);
-          const button = steps < 0 ? WHEEL_UP : WHEEL_DOWN;
-          for (let i = 0; i < Math.abs(steps); i++) {
-            send(`\x1b[<${button};${col};${row}M`);
-          }
-        }
+        scrollTmux(steps, ev.clientX, ev.clientY);
         // Handled either way: letting a sub-step trackpad nudge fall through would fire the arrow-key
         // fallback and jump the prompt history.
         return false;
@@ -479,6 +480,30 @@
         e.preventDefault();
         void uploadAndInject(files);
       };
+      // A finger swipe makes no wheel events, and xterm.js has no touch scrolling of its own, so a vertical
+      // drag scrolls tmux the way the wheel does. The reports name where the finger came down, so a swipe
+      // that crosses into another pane or onto the status line keeps scrolling the pane it started in.
+      let touchScroll: TouchScroll | undefined;
+      onTouchStart = (event: TouchEvent) => {
+        const touch = event.touches[0];
+        touchScroll =
+          event.touches.length === 1 ? startTouchScroll(touch.clientX, touch.clientY) : undefined;
+      };
+      onTouchMove = (event: TouchEvent) => {
+        // A second finger, even one that landed off the terminal, ends the swipe, so lifting it never
+        // turns the distance moved meanwhile into scrolling.
+        if (event.touches.length !== 1) touchScroll = undefined;
+        if (!touchScroll) return;
+        if (term?.buffer.active.type !== 'alternate') return;
+        const touch = event.touches[0];
+        const moved = moveTouchScroll(touchScroll, touch.clientX, touch.clientY);
+        touchScroll = moved.scroll;
+        if (!touchScroll.isScrolling) return;
+        event.preventDefault();
+        scrollTmux(moved.steps, touchScroll.startX, touchScroll.startY);
+      };
+      container.addEventListener('touchstart', onTouchStart, { passive: true });
+      container.addEventListener('touchmove', onTouchMove, { passive: false });
       container.addEventListener('paste', onPaste, { capture: true });
       container.addEventListener('dragover', onDragOver);
       container.addEventListener('drop', onDrop);
@@ -508,6 +533,8 @@
       if (onPaste) container.removeEventListener('paste', onPaste, { capture: true });
       if (onDragOver) container.removeEventListener('dragover', onDragOver);
       if (onDrop) container.removeEventListener('drop', onDrop);
+      if (onTouchStart) container.removeEventListener('touchstart', onTouchStart);
+      if (onTouchMove) container.removeEventListener('touchmove', onTouchMove);
       pressKey = undefined;
       toggleKeyboard = undefined;
       document.removeEventListener('visibilitychange', sendVisibility);
@@ -553,7 +580,9 @@
   style:max-height={onScreenKeyboard.shown ? `${onScreenKeyboard.visibleHeight}px` : undefined}
 >
   <div class="relative min-h-0 w-full flex-1">
-    <div bind:this={container} class="h-full w-full"></div>
+    <!-- Vertical pans belong to the swipe scroll above, so the browser never starts one of its own. Pinch
+         zoom stays with the browser. -->
+    <div bind:this={container} class="h-full w-full touch-pan-x touch-pinch-zoom"></div>
 
     {#if uploading > 0 || uploadNote}
       <!-- Bottom bar overlaying the tmux status line. Left-aligned so it sits

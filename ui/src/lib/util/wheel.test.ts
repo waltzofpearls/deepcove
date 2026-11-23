@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { wheelSteps } from './wheel';
+import { moveTouchScroll, startTouchScroll, wheelSteps } from './wheel';
 
 describe('wheelSteps', () => {
   const cases: {
@@ -88,4 +88,65 @@ describe('wheelSteps', () => {
     expect(down.steps).toBe(0);
     expect(down.carry).toBe(0);
   });
+});
+
+describe('moveTouchScroll', () => {
+  // Each case starts the finger at (100, 100), then moves it through the points in order.
+  const cases: {
+    name: string;
+    points: [number, number][];
+    wantSteps: number;
+    wantScrolling: boolean;
+  }[] = [
+    {
+      name: 'a tap that barely moves is not a scroll',
+      points: [[103, 104]],
+      wantSteps: 0,
+      wantScrolling: false,
+    },
+    {
+      name: 'a finger moving up scrolls down',
+      points: [[100, 60]],
+      wantSteps: 1,
+      wantScrolling: true,
+    },
+    {
+      name: 'a finger moving down scrolls up',
+      points: [[100, 180]],
+      wantSteps: -2,
+      wantScrolling: true,
+    },
+    {
+      name: 'a slow drag adds up across moves',
+      points: [
+        [100, 80],
+        [100, 70],
+        [100, 60],
+      ],
+      wantSteps: 1,
+      wantScrolling: true,
+    },
+    {
+      name: 'a sideways drag stays with the browser',
+      points: [
+        [140, 95],
+        [140, 20],
+      ],
+      wantSteps: 0,
+      wantScrolling: false,
+    },
+  ];
+  for (const tc of cases) {
+    it(tc.name, () => {
+      let scroll = startTouchScroll(100, 100);
+      let steps = 0;
+      for (const [clientX, clientY] of tc.points) {
+        const moved = moveTouchScroll(scroll, clientX, clientY);
+        scroll = moved.scroll;
+        steps += moved.steps;
+      }
+      expect(steps).toBe(tc.wantSteps);
+      expect(scroll.isScrolling).toBe(tc.wantScrolling);
+    });
+  }
 });

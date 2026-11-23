@@ -40,3 +40,47 @@ function toPixels(deltaY: number, deltaMode: number): number {
       return deltaY;
   }
 }
+
+// A finger has to move this far before a touch counts as a scroll, so a tap still focuses the terminal.
+const touchSlopPx = 8;
+
+// TouchScroll is one finger's gesture on the terminal, from the moment it comes down.
+export interface TouchScroll {
+  startX: number;
+  startY: number;
+  lastY: number;
+  // isScrolling is set once the finger has moved far enough, mostly up or down, to be a scroll.
+  isScrolling: boolean;
+  // isIgnored is set once it moved mostly sideways instead, so the browser keeps the gesture.
+  isIgnored: boolean;
+  carry: number;
+}
+
+export function startTouchScroll(clientX: number, clientY: number): TouchScroll {
+  return {
+    startX: clientX,
+    startY: clientY,
+    lastY: clientY,
+    isScrolling: false,
+    isIgnored: false,
+    carry: 0,
+  };
+}
+
+// moveTouchScroll follows the finger to (clientX, clientY). A finger moving up pulls later lines into view, the same
+// direction as a wheel scrolling down, so it gives positive steps.
+export function moveTouchScroll(
+  scroll: TouchScroll,
+  clientX: number,
+  clientY: number,
+): { scroll: TouchScroll; steps: number } {
+  if (scroll.isIgnored) return { scroll, steps: 0 };
+  if (!scroll.isScrolling) {
+    const across = Math.abs(clientX - scroll.startX);
+    const along = Math.abs(clientY - scroll.startY);
+    if (Math.max(across, along) < touchSlopPx) return { scroll, steps: 0 };
+    if (across > along) return { scroll: { ...scroll, isIgnored: true }, steps: 0 };
+  }
+  const { steps, carry } = wheelSteps(scroll.lastY - clientY, 0, scroll.carry);
+  return { scroll: { ...scroll, isScrolling: true, lastY: clientY, carry }, steps };
+}
