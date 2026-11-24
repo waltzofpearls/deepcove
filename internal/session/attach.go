@@ -28,8 +28,8 @@ const activityTickInterval = 30 * time.Second
 const AttachSubprotocol = "deepcove.pty.v1"
 
 // AttachControlMessage is the JSON shape of WS text frames the client may send: "resize", "detach",
-// "notice" and "visibility". New types can be added without breaking older clients (unknown types are
-// ignored).
+// "notice", "visibility", "search" and "search-close". New types can be added without breaking older
+// clients (unknown types are ignored).
 type AttachControlMessage struct {
 	Type string `json:"type"`
 	Cols uint16 `json:"cols,omitempty"`
@@ -37,6 +37,30 @@ type AttachControlMessage struct {
 	Text string `json:"text,omitempty"`
 	// Visible is whether the browser tab showing this terminal is on screen.
 	Visible bool `json:"visible,omitempty"`
+	// Direction is "older" or "newer", the way a search moves from where the terminal is.
+	Direction string `json:"direction,omitempty"`
+	// SearchID is the browser's number for a search, sent back with the answer, so it can drop an answer
+	// about text that has changed since.
+	SearchID int `json:"searchId,omitempty"`
+}
+
+// attachSearchResult is the text frame the server sends back after a search.
+type attachSearchResult struct {
+	Type     string `json:"type"`
+	SearchID int    `json:"searchId"`
+	IsFound  bool   `json:"isFound"`
+	// IsFailed is tmux not running the search, so finding nothing says nothing about the history.
+	IsFailed bool `json:"isFailed,omitempty"`
+}
+
+// attachControls are what an attach's control frames act on, apart from the terminal's size.
+type attachControls struct {
+	detach     func(context.Context) error
+	notify     func(context.Context, string) error
+	setVisible func(context.Context, bool) error
+	// search moves the terminal to the next match in its history, and reports whether there was one.
+	search    func(ctx context.Context, text, direction string) (isFound bool, err error)
+	endSearch func(context.Context)
 }
 
 // noticeMillis is how long a notice stays in the status line, long enough to read a file name and a reason.
@@ -242,13 +266,51 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
-	bridge(ctx, ws, proc, logger, detach, notify, view.setVisible)
+	// tmux's own copy mode searches the history and puts the match on screen. searchedPane is the pane this
+	// attach last searched, and "" once that search ended. It stays the target after tmux shows the view
+	// another window. Only the bridge's control frames touch it, and the cleanup below runs after them.
+	var searchedPane string
+	endSearch := func(ctx context.Context) {
+		if searchedPane == "" {
+			return
+		}
+		// Until tmux confirms, the search counts as open, so the cleanup below tries again when the browser
+		// leaving cut this short. A pane not in copy mode answers "not in a mode", and stays open here.
+		if _, err := s.execTmux(ctx, sess, "send-keys", "-X", "-t", searchedPane, "cancel"); err == nil {
+			searchedPane = ""
+		}
+	}
+	search := func(ctx context.Context, text, direction string) (bool, error) {
+		// Where a search leaves the cursor depends on the copy mode keys, since the next search starts there.
+		where, err := s.execTmux(ctx, sess, "display-message", "-p", "-t", viewSession, "#{pane_id} #{mode-keys}")
+		if err != nil {
+			return false, err
+		}
+		pane, modeKeys, _ := strings.Cut(strings.TrimSpace(string(where)), " ")
+		// A search in another window leaves the last one, so no pane is left in copy mode behind it.
+		if searchedPane != pane {
+			endSearch(ctx)
+		}
+		searchedPane = pane
+		found, err := s.execTmux(ctx, sess, tmuxSearchCommand(pane, text, direction, modeKeys)...)
+		return strings.TrimSpace(string(found)) == "1", err
+	}
+	bridge(ctx, ws, proc, logger, attachControls{
+		detach:     detach,
+		notify:     notify,
+		setVisible: view.setVisible,
+		search:     search,
+		endSearch:  endSearch,
+	})
 
 	// Final write on disconnect. Use a fresh, non-cancelled context
 	// so the row update lands even when the request context has
 	// already been cancelled by the client closing the WS.
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelClose()
+	// The pane stays in copy mode after this attach's view session goes, frozen for everyone, so a search
+	// still open when the browser left ends here.
+	endSearch(closeCtx)
 	// A terminal that went out of view already recorded when it did.
 	if !view.isVisible() {
 		return
@@ -316,6 +378,30 @@ func (v *sessionView) stopCountingLocked() {
 	}
 }
 
+// tmuxSearchCommand is one tmux call that puts a pane in copy mode, moves to the next match of text in the
+// given direction, and prints 1 when there was one. The text is searched as written, not as a pattern. Each
+// search leaves the cursor at the start of its match, where the next one begins.
+func tmuxSearchCommand(pane, text, direction, modeKeys string) []string {
+	// tmux reads an argument that ends in a semicolon as the end of a command, unless it is escaped.
+	if strings.HasSuffix(text, ";") {
+		text = strings.TrimSuffix(text, ";") + `\;`
+	}
+	command := []string{"copy-mode", "-t", pane, ";"}
+	if direction == "newer" {
+		// One step past the match first, since a forward search starting on it finds it again.
+		command = append(command, "send-keys", "-X", "-t", pane, "cursor-right", ";",
+			"send-keys", "-X", "-t", pane, "search-forward-text", text, ";")
+		// Emacs keys leave a forward search at the end of its match, and searching back for the same text
+		// returns to its start. Vi keys already stop at the start.
+		if modeKeys == "emacs" {
+			command = append(command, "send-keys", "-X", "-t", pane, "search-backward-text", text, ";")
+		}
+	} else {
+		command = append(command, "send-keys", "-X", "-t", pane, "search-backward-text", text, ";")
+	}
+	return append(command, "display-message", "-p", "-t", pane, "#{search_present}")
+}
+
 // bridge connects a WebSocket to a sandbox.Process. Three concerns
 // run concurrently:
 //
@@ -327,7 +413,7 @@ func (v *sessionView) stopCountingLocked() {
 //
 // The first goroutine to error or signal end-of-stream tears down
 // the whole bridge via ctx cancellation.
-func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger, detach func(context.Context) error, notify func(context.Context, string) error, setVisible func(context.Context, bool) error) {
+func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logger *slog.Logger, controls attachControls) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -360,6 +446,11 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 		}
 	}()
 
+	// Held while a control frame is acted on, so the stream ends only after the one in flight finishes. A
+	// search still running in tmux would otherwise enter copy mode after the cleanup ended it.
+	var controlMutex sync.Mutex
+	isEnded := false
+
 	// ws → proc.Stdin (and JSON control frames)
 	go func() {
 		defer cancel()
@@ -379,26 +470,44 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 					logger.Warn("attach: bad control frame", "err", jerr)
 					continue
 				}
+				controlMutex.Lock()
+				if isEnded {
+					controlMutex.Unlock()
+					return
+				}
 				switch msg.Type {
 				case "resize":
 					if rerr := proc.Resize(msg.Cols, msg.Rows); rerr != nil {
 						logger.Warn("attach: resize failed", "err", rerr)
 					}
 				case "detach":
-					if derr := detach(ctx); derr != nil {
+					if derr := controls.detach(ctx); derr != nil {
 						logger.Warn("attach: detach failed", "err", derr)
 					}
 				case "notice":
-					if err := notify(ctx, msg.Text); err != nil {
+					if err := controls.notify(ctx, msg.Text); err != nil {
 						logger.Warn("attach: notice failed", "err", err)
 					}
 				case "visibility":
-					if err := setVisible(ctx, msg.Visible); err != nil {
+					if err := controls.setVisible(ctx, msg.Visible); err != nil {
 						logger.Warn("attach: record activity on a visibility change", "err", err)
 					}
+				case "search":
+					isFound, err := controls.search(ctx, msg.Text, msg.Direction)
+					if err != nil {
+						logger.Warn("attach: search failed", "err", err)
+					}
+					reply, _ := json.Marshal(attachSearchResult{Type: "search", SearchID: msg.SearchID, IsFound: isFound, IsFailed: err != nil})
+					if err := ws.Write(ctx, websocket.MessageText, reply); err != nil {
+						controlMutex.Unlock()
+						return
+					}
+				case "search-close":
+					controls.endSearch(ctx)
 				default:
 					logger.Warn("attach: unknown control type", "type", msg.Type)
 				}
+				controlMutex.Unlock()
 			}
 		}
 	}()
@@ -406,6 +515,9 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 	// Block until any goroutine signals end-of-stream (via cancel)
 	// or the request context is cancelled by the caller.
 	<-ctx.Done()
+	controlMutex.Lock()
+	isEnded = true
+	controlMutex.Unlock()
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 }
 

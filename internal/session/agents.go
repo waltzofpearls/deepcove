@@ -142,7 +142,7 @@ var agents = map[string]AgentSpec{
 		APIKeyExample:    "sk-ant-…",
 		AgentStateSource: AgentStateFromClaudeSessionFile,
 		Sandboxed: SandboxedSpec{
-			DefaultImage:  "alpine:3.20",
+			DefaultImage:  "alpine:3.23",
 			OfficialImage: agentsImage,
 			Setup:         claudeSandboxedSetup,
 			LaunchCmd:     agentStateFolder + claudeStateHooks + claudeSandboxedLaunch,
@@ -179,7 +179,7 @@ var agents = map[string]AgentSpec{
 		APIKeyExample:    "sk-proj-…",
 		AgentStateSource: AgentStateFromEscapeSequence,
 		Sandboxed: SandboxedSpec{
-			DefaultImage:  "alpine:3.20",
+			DefaultImage:  "alpine:3.23",
 			OfficialImage: agentsImage,
 			Setup:         codexSandboxedSetup,
 			LaunchCmd:     agentStateFolder + codexConversation + codexSandboxedLaunch,

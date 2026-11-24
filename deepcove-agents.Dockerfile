@@ -6,7 +6,7 @@
 # Both agents update themselves after first run, so the versions baked in here are a
 # floor, not a pin. The weekly rebuild keeps first boot current.
 
-FROM alpine:3.20
+FROM alpine:3.23
 
 # procps-ng: Codex's background server needs the full ps, which busybox lacks.
 # bubblewrap: the sandbox Codex runs its own commands in.

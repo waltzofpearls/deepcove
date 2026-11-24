@@ -47,7 +47,8 @@ func TestStartAgentSession(t *testing.T) {
 		}
 		create := strings.Join(fake.execCalls[2], " ")
 		for _, want := range []string{
-			"new-session", "-d",
+			// Ahead of the session in the same call, so the agent's pane is made with it.
+			"set-option -g history-limit 10000 ; set-option -gq copy-mode-position-format  ; new-session -d",
 			"-s " + tmuxSessionName(sess.ID),
 			"-n " + AgentTmuxWindowName,
 			"-c /workspace/repo",

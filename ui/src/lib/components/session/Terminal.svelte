@@ -13,11 +13,18 @@
   // $lib/util/reconnect.
 
   import '@xterm/xterm/css/xterm.css';
-  import { untrack } from 'svelte';
+  import { flushSync, untrack } from 'svelte';
   import type { Terminal as XTerm } from '@xterm/xterm';
   import { terminalColorPalette } from '$lib/util/terminalColorPalette';
   import { api } from '$lib/api/client';
   import { moveTouchScroll, startTouchScroll, wheelSteps, type TouchScroll } from '$lib/util/wheel';
+  import {
+    isSearchShortcut,
+    searchMessage,
+    searchReply,
+    type SearchDirection,
+  } from '$lib/util/terminalSearch';
+  import TerminalSearch from './TerminalSearch.svelte';
   import { reconnectAction } from '$lib/util/reconnect';
   import type { DeepcoveSocket } from '$lib/api/transport';
   import type { BootstrapStatus, SessionHost } from '$lib/api/types';
@@ -120,6 +127,49 @@
   // Set once the terminal exists, so the mobile key bar only shows with something to type into.
   let pressKey = $state<((key: MobileKey) => void) | undefined>(undefined);
   let toggleKeyboard = $state<(() => void) | undefined>(undefined);
+
+  // Searching the history runs in tmux, over this terminal's own stream.
+  let isSearchOpen = $state(false);
+  let searchProblem = $state<string | undefined>(undefined);
+  // searchID numbers each search sent, and moves on when the text changes, so a late answer is dropped.
+  let searchID = 0;
+  let searchBar = $state<{ focus: () => void } | undefined>(undefined);
+  // sendControl and focusTerminal reach the attached terminal, and are set while it is attached.
+  let sendControl: ((message: string) => void) | undefined;
+  let focusTerminal: (() => void) | undefined;
+
+  // Draws the bar now, so its field takes focus inside the key press or click. Svelte's autofocus only
+  // takes focus when nothing holds it, and the terminal or the header button always does here.
+  export function openSearch() {
+    isSearchOpen = true;
+    flushSync();
+    searchBar?.focus();
+  }
+
+  function searchHistory(text: string, direction: SearchDirection) {
+    searchID++;
+    const message = searchMessage(text, direction, searchID);
+    if (message) sendControl?.(message);
+    else searchProblem = 'Search text is too long';
+  }
+
+  function forgetSearchAnswer() {
+    searchID++;
+    searchProblem = undefined;
+  }
+
+  // The server ends an open search with the stream, so a new stream starts with none.
+  function dropSearch() {
+    isSearchOpen = false;
+    forgetSearchAnswer();
+  }
+
+  // Closing leaves tmux's copy mode, so the terminal is live again.
+  function closeSearch() {
+    dropSearch();
+    sendControl?.(JSON.stringify({ type: 'search-close' }));
+    focusTerminal?.();
+  }
 
   const maxReconnectAttempts = 8;
   const earlyCloseThresholdMs = 3000;
@@ -255,6 +305,7 @@
         // clobbered the new run's `'open'` and showed a spurious
         // "disconnected" overlay over a working terminal.
         if (disposed) return;
+        dropSearch();
         const action = reconnectAction({
           everOpened,
           everConnected,
@@ -278,7 +329,12 @@
         void reattach();
       };
       ws.onmessage = (e) => {
-        if (e.data instanceof ArrayBuffer) term?.write(new Uint8Array(e.data));
+        if (e.data instanceof ArrayBuffer) {
+          term?.write(new Uint8Array(e.data));
+          return;
+        }
+        const reply = searchReply(e.data);
+        if (reply?.searchId === searchID) searchProblem = reply.problem;
       };
     }
 
@@ -358,6 +414,13 @@
       // xterm.js sends Shift+Enter as a plain Enter, which submits. Ctrl+J is a newline in both Claude
       // Code and Codex, so Shift+Enter sends that instead.
       term.attachCustomKeyEventHandler((event) => {
+        if (isSearchShortcut(event)) {
+          if (event.type === 'keydown') {
+            event.preventDefault();
+            openSearch();
+          }
+          return false;
+        }
         // Ctrl+C stops the agent, so other systems copy with Ctrl+Shift+C like most terminals.
         const isCopyKey =
           event.key.toLowerCase() === 'c' && (event.metaKey || (event.ctrlKey && event.shiftKey));
@@ -391,6 +454,10 @@
         send(withCtrl(data));
         if (ctrl === 'once') ctrl = 'off';
       });
+      sendControl = (message) => {
+        if (ws?.readyState === 1) ws.send(message);
+      };
+      focusTerminal = () => term?.focus();
       pressKey = (key) => {
         if (!term) return;
         const applicationCursorKeys = term.modes.applicationCursorKeysMode;
@@ -537,6 +604,9 @@
       if (onTouchMove) container.removeEventListener('touchmove', onTouchMove);
       pressKey = undefined;
       toggleKeyboard = undefined;
+      sendControl = undefined;
+      focusTerminal = undefined;
+      dropSearch();
       document.removeEventListener('visibilitychange', sendVisibility);
       ro?.disconnect();
       ws?.close();
@@ -583,6 +653,16 @@
     <!-- Vertical pans belong to the swipe scroll above, so the browser never starts one of its own. Pinch
          zoom stays with the browser. -->
     <div bind:this={container} class="h-full w-full touch-pan-x touch-pinch-zoom"></div>
+
+    {#if isSearchOpen}
+      <TerminalSearch
+        bind:this={searchBar}
+        problem={searchProblem}
+        onSearch={searchHistory}
+        onEdit={forgetSearchAnswer}
+        onClose={closeSearch}
+      />
+    {/if}
 
     {#if uploading > 0 || uploadNote}
       <!-- Bottom bar overlaying the tmux status line. Left-aligned so it sits

@@ -1214,7 +1214,7 @@
                     <div class="space-y-3 rounded-md border border-border p-3">
                       <div class="space-y-1.5">
                         <Label class="text-xs" for="base-image">Base image</Label>
-                        <Input id="base-image" bind:value={baseImage} placeholder="alpine:3.20" />
+                        <Input id="base-image" bind:value={baseImage} placeholder="alpine:3.23" />
                       </div>
                       <div class="space-y-1.5">
                         <Label class="text-xs" for="setup-script">Setup script</Label>
