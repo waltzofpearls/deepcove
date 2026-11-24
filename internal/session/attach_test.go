@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -567,6 +568,32 @@ func TestHandleAttach_RecordsActivity(t *testing.T) {
 	}
 }
 
+// startBridge runs bridge over a real WebSocket, on a terminal whose output never ends, and returns the
+// browser's end of the socket.
+func startBridge(t *testing.T, controls attachControls) *websocket.Conn {
+	t.Helper()
+	proc := &gatedProcess{scriptedProcess: newScriptedProcess("", "", 0), gate: make(chan struct{}), closed: make(chan struct{})}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		bridge(r.Context(), ws, proc, slog.New(slog.DiscardHandler), controls)
+	}))
+	t.Cleanup(ts.Close)
+	t.Cleanup(func() {
+		_ = proc.Close()
+	})
+	ws, _, err := websocket.Dial(t.Context(), wsURL(t, ts.URL, "/"), nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ws.Close(websocket.StatusNormalClosure, "")
+	})
+	return ws
+}
+
 func TestBridge_Visibility(t *testing.T) {
 	cases := []struct {
 		name string
@@ -579,36 +606,10 @@ func TestBridge_Visibility(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reported := make(chan bool, len(tc.visibility))
-			setVisible := func(_ context.Context, visible bool) error {
+			ws := startBridge(t, attachControls{setVisible: func(_ context.Context, visible bool) error {
 				reported <- visible
 				return nil
-			}
-			// A terminal whose output never ends, so the bridge stays up while the frames arrive.
-			proc := &gatedProcess{scriptedProcess: newScriptedProcess("", "", 0), gate: make(chan struct{}), closed: make(chan struct{})}
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				ws, err := websocket.Accept(w, r, nil)
-				if err != nil {
-					return
-				}
-				detach := func(context.Context) error {
-					return nil
-				}
-				notify := func(context.Context, string) error {
-					return nil
-				}
-				bridge(r.Context(), ws, proc, slog.New(slog.DiscardHandler), detach, notify, setVisible)
-			}))
-			defer ts.Close()
-			defer func() {
-				_ = proc.Close()
-			}()
-			ws, _, err := websocket.Dial(t.Context(), wsURL(t, ts.URL, "/"), nil)
-			if err != nil {
-				t.Fatalf("ws dial: %v", err)
-			}
-			defer func() {
-				_ = ws.Close(websocket.StatusNormalClosure, "")
-			}()
+			}})
 			for _, visible := range tc.visibility {
 				frame, _ := json.Marshal(AttachControlMessage{Type: "visibility", Visible: visible})
 				if err := ws.Write(t.Context(), websocket.MessageText, frame); err != nil {
@@ -626,5 +627,262 @@ func TestBridge_Visibility(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBridge_Search(t *testing.T) {
+	cases := []struct {
+		name        string
+		direction   string
+		isFound     bool
+		searchErr   error
+		wantReplied attachSearchResult
+	}{
+		{name: "an older match", direction: "older", isFound: true, wantReplied: attachSearchResult{Type: "search", SearchID: 7, IsFound: true}},
+		{name: "no newer match", direction: "newer", wantReplied: attachSearchResult{Type: "search", SearchID: 7}},
+		{name: "a search tmux could not run", direction: "older", searchErr: errors.New("tmux timed out"),
+			wantReplied: attachSearchResult{Type: "search", SearchID: 7, IsFailed: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			searched := make(chan string, 1)
+			isEnded := make(chan bool, 1)
+			ws := startBridge(t, attachControls{
+				search: func(_ context.Context, text, direction string) (bool, error) {
+					searched <- text + " " + direction
+					return tc.isFound, tc.searchErr
+				},
+				endSearch: func(context.Context) {
+					isEnded <- true
+				},
+			})
+			frame, _ := json.Marshal(AttachControlMessage{Type: "search", Text: "token expired", Direction: tc.direction, SearchID: 7})
+			if err := ws.Write(t.Context(), websocket.MessageText, frame); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, reply, err := ws.Read(t.Context())
+			if err != nil {
+				t.Fatalf("read the reply: %v", err)
+			}
+			var got attachSearchResult
+			if err := json.Unmarshal(reply, &got); err != nil || got != tc.wantReplied {
+				t.Errorf("reply = %s, want %+v", reply, tc.wantReplied)
+			}
+			if got, want := <-searched, "token expired "+tc.direction; got != want {
+				t.Errorf("searched %q, want %q", got, want)
+			}
+			frame, _ = json.Marshal(AttachControlMessage{Type: "search-close"})
+			if err := ws.Write(t.Context(), websocket.MessageText, frame); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			select {
+			case <-isEnded:
+			case <-time.After(3 * time.Second):
+				t.Fatal("search-close never reached endSearch")
+			}
+		})
+	}
+}
+
+func TestTmuxSearchCommand(t *testing.T) {
+	cases := []struct {
+		name      string
+		text      string
+		direction string
+		modeKeys  string
+		want      string
+	}{
+		{
+			name:      "older",
+			text:      "token expired",
+			direction: "older",
+			modeKeys:  "emacs",
+			want:      "copy-mode -t view ; send-keys -X -t view search-backward-text token expired ; display-message -p -t view #{search_present}",
+		},
+		{
+			name:      "newer with vi keys steps past the current match first",
+			text:      "token expired",
+			direction: "newer",
+			modeKeys:  "vi",
+			want:      "copy-mode -t view ; send-keys -X -t view cursor-right ; send-keys -X -t view search-forward-text token expired ; display-message -p -t view #{search_present}",
+		},
+		{
+			name:      "newer with emacs keys returns to the start of the match",
+			text:      "token expired",
+			direction: "newer",
+			modeKeys:  "emacs",
+			want:      "copy-mode -t view ; send-keys -X -t view cursor-right ; send-keys -X -t view search-forward-text token expired ; send-keys -X -t view search-backward-text token expired ; display-message -p -t view #{search_present}",
+		},
+		{
+			name:      "a trailing semicolon is escaped, so tmux does not end the command there",
+			text:      "alpha;",
+			direction: "older",
+			modeKeys:  "emacs",
+			want:      `copy-mode -t view ; send-keys -X -t view search-backward-text alpha\; ; display-message -p -t view #{search_present}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strings.Join(tmuxSearchCommand("view", tc.text, tc.direction, tc.modeKeys), " "); got != tc.want {
+				t.Errorf("tmuxSearchCommand() =\n%s\nwant\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleAttach_Search(t *testing.T) {
+	cases := []struct {
+		name          string
+		isSearched    bool
+		search        execResponse
+		cancel        execResponse
+		wantIsFailed  bool
+		wantCancelled int
+	}{
+		{name: "a close cut short by the browser leaving is tried again as it leaves", isSearched: true,
+			search: execResponse{stdout: "1"}, cancel: execResponse{err: context.Canceled}, wantCancelled: 2},
+		{name: "a search tmux could not run is a failure, not a miss", isSearched: true,
+			search: execResponse{err: errors.New("tmux timed out")}, wantIsFailed: true, wantCancelled: 1},
+		{name: "closing a bar that never searched leaves the terminal alone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fake, _, _ := newTestService(t)
+			sess := mustRunning(t, svc)
+			fake.execResponses = []execResponse{
+				{},                                 // has-session
+				{},                                 // new-session for the view
+				{stdoutAfter: make(chan struct{})}, // attach, which keeps the terminal open
+			}
+			if tc.isSearched {
+				// The searched pane, which stays the target after tmux shows the view another window.
+				fake.execResponses = append(fake.execResponses, execResponse{stdout: "%5 emacs"}, tc.search)
+			}
+			fake.execResponses = append(fake.execResponses, tc.cancel, execResponse{}, execResponse{})
+			fake.execCalls = nil
+			cancels := func() []string {
+				fake.mu.Lock()
+				defer fake.mu.Unlock()
+				var found []string
+				for _, call := range fake.execCalls {
+					if joined := strings.Join(call, " "); strings.Contains(joined, " cancel") {
+						found = append(found, joined)
+					}
+				}
+				return found
+			}
+			ts, done := newAttachTestServer(t, svc)
+			ws, _, err := websocket.Dial(t.Context(), wsURL(t, ts.URL, "/api/sessions/"+sess.ID+"/attach"),
+				&websocket.DialOptions{Subprotocols: []string{AttachSubprotocol}})
+			if err != nil {
+				t.Fatalf("ws dial: %v", err)
+			}
+			if tc.isSearched {
+				if err := ws.Write(t.Context(), websocket.MessageText, []byte(`{"type":"search","text":"needle","direction":"older"}`)); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+				_, reply, err := ws.Read(t.Context())
+				if err != nil {
+					t.Fatalf("read the reply: %v", err)
+				}
+				var answer map[string]any
+				if err := json.Unmarshal(reply, &answer); err != nil {
+					t.Fatalf("reply %s: %v", reply, err)
+				}
+				if isFailed := answer["isFailed"] == true; isFailed != tc.wantIsFailed {
+					t.Errorf("reply %s: isFailed = %v, want %v", reply, isFailed, tc.wantIsFailed)
+				}
+			}
+			if err := ws.Write(t.Context(), websocket.MessageText, []byte(`{"type":"search-close"}`)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if tc.wantCancelled > 0 {
+				for deadline := time.Now().Add(3 * time.Second); len(cancels()) == 0; {
+					if time.Now().After(deadline) {
+						t.Fatal("search-close never reached tmux")
+					}
+					runtime.Gosched()
+				}
+			}
+			_ = ws.Close(websocket.StatusNormalClosure, "")
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("handleAttach did not return within 3s")
+			}
+			got := cancels()
+			if len(got) != tc.wantCancelled {
+				t.Errorf("tmux got %d cancels, want %d: %q", len(got), tc.wantCancelled, got)
+			}
+			for _, call := range got {
+				if call != "tmux send-keys -X -t %5 cancel" {
+					t.Errorf("cancel %q is not on the searched pane", call)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleAttach_SearchStillRunningWhenTheBrowserLeaves(t *testing.T) {
+	svc, fake, _, _ := newTestService(t)
+	sess := mustRunning(t, svc)
+	release := make(chan struct{})
+	// Terminal output after the browser left, like an agent's spinner, is what ends the stream.
+	output := make(chan struct{})
+	fake.execResponses = []execResponse{
+		{},                                       // has-session
+		{},                                       // new-session for the view
+		{stdout: "spinner", stdoutAfter: output}, // attach
+		{stdout: "%5 emacs"},                     // the searched pane
+		{stdout: "1", stdoutAfter: release},      // the search, still running in tmux
+		{},                                       // the cancel
+		{},                                       // the view's kill-session
+	}
+	fake.execCalls = nil
+	callsWith := func(part string) int {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		matched := 0
+		for _, call := range fake.execCalls {
+			if strings.Contains(strings.Join(call, " "), part) {
+				matched++
+			}
+		}
+		return matched
+	}
+	waitFor := func(part string) {
+		for deadline := time.Now().Add(3 * time.Second); callsWith(part) == 0; {
+			if time.Now().After(deadline) {
+				t.Fatalf("tmux never got %q", part)
+			}
+			runtime.Gosched()
+		}
+	}
+
+	ts, done := newAttachTestServer(t, svc)
+	ws, _, err := websocket.Dial(t.Context(), wsURL(t, ts.URL, "/api/sessions/"+sess.ID+"/attach"),
+		&websocket.DialOptions{Subprotocols: []string{AttachSubprotocol}})
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	if err := ws.Write(t.Context(), websocket.MessageText, []byte(`{"type":"search","text":"needle","direction":"older"}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitFor("search-backward-text")
+	_ = ws.CloseNow()
+	close(output)
+	// The cleanup must not end the search before tmux finishes it, or tmux enters copy mode after the
+	// cleanup and the pane stays frozen with nobody left to end it.
+	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); runtime.Gosched() {
+		if callsWith(" cancel") > 0 {
+			t.Fatal("the cleanup ended the search while tmux was still running it")
+		}
+	}
+	close(release)
+	waitFor(" cancel")
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handleAttach did not return within 3s")
 	}
 }

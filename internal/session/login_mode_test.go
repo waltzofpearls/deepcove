@@ -343,7 +343,7 @@ func TestSetLoginMode_StopsTheOldAgentFirst(t *testing.T) {
 			}
 			startedOne := false
 			for _, call := range fake.execCalls {
-				if len(call) > 1 && call[0] == "tmux" && call[1] == "new-session" {
+				if len(call) > 1 && call[0] == "tmux" && slices.Contains(call, "new-session") {
 					startedOne = true
 				}
 			}
@@ -456,7 +456,7 @@ func TestSetLoginMode_WaitsForTheSharedLogin(t *testing.T) {
 				if slices.Equal(call, tokenCheck) {
 					checks, lastCheck = checks+1, i
 				}
-				if len(call) > 1 && call[1] == "new-session" {
+				if slices.Contains(call, "new-session") {
 					newSession = i
 				}
 			}
@@ -641,7 +641,7 @@ func TestStartAgentSession_UsesTheSavedLoginMode(t *testing.T) {
 	}
 	var launch []string
 	for _, call := range runtime.execCalls {
-		if len(call) > 1 && call[1] == "new-session" {
+		if slices.Contains(call, "new-session") {
 			launch = call
 		}
 	}

@@ -40,6 +40,7 @@
   import Pencil from '@lucide/svelte/icons/pencil';
   import Play from '@lucide/svelte/icons/play';
   import Power from '@lucide/svelte/icons/power';
+  import Search from '@lucide/svelte/icons/search';
   import Trash from '@lucide/svelte/icons/trash-2';
   import X from '@lucide/svelte/icons/x';
 
@@ -75,6 +76,8 @@
   // Bound to the SessionSettingsDialog, which the cog opens. It writes an updated session back through
   // bind:session, so a folder change lands here without another fetch.
   let settingsOpen = $state(false);
+  // The terminal the header's search opens on: the agent's, or the one Shell shows.
+  let searchTerminal = $state<{ openSearch: () => void } | undefined>(undefined);
 
   // Inline rename of the session name in the toolbar. Click the name to
   // edit; Enter (or blur) commits, Esc cancels.
@@ -522,6 +525,22 @@
                   {...props}
                   variant="ghost"
                   size="icon"
+                  onclick={() => searchTerminal?.openSearch()}
+                  aria-label="Search terminal history"
+                >
+                  <Search class="size-4" />
+                </Button>
+              {/snippet}
+            </TooltipTrigger>
+            <TooltipContent>Search history</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger>
+              {#snippet child({ props })}
+                <Button
+                  {...props}
+                  variant="ghost"
+                  size="icon"
                   onclick={stop}
                   aria-label="Stop session"
                 >
@@ -679,6 +698,7 @@
              only, since currentMode handles the mobile fallback. -->
         <div class="grid h-full grid-cols-2 divide-x divide-border">
           <Terminal
+            bind:this={searchTerminal}
             sessionId={session.id}
             tmuxWindow="main"
             {host}
@@ -701,6 +721,7 @@
         <!-- Single-pane: Agent or Shell. Terminal re-attaches
              reactively when tmuxWindow changes (see step 6). -->
         <Terminal
+          bind:this={searchTerminal}
           sessionId={session.id}
           tmuxWindow={currentMode === 'shell' ? 'shell' : 'main'}
           {host}

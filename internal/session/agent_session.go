@@ -80,6 +80,13 @@ func (s *Service) startAgentSessionLocked(ctx context.Context, sess *Session, wo
 		}
 	}
 	newSession := []string{
+		// Set in the same call, ahead of the session, since tmux sizes a pane's history as it makes the
+		// pane. Searching the terminal covers this history.
+		"set-option", "-g", "history-limit", tmuxHistoryLines, ";",
+		// An empty format hides the position and match count tmux prints at the top right while
+		// searching, which the search bar covers. -q skips it on a tmux older than 3.6, which lacks it,
+		// instead of failing the whole call.
+		"set-option", "-gq", "copy-mode-position-format", "", ";",
 		"new-session", "-d",
 		"-s", name,
 		"-n", AgentTmuxWindowName,
@@ -121,6 +128,10 @@ func (s *Service) startSavingEscapeSequence(ctx context.Context, sess *Session) 
 		s.logger.Warn("session: could not save the agent's status", "id", sess.ID, "err", err)
 	}
 }
+
+// tmuxHistoryLines is how many lines of a pane tmux keeps past the screen, up from its default of
+// 2,000, which a long agent session passes quickly.
+const tmuxHistoryLines = "10000"
 
 // stopAgentSessionLocked stops a session's agent. Only tmux saying the session is gone counts, since
 // anything else may leave the old agent running.
