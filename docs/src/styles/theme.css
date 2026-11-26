@@ -1,0 +1,54 @@
+/* Colors match the app's (ui/src/app.css) and deepcove.dev, so the docs look like the same product. */
+:root {
+  /* The text fills the room between the menu and "On this page", instead of a narrow centered column. */
+  --sl-content-width: 100%;
+  --sl-color-bg: oklch(0.16 0.003 264);
+  --sl-color-bg-nav: oklch(0.16 0.003 264);
+  --sl-color-bg-sidebar: oklch(0.16 0.003 264);
+  --sl-color-white: oklch(0.985 0.001 95);
+  --sl-color-hairline: oklch(0.28 0.004 264);
+  --sl-color-accent-low: oklch(0.28 0.05 180);
+  --sl-color-accent: oklch(0.66 0.12 180);
+  --sl-color-accent-high: oklch(0.8 0.1 180);
+  /* Starlight draws note boxes in blue. */
+  --sl-color-blue-low: oklch(0.22 0.03 180);
+  --sl-color-blue: oklch(0.66 0.12 180);
+  --sl-color-blue-high: oklch(0.8 0.1 180);
+  --sl-text-h1: 2.25rem;
+  --sl-text-h2: 1.5rem;
+  --sl-text-h3: 1.25rem;
+  --sl-font:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Monaco, Consolas, monospace;
+}
+
+:root[data-theme='light'] {
+  --sl-color-bg: oklch(0.985 0.001 95);
+  --sl-color-bg-nav: oklch(0.985 0.001 95);
+  --sl-color-bg-sidebar: oklch(0.985 0.001 95);
+  --sl-color-white: oklch(0.205 0.005 95);
+  --sl-color-hairline: oklch(0.9 0.003 95);
+  --sl-color-accent-low: oklch(0.93 0.04 180);
+  --sl-color-accent: oklch(0.5 0.1 180);
+  --sl-color-accent-high: oklch(0.38 0.08 180);
+  --sl-color-blue-low: oklch(0.95 0.03 180);
+  --sl-color-blue: oklch(0.62 0.12 180);
+  --sl-color-blue-high: oklch(0.38 0.08 180);
+}
+
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+}
+
+/* The same size as the logo on deepcove.dev. A phone keeps Starlight's smaller one. */
+@media (min-width: 50rem) {
+  .site-title img {
+    height: 2.25rem;
+  }
+}
+
+.pagination-links .link-title {
+  font-size: 1.125rem;
+}

@@ -54,6 +54,11 @@ go.work.sum
 
 /internal/guestasset/deepcove-guest-init-*
 
+# Docs site dependencies, build output and generated types
+/docs/node_modules/
+/docs/dist/
+/docs/.astro/
+
 # Website build output, and the cache wrangler leaves wherever it runs
 /website/dist/
 /web-node/dist/
