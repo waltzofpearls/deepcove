@@ -45,7 +45,11 @@ export function searchReply(data: unknown): { searchId: number; problem?: string
     const reply = JSON.parse(data);
     if (reply?.type !== 'search') return undefined;
     if (reply.isFailed) return { searchId: reply.searchId, problem: 'Search failed' };
-    return { searchId: reply.searchId, problem: reply.isFound ? undefined : 'No matches' };
+    if (reply.isFound) return { searchId: reply.searchId };
+    return {
+      searchId: reply.searchId,
+      problem: reply.isOnScreenOnly ? 'Not on screen' : 'No matches',
+    };
   } catch {
     return undefined;
   }

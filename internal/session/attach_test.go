@@ -634,12 +634,14 @@ func TestBridge_Search(t *testing.T) {
 	cases := []struct {
 		name        string
 		direction   string
-		isFound     bool
+		result      attachSearchResult
 		searchErr   error
 		wantReplied attachSearchResult
 	}{
-		{name: "an older match", direction: "older", isFound: true, wantReplied: attachSearchResult{Type: "search", SearchID: 7, IsFound: true}},
+		{name: "an older match", direction: "older", result: attachSearchResult{IsFound: true}, wantReplied: attachSearchResult{Type: "search", SearchID: 7, IsFound: true}},
 		{name: "no newer match", direction: "newer", wantReplied: attachSearchResult{Type: "search", SearchID: 7}},
+		{name: "a full screen program, where only the visible screen is searched", direction: "older", result: attachSearchResult{IsOnScreenOnly: true},
+			wantReplied: attachSearchResult{Type: "search", SearchID: 7, IsOnScreenOnly: true}},
 		{name: "a search tmux could not run", direction: "older", searchErr: errors.New("tmux timed out"),
 			wantReplied: attachSearchResult{Type: "search", SearchID: 7, IsFailed: true}},
 	}
@@ -648,9 +650,9 @@ func TestBridge_Search(t *testing.T) {
 			searched := make(chan string, 1)
 			isEnded := make(chan bool, 1)
 			ws := startBridge(t, attachControls{
-				search: func(_ context.Context, text, direction string) (bool, error) {
+				search: func(_ context.Context, text, direction string) (attachSearchResult, error) {
 					searched <- text + " " + direction
-					return tc.isFound, tc.searchErr
+					return tc.result, tc.searchErr
 				},
 				endSearch: func(context.Context) {
 					isEnded <- true
@@ -738,12 +740,17 @@ func TestHandleAttach_Search(t *testing.T) {
 		cancel        execResponse
 		wantIsFailed  bool
 		wantCancelled int
+		// isFullScreen is a program like Claude Code on the alternate screen, which tmux keeps no history of.
+		isFullScreen       bool
+		wantIsOnScreenOnly bool
 	}{
 		{name: "a close cut short by the browser leaving is tried again as it leaves", isSearched: true,
 			search: execResponse{stdout: "1"}, cancel: execResponse{err: context.Canceled}, wantCancelled: 2},
 		{name: "a search tmux could not run is a failure, not a miss", isSearched: true,
 			search: execResponse{err: errors.New("tmux timed out")}, wantIsFailed: true, wantCancelled: 1},
 		{name: "closing a bar that never searched leaves the terminal alone"},
+		{name: "a full screen program is searched on the visible screen only", isSearched: true, isFullScreen: true,
+			search: execResponse{stdout: "0"}, wantCancelled: 1, wantIsOnScreenOnly: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -756,7 +763,11 @@ func TestHandleAttach_Search(t *testing.T) {
 			}
 			if tc.isSearched {
 				// The searched pane, which stays the target after tmux shows the view another window.
-				fake.execResponses = append(fake.execResponses, execResponse{stdout: "%5 emacs"}, tc.search)
+				where := "%5 emacs 0"
+				if tc.isFullScreen {
+					where = "%5 emacs 1"
+				}
+				fake.execResponses = append(fake.execResponses, execResponse{stdout: where}, tc.search)
 			}
 			fake.execResponses = append(fake.execResponses, tc.cancel, execResponse{}, execResponse{})
 			fake.execCalls = nil
@@ -791,6 +802,9 @@ func TestHandleAttach_Search(t *testing.T) {
 				}
 				if isFailed := answer["isFailed"] == true; isFailed != tc.wantIsFailed {
 					t.Errorf("reply %s: isFailed = %v, want %v", reply, isFailed, tc.wantIsFailed)
+				}
+				if isOnScreenOnly := answer["isOnScreenOnly"] == true; isOnScreenOnly != tc.wantIsOnScreenOnly {
+					t.Errorf("reply %s: isOnScreenOnly = %v, want %v", reply, isOnScreenOnly, tc.wantIsOnScreenOnly)
 				}
 			}
 			if err := ws.Write(t.Context(), websocket.MessageText, []byte(`{"type":"search-close"}`)); err != nil {
@@ -833,7 +847,7 @@ func TestHandleAttach_SearchStillRunningWhenTheBrowserLeaves(t *testing.T) {
 		{},                                       // has-session
 		{},                                       // new-session for the view
 		{stdout: "spinner", stdoutAfter: output}, // attach
-		{stdout: "%5 emacs"},                     // the searched pane
+		{stdout: "%5 emacs 0"},                   // the searched pane
 		{stdout: "1", stdoutAfter: release},      // the search, still running in tmux
 		{},                                       // the cancel
 		{},                                       // the view's kill-session
