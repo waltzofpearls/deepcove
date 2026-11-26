@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -51,6 +52,9 @@ type attachSearchResult struct {
 	IsFound  bool   `json:"isFound"`
 	// IsFailed is tmux not running the search, so finding nothing says nothing about the history.
 	IsFailed bool `json:"isFailed,omitempty"`
+	// IsOnScreenOnly is set when the pane runs a full screen program like Claude Code. tmux keeps no history
+	// for those, so the search could only look at the visible screen.
+	IsOnScreenOnly bool `json:"isOnScreenOnly,omitempty"`
 }
 
 // attachControls are what an attach's control frames act on, apart from the terminal's size.
@@ -58,8 +62,9 @@ type attachControls struct {
 	detach     func(context.Context) error
 	notify     func(context.Context, string) error
 	setVisible func(context.Context, bool) error
-	// search moves the terminal to the next match in its history, and reports whether there was one.
-	search    func(ctx context.Context, text, direction string) (isFound bool, err error)
+	// search moves the terminal to the next match in its history, and reports whether it found one, and whether
+	// it could only look at the visible screen.
+	search    func(ctx context.Context, text, direction string) (attachSearchResult, error)
 	endSearch func(context.Context)
 }
 
@@ -280,20 +285,22 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 			searchedPane = ""
 		}
 	}
-	search := func(ctx context.Context, text, direction string) (bool, error) {
+	search := func(ctx context.Context, text, direction string) (attachSearchResult, error) {
 		// Where a search leaves the cursor depends on the copy mode keys, since the next search starts there.
-		where, err := s.execTmux(ctx, sess, "display-message", "-p", "-t", viewSession, "#{pane_id} #{mode-keys}")
+		where, err := s.execTmux(ctx, sess, "display-message", "-p", "-t", viewSession, "#{pane_id} #{mode-keys} #{alternate_on}")
 		if err != nil {
-			return false, err
+			return attachSearchResult{}, err
 		}
-		pane, modeKeys, _ := strings.Cut(strings.TrimSpace(string(where)), " ")
+		var pane, modeKeys string
+		var alternateOn int
+		_, _ = fmt.Sscan(string(where), &pane, &modeKeys, &alternateOn)
 		// A search in another window leaves the last one, so no pane is left in copy mode behind it.
 		if searchedPane != pane {
 			endSearch(ctx)
 		}
 		searchedPane = pane
 		found, err := s.execTmux(ctx, sess, tmuxSearchCommand(pane, text, direction, modeKeys)...)
-		return strings.TrimSpace(string(found)) == "1", err
+		return attachSearchResult{IsFound: strings.TrimSpace(string(found)) == "1", IsOnScreenOnly: alternateOn == 1}, err
 	}
 	bridge(ctx, ws, proc, logger, attachControls{
 		detach:     detach,
@@ -493,11 +500,12 @@ func bridge(ctx context.Context, ws *websocket.Conn, proc sandbox.Process, logge
 						logger.Warn("attach: record activity on a visibility change", "err", err)
 					}
 				case "search":
-					isFound, err := controls.search(ctx, msg.Text, msg.Direction)
+					result, err := controls.search(ctx, msg.Text, msg.Direction)
 					if err != nil {
 						logger.Warn("attach: search failed", "err", err)
 					}
-					reply, _ := json.Marshal(attachSearchResult{Type: "search", SearchID: msg.SearchID, IsFound: isFound, IsFailed: err != nil})
+					result.Type, result.SearchID, result.IsFailed = "search", msg.SearchID, err != nil
+					reply, _ := json.Marshal(result)
 					if err := ws.Write(ctx, websocket.MessageText, reply); err != nil {
 						controlMutex.Unlock()
 						return

@@ -91,6 +91,11 @@ describe('searchReply', () => {
       data: '{"type":"search","searchId":3,"isFound":false,"isFailed":true}',
       want: { searchId: 3, problem: 'Search failed' },
     },
+    {
+      name: 'a full screen program, where only the visible screen is searched',
+      data: '{"type":"search","searchId":3,"isFound":false,"isOnScreenOnly":true}',
+      want: { searchId: 3, problem: 'Not on screen' },
+    },
     { name: 'another kind of frame', data: '{"type":"notice"}', want: undefined },
     { name: 'not JSON', data: 'hello', want: undefined },
     { name: 'terminal bytes', data: new ArrayBuffer(4), want: undefined },
