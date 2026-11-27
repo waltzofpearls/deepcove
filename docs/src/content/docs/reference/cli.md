@@ -3,6 +3,8 @@ title: CLI commands
 description: Every deepcove command, and what it does.
 ---
 
+Run `deepcove <command> -h` for a command's flags.
+
 ## Sessions
 
 | Command                   | What it does                                                             |

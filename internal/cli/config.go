@@ -21,15 +21,16 @@ func cmdConfig(ctx context.Context, args []string) error {
 		configUsage(os.Stderr)
 		return fmt.Errorf("config needs a verb (e.g. `deepcove config list`)")
 	}
+	if args[0] == "help" || hasHelpArg(args) {
+		configUsage(os.Stdout)
+		return nil
+	}
 	cfg, err := config.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
 	switch args[0] {
-	case "-h", "--help", "help":
-		configUsage(os.Stdout)
-		return nil
 	case "list":
 		return listConfig(cfg.DataDir)
 	case "set":

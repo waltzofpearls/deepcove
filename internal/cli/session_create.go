@@ -28,7 +28,7 @@ func cmdSessionCreate(ctx context.Context, args []string) error {
 	var name, image, setupScript, runtime, workDir string
 	fs.StringVar(&name, "name", "", "session name (auto-generated if omitted)")
 	fs.StringVar(&runtime, "runtime", "", "runtime to host the session: applevf, cloudhv or sandboxless (default: DEEPCOVE_DEFAULT_RUNTIME if the service sets it, else this node's VM runtime; required if neither is available)")
-	fs.StringVar(&workDir, "work-dir", "", "folder the agent works in, for a runtime that works in one")
+	fs.StringVar(&workDir, "work-dir", "", "folder the agent works in, with no sandbox only; in a VM, share one with --share host:/workspace")
 	fs.StringVar(&image, "image", "", "image override (default: agent's registered image)")
 	fs.StringVar(&setupScript, "setup-script", "", "shell script run on session start (default: agent's registered setup)")
 	sharedFolders := &sharedFolderFlag{}

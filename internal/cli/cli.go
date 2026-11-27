@@ -116,3 +116,21 @@ func joinStringLines(lines []string) string {
 	}
 	return b.String()
 }
+
+// hasHelpArg reports whether a command's words ask for help, as in `network logout -h`. A router checks it
+// before running a verb, since a verb that reads no flags would ignore -h and act.
+// Words after `--` belong to the command the service starts, so they are left alone.
+func hasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		// The flag package takes any of these as help, with or without a value such as --help=true.
+		name, _, _ := strings.Cut(arg, "=")
+		switch name {
+		case "-h", "--h", "-help", "--help":
+			return true
+		}
+	}
+	return false
+}

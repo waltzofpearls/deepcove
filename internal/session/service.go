@@ -293,6 +293,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Session, erro
 				ErrInvalidInput, unused)
 		}
 		sess.Image = ""
+	} else if !req.OnWorkspaceVM && req.WorkDir != "" {
+		// Stored and ignored would start the agent in /workspace while you expect your folder.
+		return nil, fmt.Errorf("%w: a session in its own VM works in the folders shared into it, so it takes no work folder. "+
+			"Share yours at /workspace instead", ErrInvalidInput)
 	} else if !req.OnWorkspaceVM && !sess.Resources.Asked() {
 		// A session's own VM gets the default size unless you picked one.
 		sess.Resources.Size = DefaultVMSize
