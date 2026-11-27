@@ -277,7 +277,7 @@ test-js: ui/node_modules/.package-lock.json ## Run frontend (vitest) unit tests
 	cd ui && npm run test
 
 .PHONY: lint
-lint: lint-go lint-js lint-sh ## Run all linters (Go + JS + shell)
+lint: lint-go lint-js lint-docs lint-sh ## Run all linters (Go + JS + docs + shell)
 
 .PHONY: lint-sh
 lint-sh: ## Check the install script
@@ -293,9 +293,14 @@ lint-js: ui/node_modules/.package-lock.json ## Run the frontend linters (prettie
 	cd ui && npm run format:check
 	cd ui && npm run check
 
+.PHONY: lint-docs
+lint-docs: docs/node_modules/.package-lock.json ## Check the docs site's formatting (prettier)
+	cd docs && npm run format:check
+
 .PHONY: format
-format: ui/node_modules/.package-lock.json ## Reformat the frontend (gofmt covers Go, and golangci-lint already enforces it)
+format: ui/node_modules/.package-lock.json docs/node_modules/.package-lock.json ## Reformat the frontend and the docs (gofmt covers Go, and golangci-lint already enforces it)
 	cd ui && npm run format
+	cd docs && npm run format
 
 # --- Apple VF runtime (macOS only) -----------------------------------------
 .PHONY: guest-init
@@ -381,6 +386,21 @@ run-website: build-website ## Build the website and serve it on http://localhost
 .PHONY: deploy-website
 deploy-website: build-website ## Build and deploy the website to Cloudflare (needs `npx wrangler login` once)
 	npx wrangler deploy --config website/wrangler.jsonc
+
+docs/node_modules/.package-lock.json: docs/package-lock.json
+	cd docs && npm ci
+
+.PHONY: build-docs
+build-docs: docs/node_modules/.package-lock.json ## Build the docs site into docs/dist
+	cd docs && npm run build
+
+.PHONY: run-docs
+run-docs: build-docs ## Build the docs site and serve it on http://localhost:8789
+	npx wrangler dev --config docs/wrangler.jsonc --port 8789
+
+.PHONY: deploy-docs
+deploy-docs: build-docs ## Build and deploy the docs site to Cloudflare (needs `npx wrangler login` once)
+	npx wrangler deploy --config docs/wrangler.jsonc
 
 .PHONY: build-web-node
 build-web-node: ui-build ## Build the hosted web node into web-node/dist (its WASM file ships to R2 on deploy)

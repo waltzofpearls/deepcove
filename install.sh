@@ -245,7 +245,7 @@ check_kvm() {
 		say "machine itself."
 	elif [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
 		say ""
-		say "VM sessions need /dev/kvm. Give yourself access, then log in again:"
+		say "VM sessions need /dev/kvm. Give yourself access, then reboot:"
 		say "  sudo usermod -aG kvm $(id -un)"
 	fi
 }

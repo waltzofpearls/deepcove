@@ -21,7 +21,9 @@ jobs:
         with:
           node-version-file: ui/package.json
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            docs/package-lock.json
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -29,6 +31,7 @@ jobs:
       - working-directory: ui
         run: npm ci
       - run: make ui-build
+      - run: make build-docs
       - name: Install golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
