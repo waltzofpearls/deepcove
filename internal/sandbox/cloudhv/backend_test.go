@@ -39,6 +39,8 @@ var (
 func testBackend(t *testing.T) (Backend, string) {
 	t.Helper()
 	dir := shortTempDir(t)
+	// A host that lets the helpers isolate themselves, so these tests pass on Ubuntu too.
+	fakeHost(t, hostSandboxFacts{})
 	return Backend{
 		CloudHypervisor: recordingStub(t, dir, "chv"),
 		Virtiofsd:       recordingStub(t, dir, "vfsd"),
@@ -140,6 +142,19 @@ func TestBootCleansUpAfterAFailedHelper(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("a failed boot left %d directories behind", len(entries))
+	}
+}
+
+// A host the helpers cannot start on is refused before any of them is started.
+func TestBootRefusesAHostThatBlocksTheHelpers(t *testing.T) {
+	backend, dir := testBackend(t)
+	fakeHost(t, hostSandboxFacts{namespacesRestricted: true})
+
+	if _, err := backend.Boot(testSpec()); err == nil {
+		t.Fatal("Boot should refuse a host that blocks passt and virtiofsd")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "passt.args")); !os.IsNotExist(err) {
+		t.Error("passt was started on a host that blocks it")
 	}
 }
 

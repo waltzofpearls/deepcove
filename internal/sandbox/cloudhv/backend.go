@@ -48,12 +48,19 @@ type Backend struct {
 	// IPCDir holds one directory per running VM, each with the sockets and the console FIFO its
 	// processes talk over. Keep it short: a socket path has a length limit.
 	IPCDir string
+	// AppArmorProfile is where deepcove leaves the profile for a root shell to load, so a refused boot
+	// can say what to run.
+	AppArmorProfile string
 }
 
 // Boot starts a VM and the helpers it needs, in the order they have to come up: the file shares and the
 // network first, because the VMM connects to them as it starts.
 func (b Backend) Boot(spec vm.Spec) (vm.Machine, error) {
 	if err := b.validate(); err != nil {
+		return nil, err
+	}
+	// Every boot, so loading the profile works without a restart.
+	if err := checkHelpersCanStart(b.AppArmorProfile); err != nil {
 		return nil, err
 	}
 	ipcDir, err := vmproc.NewRunDir(b.IPCDir)
