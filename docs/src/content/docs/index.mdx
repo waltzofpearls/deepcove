@@ -1,0 +1,59 @@
+---
+title: Quick start
+description: Run Claude Code and Codex in their own VMs, and drive them from a browser on any device.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import GuideCard from '../../components/GuideCard.astro';
+
+deepcove runs Claude Code and Codex in their own VMs, and you drive them from a browser on any device. Your
+first one takes three steps.
+
+<Steps>
+
+1. **Install**
+
+   One command on macOS or Linux. It starts deepcove in the background.
+
+   ```sh
+   curl -fsSL https://deepcove.dev/install.sh | sh
+   ```
+
+2. **Open the dashboard**
+
+   It opens in your browser, on this machine only. On a machine you reach over SSH, see
+   [Install](/get-started/install/#open-the-dashboard).
+
+   ```sh
+   deepcove open
+   ```
+
+3. **Start a session**
+
+   Click **New session**, pick an agent and a folder, and the agent starts in its own VM.
+   [Your first session](/get-started/first-session/) walks through the dialog.
+
+</Steps>
+
+## Then
+
+<div class="guide-cards">
+  <GuideCard
+    icon="laptop"
+    title="Connect to a session"
+    description="Open it in the browser, or in your own terminal with deepcove connect."
+    href="/use-it/connect/"
+  />
+  <GuideCard
+    icon="server"
+    title="Add another machine"
+    description="Run sessions on a bigger box, all in one dashboard."
+    href="/use-it/add-a-machine/"
+  />
+  <GuideCard
+    icon="mobile-android"
+    title="Use it on mobile"
+    description="Check on your agents and answer them from a phone or tablet."
+    href="/use-it/mobile/"
+  />
+</div>

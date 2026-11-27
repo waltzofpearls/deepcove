@@ -41,6 +41,11 @@ deepcove network login
 
 Then open [app.deepcove.dev](https://app.deepcove.dev) in any browser and sign in to Tailscale there too.
 
+## Who can reach it
+
+Nothing is published to the internet. The dashboard listens on 127.0.0.1, so only this machine reaches it.
+Over your tailnet, only your own Tailscale account gets in.
+
 ## Check that it runs
 
 ```sh

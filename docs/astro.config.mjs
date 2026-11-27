@@ -19,6 +19,16 @@ export default defineConfig({
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/theme.css'],
+      // Code boxes match the dashboard's terminal: one plain box with a copy button, no window frame.
+      expressiveCode: {
+        defaultProps: { frame: 'code' },
+        styleOverrides: {
+          borderRadius: '0.625rem',
+          borderColor: 'var(--sl-color-hairline)',
+          codeBackground: 'var(--deepcove-code-bg)',
+          frames: { shadowColor: 'transparent', editorBackground: 'var(--deepcove-code-bg)' },
+        },
+      },
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/waltzofpearls/deepcove' },
       ],
@@ -29,7 +39,17 @@ export default defineConfig({
           label: 'Get started',
           items: ['index', 'get-started/install', 'get-started/first-session'],
         },
-        { label: 'Sessions', items: ['sessions/search'] },
+        { label: 'Use it', items: ['use-it/connect', 'use-it/add-a-machine', 'use-it/mobile'] },
+        { label: 'Sessions', items: ['sessions/tabs', 'sessions/upload', 'sessions/search'] },
+        {
+          label: 'Where sessions run',
+          items: [
+            'where-sessions-run/vm-on-macos',
+            'where-sessions-run/vm-on-linux',
+            'where-sessions-run/no-sandbox',
+          ],
+        },
+        { label: 'Reference', items: ['reference/cli', 'reference/settings'] },
       ],
     }),
   ],
