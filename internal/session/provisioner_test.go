@@ -478,21 +478,18 @@ func TestService_Create_KeepsAWorkspaceFolderName(t *testing.T) {
 	}
 }
 
-func TestService_Create_IgnoresAWorkDirOnAGuestRuntime(t *testing.T) {
+func TestService_Create_RefusesAWorkDirOnAGuestRuntime(t *testing.T) {
 	svc := newBareService(t)
 	svc.RegisterRuntime(RuntimeCloudHV, newFakeSandbox())
 	svc.SetShareRoots(sandbox.ShareRoots{Allowed: []string{t.TempDir()}})
 
-	sess, err := svc.Create(context.Background(), CreateRequest{
+	_, err := svc.Create(context.Background(), CreateRequest{
 		Agent:   "claude",
 		Name:    "sandboxed-with-work-dir",
 		Runtime: RuntimeCloudHV,
 		WorkDir: "/tmp/somewhere-on-the-machine",
 	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if sess.WorkDir != "" {
-		t.Errorf("work dir %q, want none: the agent works inside the guest", sess.WorkDir)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("a work folder in its own VM got %v, want it refused: the agent works inside the guest", err)
 	}
 }

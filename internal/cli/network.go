@@ -26,7 +26,7 @@ const networkPollInterval = 2 * time.Second
 //
 // Usage:
 //
-//	deepcove network login [--timeout 10m] [--force-reauth]
+//	deepcove network login [--timeout 10m] [--auth-key tskey-...]
 //	deepcove network status
 //	deepcove network logout
 //	deepcove network disconnect
@@ -38,8 +38,7 @@ func cmdNetwork(ctx context.Context, args []string) error {
 		networkUsage(os.Stderr)
 		return errors.New("network needs a verb (e.g. `deepcove network login`)")
 	}
-	switch args[0] {
-	case "-h", "--help", "help":
+	if args[0] == "help" || hasHelpArg(args) {
 		networkUsage(os.Stdout)
 		return nil
 	}
@@ -225,7 +224,7 @@ func networkUsage(w *os.File) {
 		"deepcove network: put this machine on your Tailscale network",
 		"",
 		"Usage:",
-		"  deepcove network login [--timeout 10m] [--auth-key tskey-...] [--force-reauth]",
+		"  deepcove network login [--timeout 10m] [--auth-key tskey-...]",
 		"  deepcove network status",
 		"  deepcove network logout      sign out, this machine leaves your network",
 		"  deepcove network disconnect  stop for now, without signing out",

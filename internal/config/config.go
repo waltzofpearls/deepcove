@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,7 +11,6 @@ import (
 type Config struct {
 	Addr     string `env:"ADDR"`
 	DataDir  string `env:"DATA_DIR"`
-	NodeName string `env:"NODE_NAME"`
 	LogLevel string `env:"LOG_LEVEL"`
 
 	// Transport forces the SPA's runtime transport ("direct" or "wasm"), and
@@ -41,9 +39,6 @@ type Config struct {
 	// Command line only, on purpose: no env tag, no API, no stored setting, so there is nothing a public
 	// build could read to open one.
 	AllowSandboxHosts []string
-
-	// Computed values, should not read from env
-	Hostname string
 }
 
 const (
@@ -98,14 +93,6 @@ func Load(ctx context.Context) (*Config, error) {
 		}
 		c.DataDir = dir
 	}
-	if c.NodeName == "" {
-		nodeName, err := os.Hostname()
-		if err != nil {
-			return nil, err
-		}
-		c.NodeName = nodeName
-	}
-	c.Hostname = fmt.Sprintf("deepcove-%s", c.NodeName)
 	if c.LogLevel == "" {
 		c.LogLevel = DefaultLogLevel
 	}

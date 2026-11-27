@@ -32,8 +32,7 @@ func cmdService(ctx context.Context, args []string) error {
 		return errors.New("service needs a verb (e.g. `deepcove service status`)")
 	}
 
-	switch args[0] {
-	case "-h", "--help", "help":
+	if args[0] == "help" || hasHelpArg(args) {
 		serviceUsage(os.Stdout)
 		return nil
 	}

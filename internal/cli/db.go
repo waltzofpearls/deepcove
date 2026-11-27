@@ -16,10 +16,11 @@ func cmdDB(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: deepcove db <check|repair>")
 	}
-	switch args[0] {
-	case "-h", "--help", "help":
+	if args[0] == "help" || hasHelpArg(args) {
 		fmt.Println("usage: deepcove db <check|repair>, with deepcove stopped")
 		return nil
+	}
+	switch args[0] {
 	case "check":
 		return runOnDatabase(ctx, checkDatabase)
 	case "repair":
