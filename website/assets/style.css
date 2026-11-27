@@ -71,6 +71,8 @@ main,
 
 .header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   align-items: center;
   justify-content: space-between;
   padding-top: 24px;
@@ -87,12 +89,14 @@ main,
   gap: 16px;
 }
 
+.docs,
 .github {
   color: var(--muted-foreground);
   font-size: 0.875rem;
   text-decoration: none;
 }
 
+.docs:hover,
 .github:hover {
   color: var(--foreground);
 }

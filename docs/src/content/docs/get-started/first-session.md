@@ -15,6 +15,18 @@ description: Create a session, pick where it runs, and log the agent in.
 
 The session opens with the agent running in its terminal.
 
+## Where it runs
+
+| In the dialog                              | What it is                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------- |
+| Safest, in its own VM                      | A Linux VM for this session alone. The agent can only reach the folders you share |
+| Shared, in one VM with your other sessions | One VM your sessions share, each in its own folder. Starts in seconds             |
+| No isolation, right on the node            | Runs on the machine itself. Fastest, but the agent sees everything                |
+
+Use a VM unless the machine is already the boundary, such as a cloud box set aside for agents. More on each:
+[VM on macOS](/where-sessions-run/vm-on-macos/), [VM on Linux](/where-sessions-run/vm-on-linux/) and
+[No sandbox](/where-sessions-run/no-sandbox/).
+
 ## The work folder
 
 It depends on where the session runs:
@@ -45,12 +57,5 @@ default. The dialog says how many fit on your machine.
 
 ## Leave and come back
 
-Close the browser whenever you like: the session keeps running. Click it in the dashboard to return, or
-connect from a terminal:
-
-```sh
-deepcove ls
-deepcove connect <name>
-```
-
-Press `Ctrl+\` to leave. The agent keeps running.
+Close the browser whenever you like: the session keeps running.
+[Connect to it again](/use-it/connect/) from the browser or a terminal.

@@ -391,8 +391,10 @@ docs/node_modules/.package-lock.json: docs/package-lock.json
 	cd docs && npm ci
 
 .PHONY: build-docs
+# Astro's cache can keep pages that point at a code stylesheet the build no longer makes, so each build
+# starts without it.
 build-docs: docs/node_modules/.package-lock.json ## Build the docs site into docs/dist
-	cd docs && npm run build
+	cd docs && rm -rf node_modules/.astro && npm run build
 
 .PHONY: run-docs
 run-docs: build-docs ## Build the docs site and serve it on http://localhost:8789

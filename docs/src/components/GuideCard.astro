@@ -1,0 +1,21 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import type { StarlightIcon } from '@astrojs/starlight/types';
+
+interface Props {
+  title: string;
+  description: string;
+  href: string;
+  icon: StarlightIcon;
+}
+
+const { title, description, href, icon } = Astro.props;
+---
+
+<a class="guide-card not-content" href={href}>
+  <span class="guide-card-title">
+    <span class="guide-card-icon"><Icon name={icon} size="1.125rem" /></span>
+    {title}
+  </span>
+  <span class="guide-card-description">{description}</span>
+</a>
