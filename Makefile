@@ -32,15 +32,15 @@ $(GUEST_INIT_EMBED):
 ui/node_modules/.package-lock.json: ui/package-lock.json
 	cd ui && npm ci
 
-.PHONY: ui-build
-ui-build: ui/node_modules/.package-lock.json ## Build the SvelteKit UI into ui/build/
+.PHONY: build-ui
+build-ui: ui/node_modules/.package-lock.json ## Build the SvelteKit UI into ui/build/
 	cd ui && DEEPCOVE_VERSION=$(VERSION) npm run build
 
 # A placeholder so the //go:embed target exists. Only lint and test use it; every build target builds
 # the real UI.
 ui/build/index.html:
 	@mkdir -p ui/build
-	@echo '<h1>deepcove is running</h1><p>SvelteKit not yet built. Run: make ui-build</p>' > ui/build/index.html
+	@echo '<h1>deepcove is running</h1><p>SvelteKit not yet built. Run: make build-ui</p>' > ui/build/index.html
 
 # The versions live in Go and the release build reads them as JSON, so the file is regenerated whenever it
 # is older than its source. Nobody has to remember `go generate`.
@@ -52,7 +52,7 @@ $(VERSIONS_JSON): internal/vmruntime/versions.go internal/vmruntime/gen/main.go
 .PHONY: build
 # guest-init first, so the embedded init always matches this binary. That closes the trap where a
 # rebuilt init was never picked up and sessions silently booted stale code.
-build: guest-init ui-build $(VERSIONS_JSON) ## Build the deepcove binary for the host (builds the guest init + UI first)
+build: guest-init build-ui $(VERSIONS_JSON) ## Build the deepcove binary for the host (builds the guest init + UI first)
 	CGO_ENABLED=1 go build -ldflags '$(LDFLAGS_NATIVE)' -o deepcove ./cmd/deepcove
 	@$(MAKE) --no-print-directory sign-darwin BIN=deepcove
 
@@ -90,7 +90,7 @@ sign-darwin: ## Sign a darwin binary, e.g. make sign-darwin ARCH=arm64 [CODE_SIG
 build-darwin: build-darwin-arm64 build-darwin-amd64 ## Build darwin binaries for arm64 and amd64
 
 .PHONY: build-darwin-arm64
-build-darwin-arm64: ui-build ## Build a darwin/arm64 binary into dist/
+build-darwin-arm64: build-ui ## Build a darwin/arm64 binary into dist/
 	@mkdir -p dist/darwin-arm64
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=arm64
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
@@ -106,7 +106,7 @@ build-darwin-arm64: ui-build ## Build a darwin/arm64 binary into dist/
 # GOOS/GOARCH; no source rebuild required (Apple's libc has no
 # musl/glibc split).
 .PHONY: build-darwin-amd64
-build-darwin-amd64: ui-build ## Build a darwin/amd64 binary (cross-compiled from arm64 host)
+build-darwin-amd64: build-ui ## Build a darwin/amd64 binary (cross-compiled from arm64 host)
 	@mkdir -p dist/darwin-amd64
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
@@ -135,7 +135,7 @@ build-darwin-amd64: ui-build ## Build a darwin/amd64 binary (cross-compiled from
 build-windows: build-windows-amd64 ## Build windows binary for amd64
 
 .PHONY: build-windows-amd64
-build-windows-amd64: ui-build ## Build a windows/amd64 binary (cross-compiled via mingw-w64)
+build-windows-amd64: build-ui ## Build a windows/amd64 binary (cross-compiled via mingw-w64)
 	@mkdir -p dist/windows-amd64
 	@$(MAKE) --no-print-directory guest-init GUEST_ARCH=amd64
 	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
@@ -403,11 +403,11 @@ deploy-docs: build-docs ## Build and deploy the docs site to Cloudflare (needs `
 	npx wrangler deploy --config docs/wrangler.jsonc
 
 .PHONY: build-web-node
-build-web-node: ui-build ## Build the hosted web node into web-node/dist (its WASM file ships to R2 on deploy)
+build-web-node: build-ui ## Build the hosted web node into web-node/dist (its WASM file ships to R2 on deploy)
 	go run ./cmd/webnode
 
 .PHONY: run-web-node
-run-web-node: ui-build ## Build the web node and serve it on http://localhost:8788, with its WASM in a local R2
+run-web-node: build-ui ## Build the web node and serve it on http://localhost:8788, with its WASM in a local R2
 	@wasm=$$(go run ./cmd/webnode) && \
 		npx wrangler r2 object put "deepcove-web-node/$$wasm" --file "ui/build/$$wasm" \
 			--content-type application/wasm --local --config web-node/wrangler.jsonc
@@ -416,7 +416,7 @@ run-web-node: ui-build ## Build the web node and serve it on http://localhost:87
 # The WASM file goes up before the page that asks for it, so no visitor ever gets a page whose WASM is
 # not there yet. Run it from the commit you released, so the hosted UI matches your nodes.
 .PHONY: deploy-web-node
-deploy-web-node: ui-build ## Build and deploy the web node to Cloudflare (needs `npx wrangler login` once)
+deploy-web-node: build-ui ## Build and deploy the web node to Cloudflare (needs `npx wrangler login` once)
 	@wasm=$$(go run ./cmd/webnode) && \
 		npx wrangler r2 object put "deepcove-web-node/$$wasm" --file "ui/build/$$wasm" \
 			--content-type application/wasm --remote --config web-node/wrangler.jsonc

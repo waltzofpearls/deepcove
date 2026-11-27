@@ -30,7 +30,7 @@ jobs:
           cache: true
       - working-directory: ui
         run: npm ci
-      - run: make ui-build
+      - run: make build-ui
       - run: make build-docs
       - name: Install golangci-lint
         run: |
