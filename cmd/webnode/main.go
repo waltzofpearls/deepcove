@@ -85,7 +85,7 @@ func build(bundle, headers, dist string) (string, error) {
 		return "", err
 	}
 	if wasm == "" {
-		return "", errors.New("no WASM file in " + bundle + ", so the UI was built without it: run make ui-build")
+		return "", errors.New("no WASM file in " + bundle + ", so the UI was built without it: run make build-ui")
 	}
 	if err := writeHeaders(headers, filepath.Join(dist, "_headers"), indexHTML); err != nil {
 		return "", err
