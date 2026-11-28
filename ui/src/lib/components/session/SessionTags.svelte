@@ -9,29 +9,44 @@
   } from '$lib/components/ui/tooltip';
   import RuntimeBadge from '$lib/components/session/RuntimeBadge.svelte';
   import { agentBadgeClass } from '$lib/util/agentBadge';
+  import { cn } from '$lib/utils';
+  import Bot from '@lucide/svelte/icons/bot';
   import Globe from '@lucide/svelte/icons/globe';
   import Waypoints from '@lucide/svelte/icons/waypoints';
 
-  // Compact identity tags (agent + remote node + runtime), shared by the card and session view.
+  // Compact identity tags (agent + remote node + runtime), shared by the card and session view. Each tag
+  // keeps its full text. layout "wrap" moves tags to the next line, and breaks a node name too long for
+  // one; "row" keeps one line for a caller that scrolls it.
   // elevated raises the agent badge above the card's full-card nav link so its tooltip stays hoverable.
-  let { session, elevated = false }: { session: Session; elevated?: boolean } = $props();
+  let {
+    session,
+    elevated = false,
+    layout = 'row',
+    class: className = '',
+  }: {
+    session: Session;
+    elevated?: boolean;
+    layout?: 'wrap' | 'row';
+    class?: string;
+  } = $props();
 
   const remoteName = $derived(sessions.hostLabel(session));
 </script>
 
-<div class="flex min-w-0 items-center gap-1.5">
+<div class={cn('flex items-center gap-1.5', layout === 'wrap' && 'flex-wrap', className)}>
   <TooltipProvider>
     <Tooltip>
       <TooltipTrigger>
         {#snippet child({ props })}
           <span
             {...props}
-            class="shrink-0 cursor-default rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset {agentBadgeClass(
+            class="flex shrink-0 cursor-default items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset {agentBadgeClass(
               session.agent,
             )}"
             class:relative={elevated}
             class:z-20={elevated}
           >
+            <Bot class="size-3 shrink-0" />
             {session.agent}
           </span>
         {/snippet}
@@ -41,10 +56,15 @@
   </TooltipProvider>
   {#if remoteName}
     <span
-      class="flex min-w-0 items-center gap-1 rounded bg-teal-500/15 px-1.5 py-0.5 text-xs text-teal-800 ring-1 ring-inset ring-teal-600/35 dark:bg-teal-500/15 dark:text-teal-300 dark:ring-teal-500/30"
+      class={cn(
+        'flex shrink-0 items-center gap-1 rounded bg-teal-500/15 px-1.5 py-0.5 text-xs text-teal-800 ring-1 ring-inset ring-teal-600/35 dark:bg-teal-500/15 dark:text-teal-300 dark:ring-teal-500/30',
+        layout === 'wrap' && 'max-w-full',
+      )}
     >
       <Globe class="size-3 shrink-0" />
-      <span class="truncate">{remoteName}</span>
+      <span class={layout === 'wrap' ? 'min-w-0 break-all' : 'whitespace-nowrap'}>
+        {remoteName}
+      </span>
     </span>
   {/if}
   <RuntimeBadge runtime={session.runtime} shared={session.on_workspace_vm ?? false} />

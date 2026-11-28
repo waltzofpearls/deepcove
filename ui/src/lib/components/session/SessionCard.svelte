@@ -313,6 +313,9 @@
     <div class="flex items-center gap-2">
       <StatusIndicator {session} />
       <div class="min-w-0 flex-1 truncate font-mono text-sm font-medium">{session.name}</div>
+      <span class="shrink-0 text-xs text-muted-foreground">
+        {relativeAge(session.last_activity_at)}
+      </span>
       <!-- relative z-20 raises just the menu above the full-card nav link; the rest of the footer
            stays below it so a click there still opens the session. -->
       <div class="relative z-20 shrink-0">
@@ -360,14 +363,7 @@
         </DropdownMenu>
       </div>
     </div>
-    <div class="flex items-center gap-2">
-      <div class="min-w-0 flex-1">
-        <SessionTags {session} />
-      </div>
-      <span class="shrink-0 text-xs text-muted-foreground">
-        {relativeAge(session.last_activity_at)}
-      </span>
-    </div>
+    <SessionTags {session} layout="wrap" />
   </div>
 </div>
 
