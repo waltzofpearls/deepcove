@@ -25,6 +25,7 @@
   import Terminal from '$lib/components/session/Terminal.svelte';
   import StatusIndicator from '$lib/components/session/StatusIndicator.svelte';
   import SessionTags from '$lib/components/session/SessionTags.svelte';
+  import { shortSessionName } from '$lib/util/sessionName';
   import SessionSettingsDialog from '$lib/components/session/SessionSettingsDialog.svelte';
   import SessionFolderNote from '$lib/components/session/SessionFolderNote.svelte';
   import OtherAccountBanner from '$lib/components/session/OtherAccountBanner.svelte';
@@ -82,6 +83,8 @@
   // Inline rename of the session name in the toolbar. Click the name to
   // edit; Enter (or blur) commits, Esc cancels.
   let editingName = $state(false);
+  // Below the toolbar on a narrow screen, a long name is cut in the middle until you tap it.
+  let showFullName = $state(false);
   let nameDraft = $state('');
   let nameInput = $state<HTMLInputElement | undefined>(undefined);
 
@@ -133,6 +136,16 @@
     return () => mq.removeEventListener('change', onChange);
   });
   const currentMode = $derived<SessionMode>(mode === 'split' && !isWide ? 'agent' : mode);
+  // Below 1280px the toolbar, next to the menu, has no room for the name and every label, so they get a
+  // row of their own under the buttons. That covers phones and an iPad either way up.
+  let nameFitsInToolbar = $state(true);
+  $effect(() => {
+    const mq = matchMedia('(min-width: 1280px)');
+    nameFitsInToolbar = mq.matches;
+    const onChange = (e: MediaQueryListEvent) => (nameFitsInToolbar = e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  });
 
   // Keep the URL honest: if `?mode=split` is opened on a narrow
   // viewport (refresh, deep link, shared URL), rewrite to drop the
@@ -369,6 +382,8 @@
   // without going through our toggle).
   let containerEl: HTMLDivElement;
   let isFullscreen = $state(false);
+  // Safari on iPhone has no fullscreen for page elements, so the button would do nothing there.
+  let canFullscreen = $state(false);
 
   function toggleFullscreen() {
     if (!containerEl) return;
@@ -380,6 +395,7 @@
   }
 
   $effect(() => {
+    canFullscreen = document.fullscreenEnabled ?? false;
     function onChange() {
       isFullscreen = document.fullscreenElement === containerEl;
     }
@@ -435,9 +451,12 @@
   <!-- Toolbar above the terminal: identity, status, mode toggle,
        actions. Three flex zones with shrink-0 outer groups and a
        centered ModeToggle between two flex-1 spacers. Below md the
-       spacers collapse and the gap tightens so a phone-width row
-       fits without aggressive truncation of the session name. -->
-  <div class="flex items-center gap-2 border-b border-border bg-card px-2 py-2 md:gap-3 md:px-4">
+       spacers collapse, and on a screen too narrow for every button they drop to a second line. Below
+       xl the name and labels move to a row of their own under the buttons. -->
+  <div
+    class="flex items-center border-border bg-card px-1 py-0.5 max-md:flex-wrap md:gap-3 md:px-4 md:py-2"
+    class:border-b={nameFitsInToolbar || !session}
+  >
     <div class="flex min-w-0 shrink items-center gap-2 md:gap-3">
       <TooltipProvider>
         <Tooltip>
@@ -447,6 +466,7 @@
                 {...props}
                 variant="ghost"
                 size="icon"
+                class="max-md:size-11"
                 href="/"
                 aria-label="Back to dashboard"
               >
@@ -457,7 +477,7 @@
           <TooltipContent>Back to dashboard</TooltipContent>
         </Tooltip>
       </TooltipProvider>
-      {#if session}
+      {#if session && nameFitsInToolbar}
         <!-- The list carries the agent's state, but a start or stop reaches session first. -->
         <StatusIndicator session={listed?.status === session.status ? listed : session} />
         <div class="min-w-0">
@@ -493,7 +513,12 @@
           {/if}
         </div>
         <!-- prefer `listed` (aggregated, carries host) over `session` (single GET, no host) for the badges -->
-        <SessionTags session={listed ?? session} elevated />
+        <!-- The labels give up their room before the name does, and scroll in what is left. -->
+        <div class="min-w-0 shrink-[1000] overflow-x-auto [scrollbar-width:none]">
+          <SessionTags session={listed ?? session} elevated />
+        </div>
+      {:else if session}
+        <!-- A narrow screen shows the name and labels on their own row, under these buttons. -->
       {:else if loadError}
         <span class="text-sm text-destructive">{loadError}</span>
       {:else if listed}
@@ -515,7 +540,7 @@
     {/if}
     <div class="hidden flex-1 md:block"></div>
 
-    <div class="flex shrink-0 items-center gap-1">
+    <div class="ml-auto flex shrink-0 items-center md:gap-1">
       <TooltipProvider>
         {#if session?.status === 'running'}
           <Tooltip>
@@ -525,6 +550,7 @@
                   {...props}
                   variant="ghost"
                   size="icon"
+                  class="max-md:size-11"
                   onclick={() => searchTerminal?.openSearch()}
                   aria-label="Search terminal history"
                 >
@@ -541,6 +567,7 @@
                   {...props}
                   variant="ghost"
                   size="icon"
+                  class="max-md:size-11"
                   onclick={stop}
                   aria-label="Stop session"
                 >
@@ -558,6 +585,7 @@
                   {...props}
                   variant="ghost"
                   size="icon"
+                  class="max-md:size-11"
                   onclick={start}
                   aria-label="Start session"
                 >
@@ -576,6 +604,7 @@
                   {...props}
                   variant="ghost"
                   size="icon"
+                  class="max-md:size-11"
                   onclick={() => (settingsOpen = true)}
                   aria-label="Session settings"
                 >
@@ -593,6 +622,7 @@
                 {...props}
                 variant="ghost"
                 size="icon"
+                class="max-md:size-11"
                 onclick={() => (destroyOpen = true)}
                 aria-label="Destroy session"
               >
@@ -602,29 +632,77 @@
           </TooltipTrigger>
           <TooltipContent>Destroy session</TooltipContent>
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger>
-            {#snippet child({ props })}
-              <Button
-                {...props}
-                variant="ghost"
-                size="icon"
-                onclick={toggleFullscreen}
-                aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-              >
-                {#if isFullscreen}
-                  <Minimize class="size-4" />
-                {:else}
-                  <Maximize class="size-4" />
-                {/if}
-              </Button>
-            {/snippet}
-          </TooltipTrigger>
-          <TooltipContent>{isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}</TooltipContent>
-        </Tooltip>
+        {#if canFullscreen}
+          <Tooltip>
+            <TooltipTrigger>
+              {#snippet child({ props })}
+                <Button
+                  {...props}
+                  variant="ghost"
+                  size="icon"
+                  class="max-md:size-11"
+                  onclick={toggleFullscreen}
+                  aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                >
+                  {#if isFullscreen}
+                    <Minimize class="size-4" />
+                  {:else}
+                    <Maximize class="size-4" />
+                  {/if}
+                </Button>
+              {/snippet}
+            </TooltipTrigger>
+            <TooltipContent>{isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}</TooltipContent>
+          </Tooltip>
+        {/if}
       </TooltipProvider>
     </div>
   </div>
+
+  {#if session && !nameFitsInToolbar}
+    <!-- One line that scrolls sideways, so a long name or many labels never push into the buttons. -->
+    <div class="relative border-b border-border bg-card">
+      <div class="flex items-center gap-1.5 overflow-x-auto px-3 [scrollbar-width:none]">
+        <StatusIndicator session={listed?.status === session.status ? listed : session} />
+        {#if editingName}
+          <input
+            bind:this={nameInput}
+            bind:value={nameDraft}
+            onkeydown={onNameKey}
+            onblur={commitRename}
+            maxlength="100"
+            class="my-2 w-56 shrink-0 rounded border border-input bg-transparent px-1.5 py-0.5 font-mono text-sm font-medium focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        {:else}
+          <button
+            type="button"
+            onclick={() => (showFullName = !showFullName)}
+            aria-expanded={showFullName}
+            aria-label={session.name}
+            class="h-11 shrink-0 whitespace-nowrap font-mono text-sm font-medium"
+          >
+            {showFullName ? session.name : shortSessionName(session.name)}
+          </button>
+          {#if showFullName}
+            <button
+              type="button"
+              onclick={startRename}
+              aria-label="Rename session"
+              class="flex size-11 shrink-0 items-center justify-center"
+            >
+              <span class="flex size-7 items-center justify-center rounded-md bg-secondary">
+                <Pencil class="size-3.5" />
+              </span>
+            </button>
+          {/if}
+        {/if}
+        <SessionTags session={listed ?? session} class="pr-8" />
+      </div>
+      <div
+        class="pointer-events-none absolute inset-y-0 right-0 w-8 bg-linear-to-l from-card"
+      ></div>
+    </div>
+  {/if}
 
   <!-- Session settings sheet. Bind session so the sheet can write the
        updated row back after a successful PUT, which keeps the toolbar

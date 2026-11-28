@@ -35,7 +35,7 @@
       aria-pressed={mode === opt.value}
       onclick={() => onChange(opt.value)}
       class={cn(
-        'inline-flex items-center rounded-sm px-3 py-1 text-xs font-medium transition-colors',
+        'inline-flex items-center rounded-sm px-3 py-1 text-xs font-medium transition-colors max-md:h-10',
         opt.mobileHidden && 'hidden md:inline-flex',
         mode === opt.value
           ? 'bg-secondary text-foreground'
